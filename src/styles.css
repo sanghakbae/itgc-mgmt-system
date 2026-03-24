@@ -31,6 +31,7 @@ body {
   margin: 0;
   color: var(--text);
   line-height: 1.6;
+  letter-spacing: 0.01em;
   background:
     radial-gradient(circle at top left, rgba(24, 49, 83, 0.12), transparent 28%),
     radial-gradient(circle at bottom right, rgba(39, 103, 73, 0.16), transparent 30%),
@@ -206,6 +207,7 @@ textarea {
 .sidebar-brand h1 {
   margin: 0;
   font-size: 1.2rem;
+  letter-spacing: 0.01em;
 }
 
 .sidebar-toggle {
@@ -397,6 +399,7 @@ textarea {
 .hero h1 {
   font-size: clamp(1.22rem, 2vw, 1.7rem);
   line-height: 1.06;
+  letter-spacing: -0.01em;
 }
 
 .hero-copy {
@@ -497,7 +500,40 @@ textarea {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 9px;
-  padding: 12px;
+  padding: 16px;
+}
+
+.control-progress-section {
+  padding-top: 20px;
+  padding-left: 20px;
+}
+
+.dashboard-unit-filter {
+  width: 180px;
+}
+
+.dashboard-unit-filter-inline {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: auto;
+  grid-auto-flow: column;
+}
+
+.dashboard-delay-filter-inline {
+  margin-left: 0;
+}
+
+.dashboard-unit-filter-inline span {
+  display: inline;
+  white-space: nowrap;
+  margin: 0;
+}
+
+.dashboard-unit-filter-inline select {
+  width: 180px;
+  margin: 0;
 }
 
 .section-heading {
@@ -506,6 +542,11 @@ textarea {
   gap: 12px;
   align-items: center;
   margin-bottom: 20px;
+}
+
+.section-heading h2,
+.detail-inline-heading h2 {
+  letter-spacing: -0.01em;
 }
 
 .filter-row {
@@ -556,7 +597,7 @@ textarea {
 .controls-layout {
   display: grid;
   gap: 18px;
-  grid-template-columns: 360px minmax(0, 1fr);
+  grid-template-columns: 336px minmax(0, 1fr);
 }
 
 .process-card-grid {
@@ -619,7 +660,7 @@ textarea {
 
 .control-list {
   display: grid;
-  gap: 1px;
+  gap: 6px;
 }
 
 .control-create-form {
@@ -756,7 +797,7 @@ textarea {
 }
 
 .metric-card {
-  padding: 10px;
+  padding: 12px;
   border-radius: 5px;
   background: var(--panel-strong);
   border: 1px solid var(--line);
@@ -898,13 +939,22 @@ textarea {
 }
 
 .control-list-panel .filter-label select {
+  width: 108px;
   text-align: center;
   text-align-last: center;
 }
 
+.control-progress-section .filter-label {
+  gap: 4px;
+}
+
+.control-progress-section .filter-label select {
+  min-height: 30px;
+}
+
 .execution-form-item {
   margin: 0;
-  padding: 14px;
+  padding: 16px;
   border: 1px solid var(--line);
   border-radius: 4px;
   background: #fffdf9;
@@ -919,7 +969,7 @@ textarea {
 }
 
 .execution-form-action {
-  padding: 12px;
+  padding: 14px;
 }
 
 input,
@@ -1086,7 +1136,7 @@ textarea {
 .task-card,
 .info-block,
 .detail-meta-grid div {
-  padding: 14px;
+  padding: 16px;
   border-radius: 4px;
   background: #fffdf9;
   border: 1px solid var(--line);
@@ -1183,8 +1233,8 @@ th {
 }
 
 .audit-search-input {
-  width: min(960px, 100%);
-  min-width: 840px;
+  width: min(480px, 100%);
+  min-width: 420px;
 }
 
 @media (max-width: 1080px) {
@@ -1270,6 +1320,62 @@ th {
   height: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
+  background: #fff;
+}
+
+.evidence-file-chip {
+  border: 1px solid rgba(24, 49, 83, 0.08);
+  cursor: pointer;
+}
+
+.evidence-file-chip-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.evidence-file-delete {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid rgba(184, 50, 50, 0.18);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #b83232;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.evidence-preview-modal {
+  width: min(1080px, 100%);
+}
+
+.evidence-preview-body {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.evidence-preview-image-large {
+  display: block;
+  max-width: 100%;
+  max-height: 72vh;
+  object-fit: contain;
+}
+
+.evidence-preview-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
   background: #fff;
 }
 
@@ -1420,6 +1526,7 @@ th {
   gap: 16px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
+  justify-content: end;
 }
 
 .control-progress-group {
@@ -1444,7 +1551,7 @@ th {
 .control-progress-group-head strong {
   font-size: 0.94rem;
   font-weight: 800;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   color: #0f1720;
 }
 
@@ -1457,6 +1564,7 @@ th {
   display: grid;
   gap: 6px;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  justify-content: end;
 }
 
 .control-progress-card {
@@ -1466,6 +1574,8 @@ th {
   border: 1px solid var(--line);
   border-radius: 4px;
   background: #fffdf9;
+  text-align: left;
+  justify-items: start;
 }
 
 .control-progress-head {
@@ -1488,6 +1598,8 @@ th {
   overflow: hidden;
   text-overflow: ellipsis;
   color: #0f1720;
+  text-align: left;
+  width: 100%;
 }
 
 .control-progress-card small {
@@ -1500,6 +1612,7 @@ th {
   gap: 8px;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   margin-bottom: 14px;
+  justify-content: end;
 }
 
 .dashboard-tabs {
@@ -1633,6 +1746,7 @@ th {
 
 .category-progress-list {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  justify-content: end;
 }
 
 .category-progress-card .control-progress-head span {
@@ -1641,7 +1755,8 @@ th {
 }
 
 .control-progress-list-by-control {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  justify-content: end;
 }
 
 .dashboard-view-frequency .control-progress-group,
@@ -1681,6 +1796,11 @@ th {
   color: #fff;
 }
 
+.dashboard-view-frequency .control-progress-group.tone-daily .control-progress-group-head strong,
+.dashboard-view-frequency .control-progress-group.tone-daily .control-progress-group-head span {
+  color: #111111;
+}
+
 .dashboard-view-category .control-progress-card,
 .dashboard-view-category .control-progress-summary-card {
   background: rgba(183, 121, 31, 0.06);
@@ -1713,6 +1833,27 @@ th {
 .control-progress-card.tone-quarterly .progress-track span {
   border-bottom-color: rgba(214, 123, 32, 0.16);
   background: linear-gradient(90deg, #d67b20, #f0a44b);
+}
+
+.control-progress-group.tone-daily,
+.control-progress-card.tone-daily {
+  background: #ffffff;
+  border-color: rgba(17, 17, 17, 0.14);
+}
+
+.control-progress-group.tone-daily .control-progress-group-head,
+.control-progress-card.tone-daily .progress-track span {
+  border-bottom-color: rgba(17, 17, 17, 0.12);
+  background: linear-gradient(90deg, #111111, #444444);
+}
+
+.control-progress-group.tone-daily .control-progress-group-head {
+  background: #ffffff;
+}
+
+.control-progress-group.tone-daily .control-progress-group-head strong,
+.control-progress-group.tone-daily .control-progress-group-head span {
+  color: #111111;
 }
 
 .control-progress-group.tone-half-bi-annual,
@@ -2107,12 +2248,12 @@ th {
 }
 
 .execution-meta-item > span:first-child {
-  margin-bottom: 18px;
+  margin-bottom: 8px;
 }
 
 .execution-meta-item .detail-body-text {
-  margin-top: 10px;
-  line-height: 2.25;
+  margin-top: 4px;
+  line-height: 1.8;
   white-space: pre-line;
 }
 
@@ -2137,8 +2278,9 @@ th {
 }
 
 .execution-meta-item {
-  padding-top: 6px;
-  padding-bottom: 6px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  align-self: start;
 }
 
 .evidence-upload-group,
@@ -2157,11 +2299,12 @@ th {
 
 .target-systems-meta .system-chip-list {
   justify-content: center;
+  margin-top: 0;
 }
 
 .control-detail-grid-view .target-systems-meta,
 .detail-meta-grid .target-systems-meta {
-  padding: 0;
+  padding: 0 0 2px;
   border: 0;
   background: transparent;
 }
@@ -2221,7 +2364,7 @@ th {
 }
 
 .registration-hero-card {
-  padding: 14px;
+  padding: 16px;
 }
 
 .registration-hero-head,
@@ -2231,6 +2374,12 @@ th {
   justify-content: space-between;
   gap: 12px;
   align-items: center;
+}
+
+.registration-example-head {
+  width: 100%;
+  text-align: left;
+  justify-content: space-between;
 }
 
 .registration-hero-head h2,
@@ -2312,7 +2461,7 @@ th {
 .registration-section-card,
 .registration-summary-card,
 .registration-examples-card {
-  padding: 12px;
+  padding: 16px;
 }
 
 .registration-section-head {
@@ -2494,14 +2643,17 @@ th {
 
 .control-browser-layout {
   display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
+  grid-template-columns: 336px minmax(0, 1fr);
   gap: 14px;
   align-items: start;
 }
 
 .control-browser-list {
   display: grid;
-  gap: 6px;
+  gap: 10px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .control-browser-list .registration-example-list {
@@ -2510,40 +2662,46 @@ th {
 
 .control-browser-list .registration-control-item {
   padding: 6px 7px;
-  min-height: 78px;
+  min-height: 66px;
   display: grid;
   align-content: space-between;
+  gap: 0;
   width: 100%;
+  max-width: 100%;
   box-sizing: border-box;
 }
 
 .control-operation-card {
   padding: 6px 7px;
-  min-height: 78px;
+  min-height: 66px;
   display: grid;
   align-content: space-between;
+  gap: 0;
   width: 100%;
+  max-width: 100%;
   box-sizing: border-box;
+  justify-items: start;
 }
 
 .control-browser-list .registration-control-item p {
-  margin: 2px 0 0;
+  margin: 0;
   font-size: 0.84rem;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .control-operation-card p {
-  margin: 2px 0 0;
+  margin: 0;
   font-size: 0.84rem;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: left;
 }
 
 .control-browser-list .registration-control-item small {
@@ -2570,10 +2728,12 @@ th {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: left;
 }
 
 .control-operation-card .status-badge {
   flex: 0 0 auto;
+  align-self: start;
 }
 
 .key-badge {

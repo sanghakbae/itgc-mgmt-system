@@ -741,6 +741,37 @@ function getEvidencePreviewUrl(file) {
   return rawUrl;
 }
 
+function getEvidenceEmbedUrl(file) {
+  const rawUrl = String(file?.url ?? "").trim();
+  const driveFileId = String(file?.driveFileId ?? "").trim();
+
+  if (driveFileId) {
+    return `https://drive.google.com/file/d/${driveFileId}/preview`;
+  }
+
+  const byIdMatch = rawUrl.match(/[?&]id=([^&]+)/i);
+  if (byIdMatch?.[1]) {
+    return `https://drive.google.com/file/d/${byIdMatch[1]}/preview`;
+  }
+
+  const byPathMatch = rawUrl.match(/\/d\/([^/]+)/i);
+  if (byPathMatch?.[1]) {
+    return `https://drive.google.com/file/d/${byPathMatch[1]}/preview`;
+  }
+
+  return rawUrl;
+}
+
+function isDriveEvidence(file) {
+  const rawUrl = String(file?.url ?? "").trim();
+  const driveFileId = String(file?.driveFileId ?? "").trim();
+  return Boolean(
+    driveFileId
+    || rawUrl.includes("drive.google.com")
+    || rawUrl.includes("docs.google.com"),
+  );
+}
+
 function normalizeControl(control) {
   const catalog = controlCatalog[control.id] ?? {};
   const performDept = control.performDept ?? control.performer ?? control.ownerDept ?? "";
@@ -1271,10 +1302,13 @@ export default function App() {
   const [assignmentReviewer, setAssignmentReviewer] = useState("");
   const [assignmentReviewChecked, setAssignmentReviewChecked] = useState("미검토");
   const [dashboardView, setDashboardView] = useState("frequency");
+  const [dashboardUnitFilter, setDashboardUnitFilter] = useState("전체");
+  const [dashboardDelayFilter, setDashboardDelayFilter] = useState("전체");
   const [reportPeriod, setReportPeriod] = useState("monthly");
   const [reportFormat, setReportFormat] = useState("html");
   const [reportPreviewOpen, setReportPreviewOpen] = useState(false);
   const [reportPreviewMarkup, setReportPreviewMarkup] = useState("");
+  const [evidencePreviewFile, setEvidencePreviewFile] = useState(null);
   const [memberDrafts, setMemberDrafts] = useState({});
   const [auditLogQuery, setAuditLogQuery] = useState("");
   const [auditLogPage, setAuditLogPage] = useState(1);
@@ -1291,6 +1325,10 @@ export default function App() {
   const roleAssignmentControl = controls.find((control) => control.id === roleAssignmentControlId) ?? controls[0] ?? null;
   const processSummary = summarizeByProcess(controls, workflows);
   const processOptions = ["전체", ...new Set(controls.map((control) => control.process))];
+  const dashboardUnitOptions = useMemo(
+    () => ["전체", ...new Set(controls.map((control) => control.performDept ?? control.performer ?? "미지정"))],
+    [controls],
+  );
   const performerPeople = people.filter((person) => person.role === "performer" || person.role === "both");
   const reviewerPeople = people.filter((person) => person.role === "reviewer" || person.role === "both");
   const memberDirectory = useMemo(() => {
@@ -1460,8 +1498,26 @@ export default function App() {
     });
   }, [authUser, people]);
 
+  const dashboardFilteredControls = useMemo(
+    () => controls.filter((control) => {
+      const matchesUnit =
+        dashboardUnitFilter === "전체"
+          ? true
+          : (control.performDept ?? control.performer ?? "미지정") === dashboardUnitFilter;
+      const matchesDelay =
+        dashboardDelayFilter === "지연만"
+          ? !isCompletedStatus(control.status)
+          : true;
+      return matchesUnit && matchesDelay;
+    }),
+    [controls, dashboardUnitFilter, dashboardDelayFilter],
+  );
+  const dashboardProcessSummary = useMemo(
+    () => summarizeByProcess(dashboardFilteredControls, workflows),
+    [dashboardFilteredControls, workflows],
+  );
   const controlProgressGroups = useMemo(() => {
-    const grouped = controls.reduce((acc, control) => {
+    const grouped = dashboardFilteredControls.reduce((acc, control) => {
       const frequency = control.frequency || "미지정";
       const progress = controlProgressValue(control);
       if (frequency === "수시" || progress == null) {
@@ -1493,16 +1549,16 @@ export default function App() {
         label: frequencyLabelMap[frequency] ?? frequency,
         items,
       }));
-  }, [controls]);
+  }, [dashboardFilteredControls]);
   const dashboardStatusSummary = useMemo(() => ({
-    total: controls.length,
-    inProgress: controls.filter((control) => control.status === "점검 중").length,
-    completed: controls.filter((control) => control.status === "정상" || control.status === "점검 완료").length,
-    scheduled: controls.filter((control) => control.status === "점검 예정").length,
-  }), [controls]);
+    total: dashboardFilteredControls.length,
+    inProgress: dashboardFilteredControls.filter((control) => control.status === "점검 중").length,
+    completed: dashboardFilteredControls.filter((control) => control.status === "정상" || control.status === "점검 완료").length,
+    scheduled: dashboardFilteredControls.filter((control) => control.status === "점검 예정").length,
+  }), [dashboardFilteredControls]);
   const dashboardControlItems = useMemo(
     () =>
-      controls.map((control) => ({
+      dashboardFilteredControls.map((control) => ({
         id: control.id,
         title: control.title,
         process: control.process,
@@ -1510,7 +1566,7 @@ export default function App() {
         progress: controlProgressValue(control) ?? 0,
         status: control.status || "점검 예정",
       })),
-    [controls],
+    [dashboardFilteredControls],
   );
   const dashboardControlGroups = useMemo(() => {
     const grouped = dashboardControlItems.reduce((acc, item) => {
@@ -1540,10 +1596,10 @@ export default function App() {
     inProgress: dashboardControlItems.find((item) => item.status === "점검 중")?.id ?? "",
     completed: dashboardControlItems.find((item) => item.status === "정상" || item.status === "점검 완료")?.id ?? "",
     scheduled: dashboardControlItems.find((item) => item.status === "점검 예정")?.id ?? "",
-    firstCategory: processSummary[0]?.process ?? "",
-    completedCategory: processSummary.find((item) => item.pending === 0)?.process ?? "",
-    pendingCategory: processSummary.find((item) => item.pending > 0)?.process ?? "",
-  }), [dashboardControlItems, processSummary]);
+    firstCategory: dashboardProcessSummary[0]?.process ?? "",
+    completedCategory: dashboardProcessSummary.find((item) => item.pending === 0)?.process ?? "",
+    pendingCategory: dashboardProcessSummary.find((item) => item.pending > 0)?.process ?? "",
+  }), [dashboardControlItems, dashboardProcessSummary]);
   const dashboardSummaryCards = useMemo(() => {
     if (dashboardView === "frequency") {
       const countByFrequency = (key) =>
@@ -1560,16 +1616,16 @@ export default function App() {
     }
 
     if (dashboardView === "category") {
-      const completedCategories = processSummary.filter((item) => item.pending === 0).length;
-      const pendingCategories = processSummary.filter((item) => item.pending > 0).length;
+      const completedCategories = dashboardProcessSummary.filter((item) => item.pending === 0).length;
+      const pendingCategories = dashboardProcessSummary.filter((item) => item.pending > 0).length;
       const averageProgress =
-        processSummary.length === 0
+        dashboardProcessSummary.length === 0
           ? 0
-          : Math.round(processSummary.reduce((sum, item) => sum + item.progressRate, 0) / processSummary.length);
+          : Math.round(dashboardProcessSummary.reduce((sum, item) => sum + item.progressRate, 0) / dashboardProcessSummary.length);
 
       return [
-        { label: "카테고리", value: `${processSummary.length}개`, targetId: "dashboard-category-root" },
-        { label: "완료 카테고리", value: `${completedCategories}개`, targetId: dashboardAnchorTargets.completedCategory ? `dashboard-category-${toDashboardAnchor(dashboardAnchorTargets.completedCategory)}` : "dashboard-category-root" },
+        { label: "전체", value: `${dashboardProcessSummary.length}개`, targetId: "dashboard-category-root" },
+        { label: "완료", value: `${completedCategories}개`, targetId: dashboardAnchorTargets.completedCategory ? `dashboard-category-${toDashboardAnchor(dashboardAnchorTargets.completedCategory)}` : "dashboard-category-root" },
         { label: "관리 필요", value: `${pendingCategories}개`, targetId: dashboardAnchorTargets.pendingCategory ? `dashboard-category-${toDashboardAnchor(dashboardAnchorTargets.pendingCategory)}` : "dashboard-category-root" },
         { label: "평균 진행률", value: `${averageProgress}%`, targetId: "dashboard-category-root" },
       ];
@@ -1581,7 +1637,7 @@ export default function App() {
       { label: "완료", value: `${dashboardStatusSummary.completed}건`, targetId: dashboardAnchorTargets.completed ? `dashboard-control-${toDashboardAnchor(dashboardAnchorTargets.completed)}` : "dashboard-control-root" },
       { label: "예정", value: `${dashboardStatusSummary.scheduled}건`, targetId: dashboardAnchorTargets.scheduled ? `dashboard-control-${toDashboardAnchor(dashboardAnchorTargets.scheduled)}` : "dashboard-control-root" },
     ];
-  }, [controlProgressGroups, dashboardAnchorTargets, dashboardStatusSummary, dashboardView, processSummary]);
+  }, [controlProgressGroups, dashboardAnchorTargets, dashboardProcessSummary, dashboardStatusSummary, dashboardView]);
   const summary = useMemo(() => {
     const doneCount = workflows.filter((workflow) => workflow.status === "done").length;
     return {
@@ -1623,6 +1679,22 @@ export default function App() {
       return;
     }
     element.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function openControlOperation(controlId, nextProcessFilter = "전체") {
+    const targetControl = controls.find((control) => control.id === controlId);
+    const resolvedProcess = nextProcessFilter === "전체"
+      ? (targetControl?.process ?? "전체")
+      : nextProcessFilter;
+
+    setProcessFilter(resolvedProcess);
+    setControlListPage(1);
+    setSelectedControlId(controlId || targetControl?.id || controls[0]?.id || "");
+    setCurrentView("controls");
+    writeAuditLog("MENU_OPEN", "controls", `통제 운영 열람 · ${controlId || resolvedProcess}`);
+    if (window.matchMedia("(max-width: 960px)").matches) {
+      setIsSidebarOpen(false);
+    }
   }
 
   function handleLoginSuccess(response) {
@@ -1798,6 +1870,7 @@ export default function App() {
             controls: structuredClone(defaultData.controls),
             workflows: structuredClone(defaultData.workflows),
             people: structuredClone(defaultPeople),
+            auditLogs: [],
           };
 
           setWorkspace(seededWorkspace);
@@ -1812,6 +1885,7 @@ export default function App() {
           people: Array.isArray(remoteWorkspace.people) && remoteWorkspace.people.length > 0
             ? remoteWorkspace.people
             : structuredClone(defaultPeople),
+          auditLogs: Array.isArray(remoteWorkspace.auditLogs) ? remoteWorkspace.auditLogs : [],
         };
 
         setIntegrationStatus((current) => ({
@@ -1970,6 +2044,20 @@ export default function App() {
     };
 
     writeAuditLog("EXECUTION_SAVED", selectedControl.id, `${selectedControl.title} 증적 파일 삭제`, nextWorkspace);
+  }
+
+  function handleOpenEvidencePreview(file) {
+    if (!file) {
+      return;
+    }
+
+    const previewUrl = isImageEvidence(file) ? getEvidencePreviewUrl(file) : getEvidenceEmbedUrl(file);
+    if (!previewUrl) {
+      window.alert("저장된 파일만 미리볼 수 있습니다.");
+      return;
+    }
+
+    setEvidencePreviewFile(file);
   }
 
   function handleReportExport() {
@@ -2649,6 +2737,21 @@ export default function App() {
                   >
                     카테고리별
                   </button>
+                  <label className="filter-label dashboard-unit-filter dashboard-unit-filter-inline dashboard-delay-filter-inline">
+                    <span>지연</span>
+                    <select value={dashboardDelayFilter} onChange={(event) => setDashboardDelayFilter(event.target.value)}>
+                      <option value="전체">전체</option>
+                      <option value="지연만">지연만</option>
+                    </select>
+                  </label>
+                  <label className="filter-label dashboard-unit-filter dashboard-unit-filter-inline">
+                    <span>수행 유닛</span>
+                    <select value={dashboardUnitFilter} onChange={(event) => setDashboardUnitFilter(event.target.value)}>
+                      {dashboardUnitOptions.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
                 {dashboardView === "frequency" ? (
                   <div className="control-progress-group-list" id="dashboard-frequency-root">
@@ -2664,13 +2767,17 @@ export default function App() {
                         </div>
                         <div className="control-progress-list">
                           {group.items.map((item) => (
-                            <article className="control-progress-card" key={item.id}>
+                            <button
+                              type="button"
+                              className="control-progress-card"
+                              key={item.id}
+                              onClick={() => openControlOperation(item.id, item.process)}
+                            >
                               <div className="control-progress-head">
                                 <strong>{item.id}</strong>
                                 <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
                               </div>
                               <p>{item.title}</p>
-                              <small>{item.process}</small>
                               <div className="progress-track" aria-hidden="true">
                                 <span style={{ width: `${item.progress}%` }} />
                               </div>
@@ -2678,7 +2785,7 @@ export default function App() {
                                 <span>진행률</span>
                                 <strong>{item.progress}%</strong>
                               </div>
-                            </article>
+                            </button>
                           ))}
                         </div>
                       </section>
@@ -2695,13 +2802,18 @@ export default function App() {
                         </div>
                         <div className="control-progress-list control-progress-list-by-control">
                           {group.items.map((item) => (
-                            <article className="control-progress-card" key={item.id} id={`dashboard-control-${toDashboardAnchor(item.id)}`}>
+                            <button
+                              type="button"
+                              className="control-progress-card"
+                              key={item.id}
+                              id={`dashboard-control-${toDashboardAnchor(item.id)}`}
+                              onClick={() => openControlOperation(item.id, item.process)}
+                            >
                               <div className="control-progress-head">
                                 <strong>{item.id}</strong>
                                 <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
                               </div>
                               <p>{item.title}</p>
-                              <small>{item.process} · {item.frequency}</small>
                               <div className="progress-track" aria-hidden="true">
                                 <span style={{ width: `${item.progress}%` }} />
                               </div>
@@ -2709,7 +2821,7 @@ export default function App() {
                                 <span>진행률</span>
                                 <strong>{item.progress}%</strong>
                               </div>
-                            </article>
+                            </button>
                           ))}
                         </div>
                       </section>
@@ -2718,11 +2830,16 @@ export default function App() {
                 ) : null}
                 {dashboardView === "category" ? (
                   <div className="control-progress-list category-progress-list" id="dashboard-category-root">
-                    {processSummary.map((item) => (
-                      <article
+                    {dashboardProcessSummary.map((item) => (
+                      <button
+                        type="button"
                         className={`control-progress-card category-progress-card tone-${toDashboardAnchor(item.process)}`}
                         key={item.process}
                         id={`dashboard-category-${toDashboardAnchor(item.process)}`}
+                        onClick={() => {
+                          const firstControl = dashboardFilteredControls.find((control) => control.process === item.process);
+                          openControlOperation(firstControl?.id || "", item.process);
+                        }}
                       >
                         <div className="control-progress-head">
                           <strong>{item.process}</strong>
@@ -2733,10 +2850,10 @@ export default function App() {
                           <span style={{ width: `${item.progressRate}%` }} />
                         </div>
                         <div className="progress-caption">
-                          <span>카테고리 진행률</span>
+                          <span>진행률</span>
                           <strong>{item.progressRate}%</strong>
                         </div>
-                      </article>
+                      </button>
                     ))}
                   </div>
                 ) : null}
@@ -2776,7 +2893,6 @@ export default function App() {
                           </span>
                         </div>
                         <p>{control.title}</p>
-                        <small>{control.process} · {control.subProcess || "-"} · {control.performDept ?? control.performer}</small>
                       </button>
                     ))}
                   </div>
@@ -3017,80 +3133,79 @@ export default function App() {
           ) : null}
 
           {currentView === "control-list" ? (
-            <section className="panel registration-examples-card">
-              <div className="registration-section-head registration-list-head">
-                <div>
-                  <h2>통제 목록</h2>
-                  <p>등록된 통제를 선택하면 상세 정보가 표시됩니다.</p>
-                </div>
-                <label className="registration-filter-field">
-                  <span>카테고리</span>
-                  <select
-                    value={registrationCategoryFilter}
-                    onChange={(event) => {
-                      setRegistrationCategoryFilter(event.target.value);
-                      setRegistrationListPage(1);
-                    }}
-                  >
-                    {registrationCategoryOptions.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-              <div className="control-browser-layout">
-                <div className="control-browser-list">
-                  <div className="control-list">
-                  {registrationPagedControls.map((control) => (
-                    <button
-                      type="button"
-                      key={control.id}
-                      className={
-                        control.id === registrationSelectedControl?.id
-                          ? "registration-example-item registration-control-item control-operation-card active"
-                          : "registration-example-item registration-control-item control-operation-card"
-                      }
-                      onClick={() => {
-                        setRegistrationSelectedControlId(control.id);
-                        writeAuditLog("CONTROL_VIEWED", control.id, `${control.title} 상세 조회`);
+            <section className="control-browser-layout">
+              <article className="panel control-list-panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Control List</p>
+                    <h2>통제 목록</h2>
+                  </div>
+                  <label className="filter-label">
+                    <select
+                      value={registrationCategoryFilter}
+                      onChange={(event) => {
+                        setRegistrationCategoryFilter(event.target.value);
+                        setRegistrationListPage(1);
                       }}
                     >
-                      <div className="registration-example-head">
-                        <strong>{control.id}</strong>
-                        <span className={control.keyControl === "Yes" ? "status-badge key-badge" : "status-badge normal-badge"}>
-                          {control.keyControl === "Yes" ? "Key" : "Normal"}
-                        </span>
-                      </div>
-                      <p>{control.title}</p>
-                      <small>{control.process} · {control.subProcess || "-"} · {control.performDept ?? control.performer}</small>
-                    </button>
-                  ))}
-                  </div>
-                  {registrationTotalPages > 1 ? (
-                    <div className="pagination registration-pagination">
-                      {Array.from({ length: registrationTotalPages }, (_, index) => index + 1).map((page) => (
-                        <button
-                          key={page}
-                          type="button"
-                          className={page === registrationCurrentPage ? "page-button active" : "page-button"}
-                          onClick={() => setRegistrationListPage(page)}
-                        >
-                          {page}
-                        </button>
+                      {registrationCategoryOptions.map((option) => (
+                        <option key={option} value={option}>{option}</option>
                       ))}
-                    </div>
-                  ) : null}
+                    </select>
+                  </label>
                 </div>
+                <div className="control-browser-list">
+                    <div className="control-list">
+                    {registrationPagedControls.map((control) => (
+                      <button
+                        type="button"
+                        key={control.id}
+                        className={
+                          control.id === registrationSelectedControl?.id
+                            ? "registration-example-item registration-control-item control-operation-card active"
+                            : "registration-example-item registration-control-item control-operation-card"
+                        }
+                        onClick={() => {
+                          setRegistrationSelectedControlId(control.id);
+                          writeAuditLog("CONTROL_VIEWED", control.id, `${control.title} 상세 조회`);
+                        }}
+                      >
+                        <div className="registration-example-head">
+                          <strong>{control.id}</strong>
+                          <span className={control.keyControl === "Yes" ? "status-badge key-badge" : "status-badge normal-badge"}>
+                            {control.keyControl === "Yes" ? "Key" : "Normal"}
+                          </span>
+                        </div>
+                        <p>{control.title}</p>
+                      </button>
+                    ))}
+                    </div>
+                    {registrationTotalPages > 1 ? (
+                      <div className="pagination registration-pagination">
+                        {Array.from({ length: registrationTotalPages }, (_, index) => index + 1).map((page) => (
+                          <button
+                            key={page}
+                            type="button"
+                            className={page === registrationCurrentPage ? "page-button active" : "page-button"}
+                            onClick={() => setRegistrationListPage(page)}
+                          >
+                            {page}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                </div>
+              </article>
 
-                <article className="registration-summary-card control-detail-card">
-                  <div className="registration-section-head">
-                    <h2>통제 상세</h2>
-                    <p>목록에서 선택한 통제의 상세 정보</p>
-                  </div>
-                  <div className="registration-identity-box">
-                    <p>통제 식별자</p>
-                    <strong>{registrationSelectedControl?.id || "미선택"}</strong>
-                  </div>
+              <article className="panel registration-summary-card control-detail-card">
+                <div className="registration-section-head">
+                  <h2>통제 상세</h2>
+                  <p>목록에서 선택한 통제의 상세 정보</p>
+                </div>
+                <div className="registration-identity-box">
+                  <p>통제 식별자</p>
+                  <strong>{registrationSelectedControl?.id || "미선택"}</strong>
+                </div>
                   <div className="control-detail-grid-view">
                     <div><p>Cycle</p><strong>{registrationSelectedControl?.cycle || "-"}</strong></div>
                     <div><p>프로세스</p><strong>{registrationSelectedControl?.process || "-"}</strong></div>
@@ -3118,8 +3233,7 @@ export default function App() {
                     <div><p>테스트 절차</p><span>{registrationSelectedControl?.testMethod || (registrationSelectedControl?.procedures ?? []).join(" | ") || "-"}</span></div>
                     <div><p>모집단</p><span>{registrationSelectedControl?.population || "-"}</span></div>
                   </div>
-                </article>
-              </div>
+              </article>
             </section>
           ) : null}
 
@@ -3162,7 +3276,6 @@ export default function App() {
                           </span>
                         </div>
                         <p>{control.title}</p>
-                        <small>{control.process} · {control.subProcess || "-"} · {control.performDept ?? control.performer}</small>
                       </button>
                     );
                   })}
@@ -3270,8 +3383,22 @@ export default function App() {
                         <div className="evidence-file-list execution-form-item">
                           {(selectedControl.evidenceFiles ?? []).length > 0 ? (
                             (selectedControl.evidenceFiles ?? []).map((file, index) => (
-                              <span className="system-chip" key={`${file.name}-${index}`}>
-                                {file.url ? file.name : `${file.name} (대기)`}
+                              <span className="evidence-file-chip-wrap" key={`${file.name}-${index}`}>
+                                <button
+                                  className="system-chip evidence-file-chip"
+                                  type="button"
+                                  onClick={() => handleOpenEvidencePreview(file)}
+                                >
+                                  {file.url ? file.name : `${file.name} (대기)`}
+                                </button>
+                                <button
+                                  className="evidence-file-delete"
+                                  type="button"
+                                  aria-label={`${file.name} 삭제`}
+                                  onClick={() => handleRemoveEvidenceFile(index)}
+                                >
+                                  X
+                                </button>
                               </span>
                             ))
                           ) : (
@@ -3538,6 +3665,38 @@ export default function App() {
                 </div>
               ) : null}
             </section>
+          ) : null}
+
+          {evidencePreviewFile ? (
+            <div className="report-preview-overlay" role="dialog" aria-modal="true" aria-label="증적 파일 미리보기">
+              <div className="report-preview-modal evidence-preview-modal">
+                <div className="report-preview-toolbar">
+                  <strong>{evidencePreviewFile.name || "증적 파일 미리보기"}</strong>
+                  <div className="report-preview-actions">
+                    <button className="secondary-button slim-button" type="button" onClick={() => setEvidencePreviewFile(null)}>
+                      닫기
+                    </button>
+                  </div>
+                </div>
+                {isImageEvidence(evidencePreviewFile) && !isDriveEvidence(evidencePreviewFile) && getEvidencePreviewUrl(evidencePreviewFile) ? (
+                  <div className="evidence-preview-body">
+                    <img
+                      className="evidence-preview-image-large"
+                      src={getEvidencePreviewUrl(evidencePreviewFile)}
+                      alt={evidencePreviewFile.name || "증적 이미지"}
+                    />
+                  </div>
+                ) : getEvidenceEmbedUrl(evidencePreviewFile) ? (
+                  <iframe
+                    className="report-preview-frame"
+                    title={evidencePreviewFile.name || "증적 파일 미리보기"}
+                    src={getEvidenceEmbedUrl(evidencePreviewFile)}
+                  />
+                ) : (
+                  <div className="evidence-preview-empty">저장된 파일만 미리볼 수 있습니다.</div>
+                )}
+              </div>
+            </div>
           ) : null}
 
           {currentView === "audit" ? (

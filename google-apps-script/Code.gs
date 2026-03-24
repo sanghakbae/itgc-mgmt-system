@@ -3,6 +3,8 @@ var DRIVE_FOLDER_ID = "1xq6ecVXXcK4ujxDIiOVGsAyf-abwF9h3";
 var MASTER_SHEET = "control_master";
 var EXECUTION_SHEET = "control_execution";
 var EVIDENCE_SHEET = "evidence_files";
+var AUDIT_SHEET = "audit_log";
+var PEOPLE_SHEET = "member_master";
 
 function doGet(e) {
   var action = (e && e.parameter && e.parameter.action) || "getWorkspace";
@@ -154,6 +156,8 @@ function buildWorkspace_() {
   var masterRows = rowsToObjects_(getSheet_(MASTER_SHEET));
   var executionRows = rowsToObjects_(getSheet_(EXECUTION_SHEET));
   var evidenceRows = rowsToObjects_(getSheet_(EVIDENCE_SHEET));
+  var auditRows = rowsToObjects_(getSheet_(AUDIT_SHEET));
+  var peopleRows = rowsToObjects_(getSheet_(PEOPLE_SHEET));
 
   var executionMap = {};
   executionRows.forEach(function(row) {
@@ -214,12 +218,36 @@ function buildWorkspace_() {
   return {
     controls: controls,
     workflows: [],
-    people: [],
+    people: peopleRows.map(function(row) {
+      return {
+        id: row.member_id || "",
+        name: row.member_name || "",
+        email: row.member_email || "",
+        unit: row.member_unit || row.member_team || "미지정",
+        team: row.member_team || row.member_unit || "미지정",
+        role: row.member_role || "viewer",
+        accessRole: row.access_role || "viewer",
+      };
+    }),
+    auditLogs: auditRows.map(function(row) {
+      return {
+        id: row.log_id || "",
+        action: row.action_type || "",
+        target: row.target_id || "",
+        detail: row.detail_text || "",
+        actorName: row.actor_name || "",
+        actorEmail: row.actor_email || "",
+        ip: row.ip_address || "-",
+        createdAt: row.created_at || "",
+      };
+    }),
   };
 }
 
 function syncWorkspace_(workspace) {
   var controls = workspace.controls || [];
+  var people = workspace.people || [];
+  var auditLogs = workspace.auditLogs || [];
   var masterHeaders = [
     "control_id",
     "category",
@@ -271,6 +299,27 @@ function syncWorkspace_(workspace) {
     "uploaded_at",
     "uploaded_by",
     "file_note"
+  ];
+  var auditHeaders = [
+    "log_id",
+    "action_type",
+    "target_id",
+    "detail_text",
+    "actor_name",
+    "actor_email",
+    "ip_address",
+    "created_at",
+    "sort_order"
+  ];
+  var peopleHeaders = [
+    "member_id",
+    "member_name",
+    "member_email",
+    "member_unit",
+    "member_team",
+    "member_role",
+    "access_role",
+    "sort_order"
   ];
 
   var masterRows = controls.map(function(control, index) {
@@ -337,9 +386,37 @@ function syncWorkspace_(workspace) {
     });
   });
 
+  var auditRows = auditLogs.map(function(log, index) {
+    return {
+      log_id: log.id || "LOG-" + String(index + 1).padStart(4, "0"),
+      action_type: log.action || "",
+      target_id: log.target || "",
+      detail_text: log.detail || "",
+      actor_name: log.actorName || "",
+      actor_email: log.actorEmail || "",
+      ip_address: log.ip || "-",
+      created_at: log.createdAt || "",
+      sort_order: index + 1
+    };
+  });
+  var peopleRows = people.map(function(person, index) {
+    return {
+      member_id: person.id || "MBR-" + String(index + 1).padStart(4, "0"),
+      member_name: person.name || "",
+      member_email: person.email || "",
+      member_unit: person.unit || person.team || "미지정",
+      member_team: person.team || person.unit || "미지정",
+      member_role: person.role || person.accessRole || "viewer",
+      access_role: person.accessRole || "viewer",
+      sort_order: index + 1
+    };
+  });
+
   writeObjects_(getSheet_(MASTER_SHEET), masterHeaders, masterRows);
   writeObjects_(getSheet_(EXECUTION_SHEET), executionHeaders, executionRows);
   writeObjects_(getSheet_(EVIDENCE_SHEET), evidenceHeaders, evidenceRows);
+  writeObjects_(getSheet_(AUDIT_SHEET), auditHeaders, auditRows);
+  writeObjects_(getSheet_(PEOPLE_SHEET), peopleHeaders, peopleRows);
 }
 
 function uploadEvidenceFiles_(controlId, files) {
