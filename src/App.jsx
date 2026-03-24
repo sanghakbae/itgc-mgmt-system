@@ -1213,18 +1213,29 @@ export default function App() {
   const performerPeople = people.filter((person) => person.role === "performer" || person.role === "both");
   const reviewerPeople = people.filter((person) => person.role === "reviewer" || person.role === "both");
   const memberDirectory = useMemo(() => {
-    const syncedPeople = people.map((person) => ({
+    const syncedPeople = people
+      .filter((person) => String(person.email ?? "").trim().length > 0)
+      .map((person) => ({
       ...person,
       email: person.email ?? "",
       accessRole: person.accessRole ?? "user",
-    }));
+      }));
+
+    if (!authUser?.email) {
+      return syncedPeople;
+    }
+
+    const hasCurrentUser = syncedPeople.some((person) => person.email === authUser.email);
+    if (hasCurrentUser) {
+      return syncedPeople;
+    }
 
     return [
       {
-        id: "AUTH-ADMIN",
-        name: authUser?.name ?? "관리자",
-        email: authUser?.email ?? "",
-        team: "관리자",
+        id: "AUTH-CURRENT",
+        name: authUser.name ?? authUser.email,
+        email: authUser.email,
+        team: "미지정",
         accessRole: "admin",
         locked: true,
       },
@@ -1437,9 +1448,36 @@ export default function App() {
       picture: payload.picture ?? "",
     };
 
+    const existingMember = people.find((person) => String(person.email ?? "").toLowerCase() === email);
+    const nextPeople = existingMember
+      ? people.map((person) =>
+          String(person.email ?? "").toLowerCase() === email
+            ? {
+                ...person,
+                name: nextUser.name,
+                email,
+              }
+            : person,
+        )
+      : [
+          {
+            id: `MBR-${String(Date.now()).slice(-6)}`,
+            name: nextUser.name,
+            email,
+            role: "both",
+            team: "미지정",
+            accessRole: people.some((person) => String(person.email ?? "").trim()) ? "user" : "admin",
+          },
+          ...people,
+        ];
+
     window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextUser));
     setAuthError("");
     setAuthUser(nextUser);
+    updateWorkspace({
+      ...workspace,
+      people: nextPeople,
+    });
   }
 
   function handleLogout() {
@@ -2900,35 +2938,12 @@ export default function App() {
           ) : null}
 
           {currentView === "people" ? (
-            <section className="double-grid">
+            <section className="compact-stack">
               <article className="panel">
                 <div className="section-heading">
                   <div>
-                    <p className="eyebrow">People</p>
-                    <h2>수행자/검토자 등록</h2>
-                  </div>
-                </div>
-                <form className="stack-form" onSubmit={handlePersonSubmit}>
-                  <label>담당자 ID<input name="personId" type="text" placeholder="예: USR-005" required /></label>
-                  <label>이름<input name="personName" type="text" placeholder="예: 인프라운영팀" required /></label>
-                  <label>팀<input name="personTeam" type="text" placeholder="예: 인프라" required /></label>
-                  <label>
-                    역할
-                    <select name="personRole" required>
-                      <option value="performer">수행자</option>
-                      <option value="reviewer">검토자</option>
-                      <option value="both">둘 다</option>
-                    </select>
-                  </label>
-                  <button className="primary-button" type="submit">담당자 등록</button>
-                </form>
-              </article>
-
-              <article className="panel">
-                <div className="section-heading">
-                  <div>
-                    <p className="eyebrow">Directory</p>
-                    <h2>등록된 담당자</h2>
+                    <p className="eyebrow">Members</p>
+                    <h2>로그인 회원</h2>
                   </div>
                 </div>
                 <div className="table-wrap">
@@ -2937,17 +2952,31 @@ export default function App() {
                       <tr>
                         <th>ID</th>
                         <th>이름</th>
+                        <th>이메일</th>
                         <th>팀</th>
-                        <th>역할</th>
+                        <th>권한</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {people.map((person) => (
+                      {memberDirectory.map((person) => (
                         <tr key={person.id}>
                           <td>{person.id}</td>
                           <td>{person.name}</td>
+                          <td>{person.email || "-"}</td>
                           <td>{person.team}</td>
-                          <td>{person.role}</td>
+                          <td>
+                            {person.locked ? (
+                              "admin"
+                            ) : (
+                              <select
+                                value={person.accessRole ?? "user"}
+                                onChange={(event) => handleMemberAccessRoleChange(person.id, event.target.value)}
+                              >
+                                <option value="user">user</option>
+                                <option value="admin">admin</option>
+                              </select>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
