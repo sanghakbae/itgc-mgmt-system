@@ -1,0 +1,2 @@
+execution_id,control_id,execution_date,execution_note,status,review_checked,review_date,review_note,performed_by,reviewed_by,drive_folder_id,last_updated_at
+EXE-001,PWC-01,2026-03-23,정책서 최신본 요청 및 공지 이력 확인 예정,점검 예정,미검토,,,QA유닛,정보보호유닛,1xq6ecVXXcK4ujxDIiOVGsAyf-abwF9h3,2026-03-23T09:00:00+09:00

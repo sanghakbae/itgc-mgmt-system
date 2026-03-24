@@ -1,0 +1,3041 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { fetchIntegrationStatus, fetchRemoteWorkspace, syncRemoteWorkspace, uploadEvidenceToDrive } from "./googleSheetApi";
+
+const STORAGE_KEY = "itgc-workspace-v6";
+const REGISTRATION_DRAFT_KEY = "itgc-registration-draft-v1";
+const AUTH_STORAGE_KEY = "itgc-google-auth-v1";
+const GOOGLE_SCRIPT_URL = import.meta.env.VITE_GOOGLE_SCRIPT_URL ?? "";
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
+
+const defaultData = {
+  controls: [
+    {
+      id: "PWC-01", cycle: "IT-01", process: "PWC", subProcess: "IT정책관리",
+      title: "IT 조직 SOD 및 IT 운영 프로세스 정책의 수립, 검토 및 공지", purpose: "IT 조직 SOD 및 운영 프로세스 정책화",
+      riskId: "IT-02", riskName: "IT 프로세스에 대한 정책 미수립 위험", frequency: "Annual", controlType: "예방", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "QA유닛", performer: "정보보호유닛", reviewer: "정보보호유닛",
+      note: "정책서, 승인, 공지 이력 확보 필요", population: "연간 IT 정책 검토 및 승인 내역",
+      attributes: ["정책서 상 SOD와 IT 프로세스 명시", "CTO 승인 존재"], evidences: ["IT 정책서", "승인 증빙", "게시 내역"], procedures: ["정책서 수령", "내용 검토", "승인 및 공지 확인"],
+    },
+    {
+      id: "APD-01", cycle: "IT-01", process: "APD", subProcess: "계정 관리",
+      title: "어플리케이션 계정 생성 및 권한 부여 시 승인", purpose: "승인 받은 사용자만 접근 허용",
+      riskId: "IT-03", riskName: "시스템 사용자가 승인과 업무분장을 우회할 위험", frequency: "Event Driven", controlType: "예방", keyControl: "Yes",
+      status: "개선 필요", evidenceStatus: "미수집", ownerDept: "각 권한통제 부서", performer: "각 권한통제 부서", reviewer: "정보보호유닛",
+      note: "신규 입사/인사이동 케이스 분리 수집 필요", population: "계정 생성 및 권한 부여 이력",
+      attributes: ["요청 및 승인 존재", "승인 후 계정 생성"], evidences: ["계정 생성 이력", "요청서", "권한 정의서"], procedures: ["이력 조회", "샘플링", "승인일과 생성일 대조"],
+    },
+    {
+      id: "APD-02", cycle: "IT-01", process: "APD", subProcess: "계정 관리",
+      title: "퇴사자 계정 잠금(계정 삭제/권한회수)", purpose: "퇴사자 계정을 퇴사일에 맞게 적시 처리",
+      riskId: "IT-03", riskName: "시스템 사용자가 승인과 업무분장을 우회할 위험", frequency: "Event Driven", controlType: "예방", keyControl: "No",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "각 권한통제 부서", performer: "각 권한통제 부서", reviewer: "정보보호유닛",
+      note: "예외 지연 처리 시 추가 승인 확보 필요", population: "테스트 기간 중 퇴사자 리스트",
+      attributes: ["퇴사자 접근 불가 설정", "퇴사일과 계정잠금일 차이 적절", "예외 승인 존재"], evidences: ["계정 잠금 이력", "권한 회수 이력", "예외 승인"], procedures: ["퇴사자 리스트 수령", "샘플링", "잠금/삭제/회수 이력 확인"],
+    },
+    {
+      id: "APD-03", cycle: "IT-01", process: "APD", subProcess: "계정 관리",
+      title: "부서 이동자 권한 회수", purpose: "부서 이동자 권한을 이동일에 맞게 적시 회수",
+      riskId: "IT-03", riskName: "시스템 사용자가 승인과 업무분장을 우회할 위험", frequency: "Event Driven", controlType: "예방", keyControl: "No",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "각 권한통제 부서", performer: "각 권한통제 부서", reviewer: "정보보호유닛",
+      note: "시스템 미사용자와 사용자 케이스 분리 검토", population: "부서 이동자 중 시스템 미사용자 리스트",
+      attributes: ["계정 잠금 또는 권한 회수 수행", "이동일과 회수일 차이 적절", "예외 승인 존재"], evidences: ["권한 회수 이력", "인사 이동 리스트", "예외 승인"], procedures: ["이동자 리스트 수령", "모집단 작성", "회수 이력 확인"],
+    },
+    {
+      id: "APD-04", cycle: "IT-01", process: "APD", subProcess: "계정 관리",
+      title: "어플리케이션 Super User/Admin 권한 모니터링", purpose: "Super User/Admin 권한 적정성 검토",
+      riskId: "IT-04", riskName: "강력 권한 사용자가 승인과 업무분장을 우회할 위험", frequency: "Half-Bi-annual", controlType: "적발", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "각 권한통제 부서", performer: "각 권한통제 부서", reviewer: "정보보호유닛",
+      note: "주요 권한 모니터링 보고서 필요", population: "반기별 주요 권한 모니터링 보고",
+      attributes: ["반기별 모니터링 수행", "권한 현황 증빙 첨부", "결과 보고"], evidences: ["모니터링 보고서", "권한 정의서", "보고 증빙"], procedures: ["반기 샘플 선정", "권한 보유 현황 검토", "조치 및 보고 확인"],
+    },
+    {
+      id: "APD-05", cycle: "IT-01", process: "APD", subProcess: "계정 관리",
+      title: "어플리케이션 사용자 권한 모니터링", purpose: "업무에 맞는 시스템 권한 부여",
+      riskId: "IT-03", riskName: "시스템 사용자가 승인과 업무분장을 우회할 위험", frequency: "Half-Bi-annual", controlType: "예방", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "각 권한통제 부서", performer: "각 권한통제 부서", reviewer: "정보보호유닛",
+      note: "권한 정의서/업무분장/인사발령 기준 검토", population: "반기별 권한 적절성 모니터링 보고",
+      attributes: ["권한 보유 현황 완전 추출", "적절성 검토 결과 문서화", "예외 권한 회수 조치"], evidences: ["권한 모니터링 보고서", "권한 정의서", "예외 승인"], procedures: ["보고서 샘플 선정", "현황 리스트 확인", "특이사항 조치 확인"],
+    },
+    {
+      id: "APD-06", cycle: "IT-01", process: "APD", subProcess: "패스워드 관리",
+      title: "어플리케이션 패스워드 및 시스템 보안 설정의 효과적 설정", purpose: "효과적인 암호 정책 설정",
+      riskId: "IT-06", riskName: "취약한 패스워드 정책으로 접근 통제를 우회할 위험", frequency: "Other", controlType: "예방", keyControl: "No",
+      status: "정상", evidenceStatus: "준비 완료", ownerDept: "정보보호유닛", performer: "정보보호유닛", reviewer: "QA유닛",
+      note: "자동통제 성격", population: "패스워드 설정 화면 및 소스코드",
+      attributes: ["정책과 설정값 일치", "부적합 패스워드 차단"], evidences: ["정보보호지침", "설정 화면", "오류 발생 테스트"], procedures: ["정책 확인", "설정값 검토", "오류 메시지 테스트"],
+    },
+    {
+      id: "APD-07", cycle: "IT-01", process: "APD", subProcess: "데이터 변경 관리",
+      title: "DB 데이터 직접 변경 시 요청 및 승인", purpose: "요청 및 승인 있는 DB 직접 변경만 수행",
+      riskId: "IT-05", riskName: "기본 거래 정보나 마스터 데이터가 부적절하게 변경될 위험", frequency: "Event Driven", controlType: "예방", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "정보보호유닛",
+      note: "현업유닛장과 DBA 검토 필요", population: "테스트 대상 기간 중 데이터 직접 변경 이력",
+      attributes: ["현업 요청 문서 존재", "현업/DBA 검토 존재", "요청과 실제 변경 내역 일치", "승인 후 변경"], evidences: ["데이터 변경 요청서", "검토 내역", "변경 이력"], procedures: ["이력 추출", "샘플링", "요청/승인/변경일자 확인"],
+    },
+    {
+      id: "APD-08", cycle: "IT-01", process: "APD", subProcess: "DB 계정 관리",
+      title: "DB 계정 생성 및 접근 부여 시 요청 및 승인", purpose: "DB 직접 접근 계정 및 권한 적정 부여",
+      riskId: "IT-05", riskName: "인가 받지 않은 DB 접근 위험", frequency: "Event Driven", controlType: "예방", keyControl: "No",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "정보보호유닛",
+      note: "계정 생성과 권한 부여를 구분 관리", population: "DB 계정 생성 및 권한 부여 이력",
+      attributes: ["계정 생성 요청/승인", "권한 부여 요청/승인", "승인 후 생성 및 권한 부여"], evidences: ["DB 계정 요청서", "승인 증빙", "생성/권한 이력"], procedures: ["계정 이력 추출", "권한 이력 추출", "요청 승인과 일치 여부 확인"],
+    },
+    {
+      id: "APD-09", cycle: "IT-01", process: "APD", subProcess: "OS 계정 관리",
+      title: "OS 계정 생성 및 접근 권한 부여 시 요청 및 승인", purpose: "OS 직접 접근 계정 및 권한 적정 부여",
+      riskId: "IT-15", riskName: "인가 받지 않은 OS 접근 위험", frequency: "Event Driven", controlType: "예방", keyControl: "No",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "QA유닛",
+      note: "OS 접근제어 솔루션 포함", population: "OS 계정 생성 및 권한 부여 이력",
+      attributes: ["계정 생성 요청/승인", "권한 부여 요청/승인", "승인 후 생성 및 권한 부여"], evidences: ["OS 요청서", "승인 증빙", "OS 생성/권한 이력"], procedures: ["OS 이력 추출", "샘플링", "요청 승인 일자 대조"],
+    },
+    {
+      id: "APD-10", cycle: "IT-01", process: "APD", subProcess: "DB/OS 계정 모니터링",
+      title: "DB/OS 접근 가능 사용자 및 관리자 권한 보유자 모니터링", purpose: "DB/OS 접근 권한 적정성 검토",
+      riskId: "IT-05", riskName: "인가 받지 않은 DB/OS 접근 위험", frequency: "Half-Bi-annual", controlType: "적발", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "정보보호유닛",
+      note: "OS/DB 사용자와 관리자 권한을 함께 검토", population: "반기별 DB/OS 권한 모니터링 결과",
+      attributes: ["모니터링 절차 수행", "권한 현황 증빙 첨부", "적절성 검토 문서화", "전결권자 승인"], evidences: ["모니터링 보고서", "권한 조회 증빙", "승인 증빙"], procedures: ["샘플 반기 선정", "In-scope 포함 여부 확인", "권한 적절성 및 보고 확인"],
+    },
+    {
+      id: "PC-01", cycle: "IT-01", process: "PC", subProcess: "프로그램 변경 관리",
+      title: "어플리케이션 변경 승인 및 개발자/사용자 테스트", purpose: "검토된 프로그램 변경 건만 적용",
+      riskId: "IT-07", riskName: "승인 또는 테스트 절차 없이 변경이 수행될 위험", frequency: "Event Driven", controlType: "예방", keyControl: "Yes",
+      status: "정상", evidenceStatus: "준비 완료", ownerDept: "QA유닛", performer: "QA유닛", reviewer: "TA유닛",
+      note: "긴급 변경 예외 승인 포함", population: "프로그램 변경 및 배포 이력",
+      attributes: ["요청 문서 존재", "현업 및 IT 승인", "개발자/사용자 테스트 수행"], evidences: ["변경 요청서", "개발자 테스트", "사용자 테스트"], procedures: ["변경 이력 추출", "샘플링", "승인과 배포일 대조"],
+    },
+    {
+      id: "PC-02", cycle: "IT-01", process: "PC", subProcess: "프로그램 변경 관리",
+      title: "개발/테스트, 운영 환경의 분리", purpose: "임의의 프로그램 수정 방지",
+      riskId: "IT-07", riskName: "환경 미분리로 인한 부적절한 변경 위험", frequency: "Other", controlType: "예방", keyControl: "Yes",
+      status: "정상", evidenceStatus: "준비 완료", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "QA유닛",
+      note: "DEV/QAS/PRD 논리적 분리 확인", population: "환경별 IP 주소 및 설정",
+      attributes: ["DEV/QAS/PRD 환경 분리", "분리 설정 변경 시 승인"], evidences: ["환경별 IP 주소", "환경 분리 설정"], procedures: ["환경 분리 확인", "테스트 기간 변경 여부 확인", "해당 시 승인 확인"],
+    },
+    {
+      id: "PC-03", cycle: "IT-01", process: "PC", subProcess: "프로그램 변경 관리",
+      title: "프로그램 이관 승인", purpose: "운영 환경 이관 전 승인 확보",
+      riskId: "IT-07", riskName: "승인 없이 운영 이관 수행 위험", frequency: "Event Driven", controlType: "예방", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "QA유닛",
+      note: "운영 환경 이관 요청서 승인 핵심", population: "운영 환경 이관 이력",
+      attributes: ["이관 요청 문서 존재", "운영환경 이관 승인 존재", "승인 후 이관"], evidences: ["이관 요청서", "승인 증빙", "배포 이력"], procedures: ["이관 이력 추출", "샘플링", "승인일과 배포일 대조"],
+    },
+    {
+      id: "PC-04", cycle: "IT-01", process: "PC", subProcess: "프로그램 변경 관리",
+      title: "운영 환경 내 시스템 변경 불가", purpose: "운영 환경에서의 직접 변경 방지",
+      riskId: "IT-07", riskName: "운영환경 직접 수정 위험", frequency: "Event Driven", controlType: "예방", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "QA유닛",
+      note: "직접 수정 예외 시 승인 필요", population: "운영환경 직접 수정 내역",
+      attributes: ["운영환경 직접 수정 불가", "예외 수정 시 승인 존재"], evidences: ["접근 제한 내역", "예외 승인 문서"], procedures: ["접근 제한 확인", "직접 수정 건 존재 시 샘플링", "승인 여부 확인"],
+    },
+    {
+      id: "CO-01", cycle: "IT-01", process: "CO", subProcess: "오류 관리",
+      title: "시스템 운영 상 발생 오류에 대한 조치 및 보고", purpose: "운영 오류 적시 발견 및 해결",
+      riskId: "IT-11", riskName: "시스템 운영 오류가 적시에 해결되지 않을 위험", frequency: "Event Driven", controlType: "예방", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "QA유닛", performer: "QA유닛", reviewer: "TA유닛",
+      note: "이슈트래킹 게시글 기준", population: "이슈트래킹 내역",
+      attributes: ["오류 내역 포함", "조치 내역 포함"], evidences: ["이슈트래킹 게시글"], procedures: ["이슈트래킹 내역 추출", "샘플링", "조치 내역 확인"],
+    },
+    {
+      id: "CO-02", cycle: "IT-01", process: "CO", subProcess: "데이터 백업 및 복구",
+      title: "데이터 백업 이상 건에 대한 조치 및 보고", purpose: "데이터 백업을 통해 데이터 소실 대비",
+      riskId: "IT-09", riskName: "거래 데이터가 복구되지 않거나 손상될 위험", frequency: "Monthly", controlType: "적발", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "정보보호유닛",
+      note: "월별 백업 결과와 승인 내역 확인 필요", population: "월별 백업 결과 보고 문서",
+      attributes: ["In-scope 시스템 포함", "오류 조치 및 재수행", "IT 부서장 승인"], evidences: ["백업 결과 보고서", "정책 설정값", "승인 증빙"], procedures: ["월별 보고서 샘플 선정", "대상 시스템 확인", "오류 조치 및 승인 확인"],
+    },
+    {
+      id: "CO-03", cycle: "IT-01", process: "CO", subProcess: "물리적 보안",
+      title: "데이터센터 출입 로그 검토", purpose: "IT 주요 시설에 인가된 관리자만 접근 허용",
+      riskId: "IT-10", riskName: "IT 시설에 승인되지 않은 접근 발생 위험", frequency: "Quarterly", controlType: "예방", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "정보보호유닛",
+      note: "분기별 모니터링 및 보고", population: "데이터센터 출입 내역 모니터링 보고서",
+      attributes: ["분기별 모니터링 수행", "전결권자 보고"], evidences: ["출입내역 모니터링 보고서"], procedures: ["샘플 분기 확인", "모니터링 보고서 확인", "보고 여부 확인"],
+    },
+    {
+      id: "CO-04", cycle: "IT-01", process: "CO", subProcess: "데이터 백업 및 복구",
+      title: "데이터베이스 복구테스트의 실시 및 결과 보고", purpose: "시스템 및 데이터 손상 시 적시 복구",
+      riskId: "IT-09", riskName: "거래 데이터가 복구되지 않거나 손상될 위험", frequency: "Annual", controlType: "예방", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "정보보호유닛",
+      note: "연 1회 복구테스트", population: "데이터베이스 복구테스트 결과",
+      attributes: ["계획에 따라 복구테스트 수행", "결과 검토 및 보고"], evidences: ["복구테스트 결과 보고"], procedures: ["연간 복구테스트 수행 여부 확인", "결과 보고 여부 확인"],
+    },
+    {
+      id: "PD-01", cycle: "IT-01", process: "PD", subProcess: "프로그램 개발",
+      title: "프로그램 개발 승인 및 단위/통합/사용자 테스트", purpose: "승인된 개발 건만 운영 반영",
+      riskId: "IT-12", riskName: "주요 정보가 불완전하고 부정확하게 이관될 위험", frequency: "Event Driven", controlType: "예방", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "QA유닛", performer: "QA유닛", reviewer: "TA유닛",
+      note: "프로젝트 승인, 테스트, Go-Live 승인, 완료보고 포함", population: "운영환경 반영된 프로그램 개발 건",
+      attributes: ["사전 품의 존재", "유효한 테스트 수행", "운영 반영 전 승인 존재"], evidences: ["품의문", "테스트 결과", "Go-Live 요청서", "완료 보고서"], procedures: ["완료 개발 건 모집단 식별", "샘플링", "승인/테스트/이관/완료 보고 확인"],
+    },
+    {
+      id: "PD-02", cycle: "IT-01", process: "PD", subProcess: "프로그램 개발",
+      title: "데이터 정합성 테스트", purpose: "데이터 마이그레이션 시 정합성 보증",
+      riskId: "IT-13", riskName: "새로운 시스템 적용 시 불완전하고 부정확한 데이터 생성 위험", frequency: "Event Driven", controlType: "예방", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "QA유닛",
+      note: "데이터 이관 동반 개발 건만 대상", population: "데이터 마이그레이션 동반 개발 건",
+      attributes: ["이관 데이터 완전성/정확성 테스트 문서화"], evidences: ["데이터 마이그레이션 테스트 결과"], procedures: ["개발 건 중 데이터 이관 건 식별", "샘플링", "정합성 테스트 내역 확인"],
+    },
+    {
+      id: "PD-03", cycle: "IT-01", process: "PD", subProcess: "프로그램 개발",
+      title: "프로그램 개발 이슈 및 오류 관리", purpose: "개발 중 발생하는 오류를 적시에 해결",
+      riskId: "IT-13", riskName: "개발 프로젝트 중 오류 관리 미흡 위험", frequency: "Event Driven", controlType: "예방", keyControl: "No",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "QA유닛", performer: "QA유닛", reviewer: "TA유닛",
+      note: "프로젝트 기간 내 조치 필요", population: "프로젝트 이슈 및 오류 조치 내역",
+      attributes: ["이슈/오류 문서화", "프로젝트 기간 내 적시 처리"], evidences: ["프로젝트 이슈 및 오류 조치 내역"], procedures: ["완료 개발 건 식별", "샘플링", "이슈 및 조치 내역 확인"],
+    },
+    {
+      id: "PD-04", cycle: "IT-01", process: "PD", subProcess: "프로그램 개발",
+      title: "사용자 교육", purpose: "신규 프로그램에 대한 사용자 숙지 지원",
+      riskId: "IT-13", riskName: "신규 시스템 이해 부족으로 인한 오류 위험", frequency: "Event Driven", controlType: "예방", keyControl: "No",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "QA유닛", performer: "QA유닛", reviewer: "TA유닛",
+      note: "교육 또는 매뉴얼 배포 필요 건 대상", population: "교육 또는 매뉴얼 배포 필요 개발 건",
+      attributes: ["교육 또는 매뉴얼 배포 설계 및 수행"], evidences: ["교육 증빙", "매뉴얼 배포 내역"], procedures: ["교육 필요 개발 건 식별", "샘플링", "교육/배포 수행 여부 확인"],
+    },
+    {
+      id: "C-IT-Cyber-01", cycle: "IT-01", process: "CS", subProcess: "Cybersecurity",
+      title: "정보보호지침의 수립 및 제개정", purpose: "정보보안 프로세스 정책 미수립 위험 대응",
+      riskId: "R-Cyber-01", riskName: "정보보안 프로세스에 대한 정책 미수립 위험", frequency: "Annual", controlType: "예방", keyControl: "Yes",
+      status: "정상", evidenceStatus: "준비 완료", ownerDept: "정보보호유닛", performer: "정보보호유닛", reviewer: "TA유닛",
+      note: "제개정 시 CTO 승인 확인", population: "정보보호지침",
+      attributes: ["정보보호지침 관리", "제개정 시 CTO 승인"], evidences: ["정보보호지침", "전자결재 문서"], procedures: ["지침 확인", "제개정 건 승인 여부 확인"],
+    },
+    {
+      id: "C-IT-Cyber-02", cycle: "IT-02", process: "CS", subProcess: "Cybersecurity",
+      title: "정보보안 교육의 실행 및 결과 보고", purpose: "정보보안 교육 미흡 위험 대응",
+      riskId: "R-Cyber-02", riskName: "정보보안 교육이 적절하게 이루어지지 않을 위험", frequency: "Annual", controlType: "예방", keyControl: "Yes",
+      status: "정상", evidenceStatus: "준비 완료", ownerDept: "정보보호유닛", performer: "정보보호유닛", reviewer: "TA유닛",
+      note: "전직원 대상 연간 교육", population: "연간 정보보안 교육 결과",
+      attributes: ["교육 안내문 공지", "전직원 수료 여부 검토"], evidences: ["교육 안내문", "교육 수행 내역"], procedures: ["연간 교육 공지 확인", "수료 여부 검토 확인"],
+    },
+    {
+      id: "C-IT-Cyber-03", cycle: "IT-04", process: "CS", subProcess: "Cybersecurity",
+      title: "정보보안 대상 자산 및 인프라 목록 작성 및 업데이트", purpose: "주요 자산 보호 위험 대응",
+      riskId: "R-Cyber-04", riskName: "정보보안 주요 자산이 관리되지 않을 위험", frequency: "Annual", controlType: "예방", keyControl: "Yes",
+      status: "정상", evidenceStatus: "준비 완료", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "정보보호유닛",
+      note: "연 1회 자산 목록 검토 및 보고", population: "연간 정보보안 자산 목록 검토 보고",
+      attributes: ["자산 목록 검토 및 업데이트", "검토 결과 보고"], evidences: ["정보보안 자산 목록 검토 보고"], procedures: ["연간 검토 보고 확인", "업데이트 여부 및 보고 여부 확인"],
+    },
+    {
+      id: "C-IT-Cyber-04", cycle: "IT-05", process: "CS", subProcess: "Cybersecurity",
+      title: "ESM 상 감지된 특이상 분석, 조치 및 보고", purpose: "보안 사고 대응",
+      riskId: "R-Cyber-05", riskName: "정보보안 사고가 적시에 해결되지 않을 위험", frequency: "Monthly", controlType: "적발", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "정보보호유닛",
+      note: "월별 이벤트 분석보고서 검토", population: "통합보안관제 Ticket 조치사항 월별 보고",
+      attributes: ["대응 현황 검토", "이상 건 조치 결과 문서화", "검토 결과 보고"], evidences: ["이벤트 분석보고서"], procedures: ["월별 보고서 확인", "조치 결과 문서화 확인", "사내 보고 여부 확인"],
+    },
+    {
+      id: "C-IT-Cyber-05", cycle: "IT-08", process: "CS", subProcess: "Cybersecurity",
+      title: "네트워크 보안 장비의 운용 및 관리", purpose: "비인가 접근 차단",
+      riskId: "R-Cyber-08", riskName: "승인되지 않은 보안 설정 변경 위험", frequency: "Event Driven", controlType: "예방", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "정보보호유닛",
+      note: "보안 설정 변경 이력 관리", population: "네트워크 장비 보안 설정 변경 이력",
+      attributes: ["보안설정 변경 요청서 작성", "보안설정 변경 승인"], evidences: ["보안 설정 변경 요청 및 승인 문서"], procedures: ["변경 이력 입수", "샘플링", "적절한 요청/승인 확인"],
+    },
+    {
+      id: "C-IT-Cyber-06", cycle: "IT-09", process: "CS", subProcess: "Cybersecurity",
+      title: "원격접속 권한의 요청 및 승인", purpose: "원격접속 권한 적정 부여",
+      riskId: "R-Cyber-09", riskName: "원격접속 권한이 승인 없이 부여될 위험", frequency: "Event Driven", controlType: "예방", keyControl: "Yes",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "정보보호유닛",
+      note: "VDI/VPN 포함", population: "원격접속 권한 부여 이력",
+      attributes: ["권한 부여 요청서 작성", "전결권자 승인"], evidences: ["권한 신청 결재 문서"], procedures: ["권한 부여 이력 추출", "샘플링", "요청 및 승인 확인"],
+    },
+    {
+      id: "C-IT-Cyber-07", cycle: "IT-10", process: "CS", subProcess: "Cybersecurity",
+      title: "연간 정보보안 진단의 수행 및 결과보고", purpose: "취약점을 적시에 발견하고 대응",
+      riskId: "R-Cyber-10", riskName: "정보보안 취약점이 관리되지 않을 위험", frequency: "Annual", controlType: "예방", keyControl: "Yes",
+      status: "정상", evidenceStatus: "준비 완료", ownerDept: "정보보호유닛", performer: "정보보호유닛", reviewer: "TA유닛",
+      note: "취약점 조치 SLA 연동 필요", population: "연간 취약점 진단 결과 보고",
+      attributes: ["연 1회 취약점 점검 수행", "조치사항 문서화", "진단 결과 보고"], evidences: ["취약점 진단 결과 보고서", "조치 내역"], procedures: ["연간 결과 보고 확인", "조치 문서화 확인", "전결권자 보고 확인"],
+    },
+    {
+      id: "APD-11", cycle: "IT-01", process: "APD", subProcess: "권한 관리",
+      title: "공용 계정 사용 현황의 정기 검토", purpose: "공용 계정의 불필요 사용과 권한 남용 방지",
+      riskId: "IT-03", riskName: "공용 계정이 승인 없이 사용될 위험", frequency: "Monthly", controlType: "적발", keyControl: "No",
+      status: "점검 예정", evidenceStatus: "미수집", ownerDept: "정보보호유닛", performer: "정보보호유닛", reviewer: "QA유닛",
+      note: "월별 공용 계정 목록과 사용 로그 대조 필요", population: "월별 공용 계정 사용 로그",
+      attributes: ["공용 계정 목록 최신화", "사용 사유 검토", "미사용 계정 식별"], evidences: ["공용 계정 목록", "접속 로그", "검토 결과서"], procedures: ["공용 계정 목록 수령", "사용 로그 비교", "이상 계정 조치 여부 확인"],
+    },
+    {
+      id: "CO-05", cycle: "IT-01", process: "CO", subProcess: "배치 운영 관리",
+      title: "배치 작업 실패 건에 대한 조치 및 재수행", purpose: "배치 실패로 인한 데이터 누락과 운영 중단 방지",
+      riskId: "IT-11", riskName: "주요 배치 실패가 적시에 복구되지 않을 위험", frequency: "Daily", controlType: "예방", keyControl: "No",
+      status: "점검 예정", evidenceStatus: "수집 중", ownerDept: "개발 5유닛", performer: "개발 5유닛", reviewer: "정보보호유닛",
+      note: "실패 알림, 원인 분석, 재수행 결과까지 검토", population: "일별 배치 실패 및 재처리 이력",
+      attributes: ["실패 배치 식별", "원인 분석 기록", "재수행 성공 여부 확인"], evidences: ["배치 모니터링 로그", "장애 조치 내역", "재수행 결과"], procedures: ["일별 실패 건 추출", "원인 분석 문서 확인", "재수행 및 결과 보고 확인"],
+    },
+  ],
+  workflows: [
+    {
+      id: "WF-001",
+      controlId: "APD-01",
+      step: "권한 부여 이력 모집단 추출",
+      assignee: "각 권한통제 부서",
+      reviewer: "정보보호유닛",
+      dueDate: "2026-03-27",
+      status: "in_progress",
+      memo: "시스템별 조회 조건 정리 중",
+    },
+    {
+      id: "WF-002",
+      controlId: "APD-01",
+      step: "요청서 및 승인 문서 샘플링",
+      assignee: "정보보호유닛",
+      reviewer: "정보보호유닛",
+      dueDate: "2026-03-29",
+      status: "todo",
+      memo: "",
+    },
+    {
+      id: "WF-003",
+      controlId: "PC-01",
+      step: "변경 요청서와 배포 이력 대조",
+      assignee: "QA유닛",
+      reviewer: "TA유닛",
+      dueDate: "2026-03-26",
+      status: "done",
+      memo: "3건 샘플 검토 완료",
+    },
+    {
+      id: "WF-004",
+      controlId: "CO-02",
+      step: "월별 백업 결과 보고서 2건 확보",
+      assignee: "개발 5유닛",
+      reviewer: "정보보호유닛",
+      dueDate: "2026-03-30",
+      status: "todo",
+      memo: "",
+    },
+    {
+      id: "WF-005",
+      controlId: "PWC-01",
+      step: "최신 IT 정책서 승인본 및 공지 이력 확보",
+      assignee: "QA유닛",
+      reviewer: "정보보호유닛",
+      dueDate: "2026-03-28",
+      status: "in_progress",
+      memo: "공지 캡처 추가 요청 필요",
+    },
+  ],
+};
+
+const implementationStatusOrder = ["todo", "in_progress", "done"];
+const defaultPeople = [
+  { id: "USR-001", name: "정보보호유닛", role: "reviewer", team: "정보보호", accessRole: "user", email: "" },
+  { id: "USR-002", name: "QA유닛", role: "performer", team: "QA", accessRole: "user", email: "" },
+  { id: "USR-003", name: "TA유닛", role: "reviewer", team: "TA", accessRole: "user", email: "" },
+  { id: "USR-004", name: "개발 5유닛", role: "performer", team: "개발", accessRole: "user", email: "" },
+];
+const systemOptions = ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"];
+const controlCatalog = {
+  "PWC-01": {
+    process: "IT정책관리",
+    subProcess: "IT정책관리",
+    title: "IT 조직 SOD 및 IT 운영 프로세스 정책의 수립, 검토 및 공지",
+    keyControl: "Yes",
+    frequency: "Annual",
+    performDept: "QA유닛",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "APD-01": {
+    process: "계정 관리",
+    subProcess: "계정 관리",
+    title: "어플리케이션 계정 생성 및 권한 부여 시 승인",
+    keyControl: "Yes",
+    frequency: "Event Driven",
+    performDept: "각 권한통제 부서",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "APD-02": {
+    process: "계정 관리",
+    subProcess: "계정 관리",
+    title: "퇴사자 계정 잠금(계정 삭제/권한회수)",
+    keyControl: "No",
+    frequency: "Event Driven",
+    performDept: "각 권한통제 부서",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "APD-03": {
+    process: "계정 관리",
+    subProcess: "계정 관리",
+    title: "부서 이동자 권한 회수",
+    keyControl: "No",
+    frequency: "Event Driven",
+    performDept: "각 권한통제 부서",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "APD-04": {
+    process: "계정 관리",
+    subProcess: "계정 관리",
+    title: "어플리케이션 Super User/Admin 권한 모니터링",
+    keyControl: "Yes",
+    frequency: "Half-Bi-annual",
+    performDept: "각 권한통제 부서",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "APD-05": {
+    process: "계정 관리",
+    subProcess: "계정 관리",
+    title: "어플리케이션 사용자 권한 모니터링",
+    keyControl: "Yes",
+    frequency: "Half-Bi-annual",
+    performDept: "각 권한통제 부서",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "APD-06": {
+    process: "패스워드 관리",
+    subProcess: "패스워드 관리",
+    title: "어플리케이션 패스워드 및 시스템 보안 설정의 효과적 설정",
+    keyControl: "No",
+    frequency: "Other",
+    performDept: "정보보호유닛",
+    reviewDept: "QA유닛",
+    targetSystems: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "APD-07": {
+    process: "데이터 변경 관리",
+    subProcess: "데이터 변경 관리",
+    title: "DB 데이터 직접 변경 시 요청 및 승인",
+    keyControl: "Yes",
+    frequency: "Event Driven",
+    performDept: "개발 5유닛",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "APD-08": {
+    process: "DB 계정 관리",
+    subProcess: "DB 계정 관리",
+    title: "DB 계정 생성 및 접근 부여 시 요청 및 승인",
+    keyControl: "No",
+    frequency: "Event Driven",
+    performDept: "개발 5유닛",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "APD-09": {
+    process: "OS 계정 관리",
+    subProcess: "OS 계정 관리",
+    title: "OS 계정 생성 및 접근 권한 부여 시 요청 및 승인",
+    keyControl: "No",
+    frequency: "Event Driven",
+    performDept: "개발 5유닛",
+    reviewDept: "QA유닛",
+    targetSystems: ["판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "APD-10": {
+    process: "DB/OS 계정 모니터링",
+    subProcess: "DB/OS 계정 모니터링",
+    title: "DB/OS 접근 가능 사용자 및 관리자 권한 보유자 모니터링",
+    keyControl: "Yes",
+    frequency: "Half-Bi-annual",
+    performDept: "개발 5유닛",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "PC-01": {
+    process: "프로그램 변경 관리",
+    subProcess: "프로그램 변경 관리",
+    title: "어플리케이션 변경 승인 및 개발자/사용자 테스트",
+    keyControl: "Yes",
+    frequency: "Event Driven",
+    performDept: "QA유닛",
+    reviewDept: "TA유닛",
+    targetSystems: ["판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "PC-02": {
+    process: "프로그램 변경 관리",
+    subProcess: "프로그램 변경 관리",
+    title: "개발/테스트, 운영 환경의 분리",
+    keyControl: "Yes",
+    frequency: "Other",
+    performDept: "개발 5유닛",
+    reviewDept: "QA유닛",
+    targetSystems: ["영림원", "BI"],
+  },
+  "PC-03": {
+    process: "프로그램 변경 관리",
+    subProcess: "프로그램 변경 관리",
+    title: "프로그램 이관 승인",
+    keyControl: "Yes",
+    frequency: "Event Driven",
+    performDept: "개발 5유닛",
+    reviewDept: "QA유닛",
+    targetSystems: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "PC-04": {
+    process: "프로그램 변경 관리",
+    subProcess: "프로그램 변경 관리",
+    title: "운영 환경 내 시스템 변경 불가",
+    keyControl: "Yes",
+    frequency: "Event Driven",
+    performDept: "개발 5유닛",
+    reviewDept: "QA유닛",
+    targetSystems: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  },
+  "CO-01": {
+    process: "오류 관리",
+    subProcess: "오류 관리",
+    title: "시스템 운영 상 발생 오류에 대한 조치 및 보고",
+    keyControl: "Yes",
+    frequency: "Event Driven",
+    performDept: "QA유닛",
+    reviewDept: "TA유닛",
+    targetSystems: ["BI"],
+  },
+  "CO-02": {
+    process: "데이터 백업 및 복구",
+    subProcess: "데이터 백업 및 복구",
+    title: "데이터 백업 이상 건에 대한 조치 및 보고",
+    keyControl: "Yes",
+    frequency: "Monthly",
+    performDept: "개발 5유닛",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["BI"],
+  },
+  "CO-03": {
+    process: "물리적 보안",
+    subProcess: "물리적 보안",
+    title: "데이터센터 출입 로그 검토",
+    keyControl: "Yes",
+    frequency: "Quarterly",
+    performDept: "개발 5유닛",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["BI"],
+  },
+  "CO-04": {
+    process: "데이터 백업 및 복구",
+    subProcess: "데이터 백업 및 복구",
+    title: "데이터베이스 복구테스트의 실시 및 결과 보고",
+    keyControl: "Yes",
+    frequency: "Annual",
+    performDept: "개발 5유닛",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["BI"],
+  },
+  "PD-01": {
+    process: "프로그램 개발",
+    subProcess: "프로그램 개발",
+    title: "프로그램 개발 승인 및 단위/통합/사용자 테스트",
+    keyControl: "Yes",
+    frequency: "Event Driven",
+    performDept: "QA유닛",
+    reviewDept: "TA유닛",
+    targetSystems: ["BI"],
+  },
+  "PD-02": {
+    process: "프로그램 개발",
+    subProcess: "프로그램 개발",
+    title: "데이터 정합성 테스트",
+    keyControl: "Yes",
+    frequency: "Event Driven",
+    performDept: "개발 5유닛",
+    reviewDept: "QA유닛",
+    targetSystems: ["BI"],
+  },
+  "PD-03": {
+    process: "프로그램 개발",
+    subProcess: "프로그램 개발",
+    title: "프로그램 개발 이슈 및 오류 관리",
+    keyControl: "No",
+    frequency: "Event Driven",
+    performDept: "QA유닛",
+    reviewDept: "TA유닛",
+    targetSystems: ["BI"],
+  },
+  "PD-04": {
+    process: "프로그램 개발",
+    subProcess: "프로그램 개발",
+    title: "사용자 교육",
+    keyControl: "No",
+    frequency: "Event Driven",
+    performDept: "QA유닛",
+    reviewDept: "TA유닛",
+    targetSystems: ["BI"],
+  },
+  "C-IT-Cyber-01": {
+    process: "Cybersecurity",
+    subProcess: "Cybersecurity",
+    title: "정보보호지침의 수립 및 제·개정",
+    keyControl: "Yes",
+    frequency: "Annual",
+    performDept: "정보보호유닛",
+    reviewDept: "TA유닛",
+    targetSystems: ["BI"],
+  },
+  "C-IT-Cyber-02": {
+    process: "Cybersecurity",
+    subProcess: "Cybersecurity",
+    title: "정보보안 교육의 실행 및 결과 보고",
+    keyControl: "Yes",
+    frequency: "Annual",
+    performDept: "정보보호유닛",
+    reviewDept: "TA유닛",
+    targetSystems: ["BI"],
+  },
+  "C-IT-Cyber-03": {
+    process: "Cybersecurity",
+    subProcess: "Cybersecurity",
+    title: "정보보안 대상 자산 및 인프라 목록 작성 및 업데이트",
+    keyControl: "Yes",
+    frequency: "Annual",
+    performDept: "개발 5유닛",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["BI"],
+  },
+  "C-IT-Cyber-04": {
+    process: "Cybersecurity",
+    subProcess: "Cybersecurity",
+    title: "ESM(통합 관제 시스템) 상 감지된 특이상 분석, 조치 및 보고",
+    keyControl: "Yes",
+    frequency: "Monthly",
+    performDept: "개발 5유닛",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["BI"],
+  },
+  "C-IT-Cyber-05": {
+    process: "Cybersecurity",
+    subProcess: "Cybersecurity",
+    title: "네트워크 보안 장비(방화벽, 보안프로토콜, 라우터 등)의 운용 및 관리",
+    keyControl: "Yes",
+    frequency: "Event Driven",
+    performDept: "개발 5유닛",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["BI"],
+  },
+  "C-IT-Cyber-06": {
+    process: "Cybersecurity",
+    subProcess: "Cybersecurity",
+    title: "원격접속 권한의 요청 및 승인",
+    keyControl: "Yes",
+    frequency: "Event Driven",
+    performDept: "개발 5유닛",
+    reviewDept: "정보보호유닛",
+    targetSystems: ["BI"],
+  },
+  "C-IT-Cyber-07": {
+    process: "Cybersecurity",
+    subProcess: "Cybersecurity",
+    title: "연간 정보보안 진단의 수행 및 결과보고",
+    keyControl: "Yes",
+    frequency: "Annual",
+    performDept: "정보보호유닛",
+    reviewDept: "TA유닛",
+    targetSystems: ["BI"],
+  },
+};
+const defaultSystemsByCategory = {
+  PWC: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  APD: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  PC: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+  CO: ["영림원", "판다", "BI"],
+  PD: ["영림원", "판다", "BI"],
+  CS: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
+};
+
+const initialRegistrationForm = {
+  controlId: "",
+  process: "계정관리",
+  subProcess: "",
+  risk: "",
+  controlName: "",
+  controlObjective: "",
+  controlActivity: "",
+  description: "",
+  frequency: "수시",
+  controlType: "예방",
+  automationLevel: "수동",
+  keyControl: false,
+  ownerDept: "",
+  evidence: "",
+  testMethod: "",
+  population: "",
+  targetSystems: [],
+  policyReference: "",
+  deficiencyImpact: "높음",
+};
+
+const registrationRequiredFields = [
+  "controlId",
+  "process",
+  "risk",
+  "controlName",
+  "controlObjective",
+  "controlActivity",
+  "description",
+  "frequency",
+  "controlType",
+  "ownerDept",
+  "evidence",
+  "targetSystems",
+];
+
+const registrationExamples = [
+  {
+    id: "PWC-01",
+    name: "IT 조직 SOD 및 운영 정책 수립",
+    process: "IT 정책관리",
+    type: "예방",
+    key: true,
+    owner: "QA부서",
+  },
+  {
+    id: "APD-01",
+    name: "애플리케이션 계정 생성 시 승인",
+    process: "계정관리",
+    type: "예방",
+    key: true,
+    owner: "각 부서",
+  },
+  {
+    id: "APD-02",
+    name: "퇴사자 계정 잠금 및 삭제",
+    process: "계정관리",
+    type: "예방 + 탐지",
+    key: false,
+    owner: "각 부서",
+  },
+];
+
+function uniqueSystems(systems) {
+  return [...new Set((systems ?? []).filter(Boolean))];
+}
+
+function isRegistrationFieldFilled(form, key) {
+  if (key === "targetSystems") {
+    return Array.isArray(form.targetSystems) && form.targetSystems.length > 0;
+  }
+
+  return String(form[key] ?? "").trim().length > 0;
+}
+
+function normalizeControl(control) {
+  const catalog = controlCatalog[control.id] ?? {};
+  const performDept = control.performDept ?? control.performer ?? control.ownerDept ?? "";
+  const reviewDept = control.reviewDept ?? control.reviewer ?? "";
+  const normalizedSystems =
+    uniqueSystems(catalog.targetSystems ?? control.targetSystems).length > 0
+      ? uniqueSystems(catalog.targetSystems ?? control.targetSystems)
+      : defaultSystemsByCategory[catalog.process ?? control.process] ?? [];
+
+  return {
+    ...control,
+    ...catalog,
+    process: catalog.process ?? control.process?.trim() ?? "",
+    subProcess: catalog.subProcess ?? control.subProcess?.trim() ?? catalog.process ?? control.process?.trim() ?? "",
+    title: catalog.title ?? control.title?.replace(/\s+/g, " ").trim() ?? "",
+    controlType: catalog.controlType ?? control.controlType ?? "예방",
+    keyControl: catalog.keyControl ?? control.keyControl ?? "No",
+    ownerDept: catalog.performDept ?? performDept,
+    performer: catalog.performDept ?? performDept,
+    reviewer: catalog.reviewDept ?? reviewDept,
+    performDept: catalog.performDept ?? performDept,
+    reviewDept: catalog.reviewDept ?? reviewDept,
+    frequency: catalog.frequency ?? control.frequency,
+    targetSystems: normalizedSystems,
+    riskName: control.riskName ?? "",
+    controlObjective: control.controlObjective ?? control.purpose ?? "",
+    controlActivity: control.controlActivity ?? "",
+    description: control.description ?? control.population ?? "",
+    automationLevel: control.automationLevel ?? "",
+    ownerPerson: control.ownerPerson ?? control.reviewer ?? "",
+    evidenceText: control.evidenceText ?? "",
+    testMethod: control.testMethod ?? "",
+    policyReference: control.policyReference ?? "",
+    deficiencyImpact: control.deficiencyImpact ?? "",
+    evidenceFiles: Array.isArray(control.evidenceFiles) ? control.evidenceFiles : [],
+    attributes: Array.isArray(control.attributes) ? control.attributes : [],
+    evidences: Array.isArray(control.evidences) ? control.evidences : [],
+    procedures: Array.isArray(control.procedures) ? control.procedures : [],
+  };
+}
+
+async function uploadEvidenceFiles(controlId, files) {
+  const localFiles = files.map((file) => ({
+    name: file.name,
+    size: file.size,
+    uploadedAt: new Date().toISOString(),
+    url: "",
+  }));
+
+  if (!GOOGLE_SCRIPT_URL || files.length === 0) {
+    return {
+      uploaded: false,
+      files: localFiles,
+    };
+  }
+
+  const result = await uploadEvidenceToDrive(GOOGLE_SCRIPT_URL, controlId, files);
+  return {
+    uploaded: true,
+    files: Array.isArray(result.files) && result.files.length > 0
+      ? result.files
+      : localFiles,
+  };
+}
+
+function createDefaultWorkflowSeeds(controls) {
+  const baseDate = new Date("2026-03-25");
+
+  return controls.flatMap((control, controlIndex) => {
+    const steps = [
+      {
+        step: `${control.id} 모집단 및 기준 자료 확보`,
+        assignee: control.performer,
+        reviewer: control.reviewer,
+        status: controlIndex % 5 === 0 ? "in_progress" : "todo",
+        memo: control.population,
+      },
+      {
+        step: `${control.id} 핵심 증빙 수집 및 검토`,
+        assignee: control.performer,
+        reviewer: control.reviewer,
+        status: controlIndex % 7 === 0 ? "done" : "todo",
+        memo: control.evidences.slice(0, 2).join(", "),
+      },
+      {
+        step: `${control.id} 결과 검토 및 완료 보고`,
+        assignee: control.performer,
+        reviewer: control.reviewer,
+        status: "todo",
+        memo: `${control.frequency} 주기 기준 결과 정리`,
+      },
+    ];
+
+    return steps.map((step, stepIndex) => {
+      const dueDate = new Date(baseDate);
+      dueDate.setDate(baseDate.getDate() + controlIndex + stepIndex);
+
+      return {
+        id: `WF-${String(controlIndex * 3 + stepIndex + 1).padStart(3, "0")}`,
+        controlId: control.id,
+        step: step.step,
+        assignee: step.assignee,
+        reviewer: step.reviewer,
+        dueDate: dueDate.toISOString().slice(0, 10),
+        status: step.status,
+        memo: step.memo,
+      };
+    });
+  });
+}
+
+defaultData.controls = defaultData.controls.map(normalizeControl);
+defaultData.workflows = createDefaultWorkflowSeeds(defaultData.controls);
+
+function mergeMissingWorkflows(controls, workflows) {
+  const existingControlIds = new Set(workflows.map((workflow) => workflow.controlId));
+  const missingControls = controls.filter((control) => !existingControlIds.has(control.id));
+
+  if (missingControls.length === 0) {
+    return workflows;
+  }
+
+  const seedOffset = workflows.length;
+  const seeded = createDefaultWorkflowSeeds(missingControls).map((workflow, index) => ({
+    ...workflow,
+    id: `WF-${String(seedOffset + index + 1).padStart(3, "0")}`,
+  }));
+
+  return [...workflows, ...seeded];
+}
+
+function loadWorkspace() {
+  const saved = window.localStorage.getItem(STORAGE_KEY);
+  if (!saved) return { ...structuredClone(defaultData), people: structuredClone(defaultPeople) };
+
+  try {
+    const parsed = JSON.parse(saved);
+    if (parsed && Array.isArray(parsed.controls) && Array.isArray(parsed.workflows)) {
+      return {
+        ...parsed,
+        controls: parsed.controls.map(normalizeControl),
+        workflows: mergeMissingWorkflows(parsed.controls.map(normalizeControl), parsed.workflows),
+        people: Array.isArray(parsed.people) ? parsed.people : structuredClone(defaultPeople),
+      };
+    }
+  } catch {}
+
+  return { ...structuredClone(defaultData), people: structuredClone(defaultPeople) };
+}
+
+function persistWorkspace(workspace) {
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
+}
+
+function statusClass(status) {
+  if (status === "정상" || status === "점검 완료") return "status-normal";
+  if (status === "점검 중" || status === "점검 예정") return "status-warning";
+  return "status-danger";
+}
+
+function isCompletedStatus(status) {
+  return status === "정상" || status === "점검 완료";
+}
+
+function deriveAssignmentStatus(executionNote, reviewChecked) {
+  if (reviewChecked === "검토 완료") return "점검 완료";
+  if (executionNote.trim()) return "점검 중";
+  return "점검 예정";
+}
+
+function controlProgressValue(control) {
+  const targets = {
+    Daily: 365,
+    Weekly: 52,
+    Monthly: 12,
+    Quarterly: 4,
+    "Half-Bi-annual": 2,
+    Annual: 1,
+    "Event Driven": 1,
+    Other: 1,
+    일별: 365,
+    주별: 52,
+    월별: 12,
+    분기별: 4,
+    반기별: 2,
+    "연 1회 + 변경 시": 1,
+    "이벤트 발생 시": 1,
+  };
+
+  const target = targets[control.frequency];
+  if (!target) {
+    return null;
+  }
+
+  let completedCount = 0;
+  if (control.status === "정상" || control.status === "점검 완료") {
+    completedCount = 1;
+  } else if (control.status === "점검 중") {
+    completedCount = 0.5;
+  }
+
+  return Math.min(100, Math.round((completedCount / target) * 100));
+}
+
+const frequencyOrder = [
+  "Daily",
+  "Weekly",
+  "Monthly",
+  "Quarterly",
+  "Half-Bi-annual",
+  "Other",
+  "Annual",
+  "Event Driven",
+  "일별",
+  "주별",
+  "월별",
+  "분기별",
+  "반기별",
+  "연 1회 + 변경 시",
+  "이벤트 발생 시",
+];
+
+const frequencyLabelMap = {
+  Daily: "Daily",
+  Weekly: "Weekly",
+  Monthly: "Monthly",
+  Quarterly: "Quarterly",
+  "Half-Bi-annual": "Half-Bi-annual",
+  Annual: "Annual",
+  "Event Driven": "Event Driven",
+  Other: "Other",
+};
+
+const controlGroupOrder = ["PWC", "APD", "PC", "CO", "PD", "CS"];
+
+function toDashboardAnchor(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function evidenceClass(status) {
+  if (status === "준비 완료") return "status-normal";
+  if (status === "수집 중") return "status-warning";
+  return "status-danger";
+}
+
+function workflowClass(status) {
+  if (status === "done") return "status-normal";
+  if (status === "in_progress") return "status-warning";
+  return "status-danger";
+}
+
+function workflowLabel(status) {
+  if (status === "done") return "완료";
+  if (status === "in_progress") return "진행 중";
+  return "대기";
+}
+
+function DashboardIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="3" y="3" width="8" height="8" rx="2" fill="currentColor" />
+      <rect x="13" y="3" width="8" height="5" rx="2" fill="currentColor" opacity="0.72" />
+      <rect x="13" y="10" width="8" height="11" rx="2" fill="currentColor" />
+      <rect x="3" y="13" width="8" height="8" rx="2" fill="currentColor" opacity="0.72" />
+    </svg>
+  );
+}
+
+function ControlIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="4" y="4" width="16" height="16" rx="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M8 9h8M8 12h8M8 15h5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PeopleIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="9" cy="9" r="3" fill="currentColor" />
+      <circle cx="17" cy="10" r="2.5" fill="currentColor" opacity="0.72" />
+      <path d="M4.5 18a4.5 4.5 0 0 1 9 0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M13.5 18a3.6 3.6 0 0 1 7 0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity="0.72" />
+    </svg>
+  );
+}
+
+function ShieldCheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3 5 6v5c0 5 3.4 8.5 7 10 3.6-1.5 7-5 7-10V6l-7-3Z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m9.2 12.3 1.9 1.9 3.8-4.1" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function FileStackIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 4h8l3 3v11a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M16 4v4h4M9 12h6M9 16h6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function OwnerIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="8" r="3.2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M5 19a7 7 0 0 1 14 0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CheckBadgeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m8.5 12.2 2.2 2.2 4.8-5.1" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function AlertIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 4 3.5 19h17L12 4Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="M12 9v4.5M12 17h.01" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function integrationClass(status) {
+  if (status === "연결됨") return "status-normal";
+  if (status === "미확인") return "status-warning";
+  return "status-danger";
+}
+
+function nextWorkflowStatus(status) {
+  const index = implementationStatusOrder.indexOf(status);
+  return implementationStatusOrder[Math.min(index + 1, implementationStatusOrder.length - 1)];
+}
+
+function formatDate(value) {
+  return new Intl.DateTimeFormat("ko-KR", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(value));
+}
+
+function progressForControl(controlId, workflows) {
+  const related = workflows.filter((workflow) => workflow.controlId === controlId);
+  const done = related.filter((workflow) => workflow.status === "done").length;
+  return {
+    total: related.length,
+    done,
+    rate: related.length === 0 ? 0 : Math.round((done / related.length) * 100),
+  };
+}
+
+function summarizeByProcess(controls, workflows) {
+  const map = new Map();
+
+  for (const control of controls) {
+    const current = map.get(control.process) ?? {
+      process: control.process,
+      controls: 0,
+      pending: 0,
+      done: 0,
+      workflowTotal: 0,
+      workflowDone: 0,
+      reviewers: new Set(),
+    };
+    const progress = progressForControl(control.id, workflows);
+    current.controls += 1;
+    current.pending += control.status === "정상" ? 0 : 1;
+    current.done += progress.rate === 100 ? 1 : 0;
+    current.workflowTotal += progress.total;
+    current.workflowDone += progress.done;
+    current.reviewers.add(control.reviewer);
+    map.set(control.process, current);
+  }
+
+  return [...map.values()].map((item) => ({
+    ...item,
+    progressRate: item.workflowTotal === 0 ? 0 : Math.round((item.workflowDone / item.workflowTotal) * 100),
+    reviewers: [...item.reviewers],
+  }));
+}
+
+function renderSystemChips(systems) {
+  if (!systems || systems.length === 0) {
+    return <span className="empty-text">미지정</span>;
+  }
+
+  return (
+    <div className="system-chip-list">
+      {systems.map((system) => (
+        <span className="system-chip" key={system}>
+          {system}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function preserveDisplayLineBreaks(value) {
+  const text = String(value ?? "");
+  if (!text) {
+    return "";
+  }
+
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/([^\n])\s(?=\d+\.\s)/g, "$1\n");
+}
+
+function decodeJwtPayload(token) {
+  try {
+    const payload = token.split(".")[1];
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = atob(normalized);
+    const escaped = decoded
+      .split("")
+      .map((char) => `%${`00${char.charCodeAt(0).toString(16)}`.slice(-2)}`)
+      .join("");
+    return JSON.parse(decodeURIComponent(escaped));
+  } catch {
+    return null;
+  }
+}
+
+function loadAuthSession() {
+  try {
+    const saved = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!saved) {
+      return null;
+    }
+
+    const parsed = JSON.parse(saved);
+    if (!parsed?.email || !String(parsed.email).toLowerCase().endsWith("@muhayu.com")) {
+      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export default function App() {
+  const [authUser, setAuthUser] = useState(() => loadAuthSession());
+  const [authError, setAuthError] = useState("");
+  const [workspace, setWorkspace] = useState(() => loadWorkspace());
+  const [currentView, setCurrentView] = useState("dashboard");
+  const [selectedControlId, setSelectedControlId] = useState("");
+  const [processFilter, setProcessFilter] = useState("전체");
+  const [controlListPage, setControlListPage] = useState(1);
+  const [controlPanelMode, setControlPanelMode] = useState("create");
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [registrationForm, setRegistrationForm] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem(REGISTRATION_DRAFT_KEY);
+      return saved ? { ...initialRegistrationForm, ...JSON.parse(saved) } : initialRegistrationForm;
+    } catch {
+      return initialRegistrationForm;
+    }
+  });
+  const [registrationCategoryFilter, setRegistrationCategoryFilter] = useState("전체");
+  const [registrationListPage, setRegistrationListPage] = useState(1);
+  const [registrationSelectedControlId, setRegistrationSelectedControlId] = useState("");
+  const [roleAssignmentControlId, setRoleAssignmentControlId] = useState("");
+  const [evidenceInputCount, setEvidenceInputCount] = useState(1);
+  const [assignmentExecutionNote, setAssignmentExecutionNote] = useState("");
+  const [assignmentReviewer, setAssignmentReviewer] = useState("");
+  const [assignmentReviewChecked, setAssignmentReviewChecked] = useState("미검토");
+  const [dashboardView, setDashboardView] = useState("frequency");
+  const [integrationStatus, setIntegrationStatus] = useState(() => ({
+    spreadsheet: GOOGLE_SCRIPT_URL ? "미확인" : "미설정",
+    drive: GOOGLE_SCRIPT_URL ? "미확인" : "미설정",
+  }));
+  const googleLoginRef = useRef(null);
+
+  const { controls, workflows, people } = workspace;
+  const selectedControl = controls.find((control) => control.id === selectedControlId) ?? null;
+  const roleAssignmentControl = controls.find((control) => control.id === roleAssignmentControlId) ?? controls[0] ?? null;
+  const processSummary = summarizeByProcess(controls, workflows);
+  const processOptions = ["전체", ...new Set(controls.map((control) => control.process))];
+  const performerPeople = people.filter((person) => person.role === "performer" || person.role === "both");
+  const reviewerPeople = people.filter((person) => person.role === "reviewer" || person.role === "both");
+  const memberDirectory = useMemo(() => {
+    const syncedPeople = people.map((person) => ({
+      ...person,
+      email: person.email ?? "",
+      accessRole: person.accessRole ?? "user",
+    }));
+
+    return [
+      {
+        id: "AUTH-ADMIN",
+        name: authUser?.name ?? "관리자",
+        email: authUser?.email ?? "",
+        team: "관리자",
+        accessRole: "admin",
+        locked: true,
+      },
+      ...syncedPeople,
+    ];
+  }, [authUser, people]);
+
+  const visibleControls =
+    processFilter === "전체" ? controls : controls.filter((control) => control.process === processFilter);
+  const totalControlPages = Math.max(1, Math.ceil(visibleControls.length / 10));
+  const currentControlPage = Math.min(controlListPage, totalControlPages);
+  const limitedControls = visibleControls.slice((currentControlPage - 1) * 10, currentControlPage * 10);
+  const registrationCompletion = useMemo(() => {
+    const filled = registrationRequiredFields.filter((key) => isRegistrationFieldFilled(registrationForm, key)).length;
+    return Math.round((filled / registrationRequiredFields.length) * 100);
+  }, [registrationForm]);
+  const registrationMissingFields = registrationRequiredFields.filter((key) => !isRegistrationFieldFilled(registrationForm, key));
+  const canSubmitRegistration = registrationMissingFields.length === 0;
+  const registrationCategoryOptions = ["전체", ...new Set(controls.map((control) => control.process))];
+  const registrationVisibleControls =
+    registrationCategoryFilter === "전체"
+      ? controls
+      : controls.filter((control) => control.process === registrationCategoryFilter);
+  const registrationTotalPages = Math.max(1, Math.ceil(registrationVisibleControls.length / 10));
+  const registrationCurrentPage = Math.min(registrationListPage, registrationTotalPages);
+  const registrationPagedControls = registrationVisibleControls.slice(
+    (registrationCurrentPage - 1) * 10,
+    registrationCurrentPage * 10,
+  );
+  const registrationSelectedControl =
+    controls.find((control) => control.id === registrationSelectedControlId)
+    ?? registrationPagedControls[0]
+    ?? controls[0]
+    ?? null;
+  const assignmentStatus = deriveAssignmentStatus(assignmentExecutionNote, assignmentReviewChecked);
+  const controlProgressGroups = useMemo(() => {
+    const grouped = controls.reduce((acc, control) => {
+      const frequency = control.frequency || "미지정";
+      const progress = controlProgressValue(control);
+      if (frequency === "수시" || progress == null) {
+        return acc;
+      }
+      if (!acc[frequency]) {
+        acc[frequency] = [];
+      }
+      acc[frequency].push({
+        id: control.id,
+        title: control.title,
+        process: control.process,
+        progress,
+        status: control.status || "점검 예정",
+      });
+      return acc;
+    }, {});
+
+    return Object.entries(grouped)
+      .sort(([left], [right]) => {
+        const leftIndex = frequencyOrder.indexOf(left);
+        const rightIndex = frequencyOrder.indexOf(right);
+        const safeLeft = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex;
+        const safeRight = rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex;
+        return safeLeft - safeRight || left.localeCompare(right, "ko");
+      })
+      .map(([frequency, items]) => ({
+        frequency,
+        label: frequencyLabelMap[frequency] ?? frequency,
+        items,
+      }));
+  }, [controls]);
+  const dashboardStatusSummary = useMemo(() => ({
+    total: controls.length,
+    inProgress: controls.filter((control) => control.status === "점검 중").length,
+    completed: controls.filter((control) => control.status === "정상" || control.status === "점검 완료").length,
+    scheduled: controls.filter((control) => control.status === "점검 예정").length,
+  }), [controls]);
+  const dashboardControlItems = useMemo(
+    () =>
+      controls.map((control) => ({
+        id: control.id,
+        title: control.title,
+        process: control.process,
+        frequency: frequencyLabelMap[control.frequency] ?? control.frequency ?? "-",
+        progress: controlProgressValue(control) ?? 0,
+        status: control.status || "점검 예정",
+      })),
+    [controls],
+  );
+  const dashboardControlGroups = useMemo(() => {
+    const grouped = dashboardControlItems.reduce((acc, item) => {
+      const groupKey = item.id.split("-")[0] || "기타";
+      if (!acc[groupKey]) {
+        acc[groupKey] = [];
+      }
+      acc[groupKey].push(item);
+      return acc;
+    }, {});
+
+    return Object.entries(grouped)
+      .sort(([left], [right]) => {
+        const leftIndex = controlGroupOrder.indexOf(left);
+        const rightIndex = controlGroupOrder.indexOf(right);
+        const safeLeft = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex;
+        const safeRight = rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex;
+        return safeLeft - safeRight || left.localeCompare(right, "ko");
+      })
+      .map(([group, items]) => ({
+        group,
+        items,
+      }));
+  }, [dashboardControlItems]);
+  const dashboardAnchorTargets = useMemo(() => ({
+    firstControl: dashboardControlItems[0]?.id ?? "",
+    inProgress: dashboardControlItems.find((item) => item.status === "점검 중")?.id ?? "",
+    completed: dashboardControlItems.find((item) => item.status === "정상" || item.status === "점검 완료")?.id ?? "",
+    scheduled: dashboardControlItems.find((item) => item.status === "점검 예정")?.id ?? "",
+    firstCategory: processSummary[0]?.process ?? "",
+    completedCategory: processSummary.find((item) => item.pending === 0)?.process ?? "",
+    pendingCategory: processSummary.find((item) => item.pending > 0)?.process ?? "",
+  }), [dashboardControlItems, processSummary]);
+  const dashboardSummaryCards = useMemo(() => {
+    if (dashboardView === "frequency") {
+      const countByFrequency = (key) =>
+        controlProgressGroups.find((group) => group.frequency === key)?.items.length ?? 0;
+
+      return [
+        { label: "Monthly", value: `${countByFrequency("Monthly")}건`, targetId: "dashboard-frequency-monthly" },
+        { label: "Quarterly", value: `${countByFrequency("Quarterly")}건`, targetId: "dashboard-frequency-quarterly" },
+        { label: "Half-Bi-annual", value: `${countByFrequency("Half-Bi-annual")}건`, targetId: "dashboard-frequency-half-bi-annual" },
+        { label: "Annual", value: `${countByFrequency("Annual")}건`, targetId: "dashboard-frequency-annual" },
+        { label: "Event Driven", value: `${countByFrequency("Event Driven")}건`, targetId: "dashboard-frequency-event-driven" },
+        { label: "Other", value: `${countByFrequency("Other")}건`, targetId: "dashboard-frequency-other" },
+      ];
+    }
+
+    if (dashboardView === "category") {
+      const completedCategories = processSummary.filter((item) => item.pending === 0).length;
+      const pendingCategories = processSummary.filter((item) => item.pending > 0).length;
+      const averageProgress =
+        processSummary.length === 0
+          ? 0
+          : Math.round(processSummary.reduce((sum, item) => sum + item.progressRate, 0) / processSummary.length);
+
+      return [
+        { label: "카테고리", value: `${processSummary.length}개`, targetId: "dashboard-category-root" },
+        { label: "완료 카테고리", value: `${completedCategories}개`, targetId: dashboardAnchorTargets.completedCategory ? `dashboard-category-${toDashboardAnchor(dashboardAnchorTargets.completedCategory)}` : "dashboard-category-root" },
+        { label: "관리 필요", value: `${pendingCategories}개`, targetId: dashboardAnchorTargets.pendingCategory ? `dashboard-category-${toDashboardAnchor(dashboardAnchorTargets.pendingCategory)}` : "dashboard-category-root" },
+        { label: "평균 진행률", value: `${averageProgress}%`, targetId: "dashboard-category-root" },
+      ];
+    }
+
+    return [
+      { label: "전체 통제", value: `${dashboardStatusSummary.total}건`, targetId: "dashboard-control-root" },
+      { label: "진행 중", value: `${dashboardStatusSummary.inProgress}건`, targetId: dashboardAnchorTargets.inProgress ? `dashboard-control-${toDashboardAnchor(dashboardAnchorTargets.inProgress)}` : "dashboard-control-root" },
+      { label: "완료", value: `${dashboardStatusSummary.completed}건`, targetId: dashboardAnchorTargets.completed ? `dashboard-control-${toDashboardAnchor(dashboardAnchorTargets.completed)}` : "dashboard-control-root" },
+      { label: "예정", value: `${dashboardStatusSummary.scheduled}건`, targetId: dashboardAnchorTargets.scheduled ? `dashboard-control-${toDashboardAnchor(dashboardAnchorTargets.scheduled)}` : "dashboard-control-root" },
+    ];
+  }, [controlProgressGroups, dashboardAnchorTargets, dashboardStatusSummary, dashboardView, processSummary]);
+  const summary = useMemo(() => {
+    const doneCount = workflows.filter((workflow) => workflow.status === "done").length;
+    return {
+      totalControls: controls.length,
+      totalProcesses: new Set(controls.map((control) => control.process)).size,
+      pendingControls: controls.filter((control) => control.status !== "정상").length,
+      workflowRate: workflows.length === 0 ? "0%" : `${Math.round((doneCount / workflows.length) * 100)}%`,
+    };
+  }, [controls, workflows]);
+
+  const menuItems = [
+    { key: "dashboard", label: "대시보드", icon: <DashboardIcon /> },
+    { key: "control-list", label: "통제 목록", icon: <ControlIcon /> },
+    { key: "controls", label: "통제 운영", icon: <ControlIcon /> },
+    { key: "register", label: "통제 등록/수정", icon: <ControlIcon /> },
+    { key: "people", label: "회원 관리", icon: <PeopleIcon /> },
+  ];
+
+  function handleViewChange(nextView) {
+    if (nextView === "controls") {
+      setProcessFilter("전체");
+      setControlListPage(1);
+      setSelectedControlId(controls[0]?.id ?? "");
+    }
+    setCurrentView(nextView);
+    if (window.matchMedia("(max-width: 960px)").matches) {
+      setIsSidebarOpen(false);
+    }
+  }
+
+  function moveToDashboardTarget(targetId) {
+    const element = document.getElementById(targetId);
+    if (!element) {
+      return;
+    }
+    element.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function handleLoginSuccess(response) {
+    const payload = decodeJwtPayload(response?.credential ?? "");
+    const email = String(payload?.email ?? "").toLowerCase();
+
+    if (!payload || !payload.email_verified || !email.endsWith("@muhayu.com")) {
+      setAuthError("muhayu.com 계정만 로그인할 수 있습니다.");
+      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+      setAuthUser(null);
+      return;
+    }
+
+    const nextUser = {
+      email,
+      name: payload.name ?? email,
+      picture: payload.picture ?? "",
+    };
+
+    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextUser));
+    setAuthError("");
+    setAuthUser(nextUser);
+  }
+
+  function handleLogout() {
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    window.google?.accounts?.id?.disableAutoSelect?.();
+    setAuthUser(null);
+    setAuthError("");
+  }
+
+  useEffect(() => {
+    if (authUser || !GOOGLE_CLIENT_ID || !googleLoginRef.current) {
+      return;
+    }
+
+    let cancelled = false;
+
+    function renderGoogleLogin() {
+      if (cancelled || !googleLoginRef.current || !window.google?.accounts?.id) {
+        return;
+      }
+
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: handleLoginSuccess,
+        auto_select: false,
+        cancel_on_tap_outside: true,
+        hd: "muhayu.com",
+      });
+      googleLoginRef.current.innerHTML = "";
+      window.google.accounts.id.renderButton(googleLoginRef.current, {
+        theme: "outline",
+        size: "large",
+        shape: "rectangular",
+        text: "signin_with",
+        width: 320,
+      });
+    }
+
+    if (window.google?.accounts?.id) {
+      renderGoogleLogin();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const existingScript = document.querySelector('script[data-google-identity="true"]');
+    if (existingScript) {
+      existingScript.addEventListener("load", renderGoogleLogin, { once: true });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.dataset.googleIdentity = "true";
+    script.onload = renderGoogleLogin;
+    script.onerror = () => {
+      if (!cancelled) {
+        setAuthError("구글 로그인 스크립트를 불러오지 못했습니다.");
+      }
+    };
+    document.head.appendChild(script);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authUser]);
+
+  useEffect(() => {
+    setEvidenceInputCount(1);
+    setAssignmentExecutionNote(selectedControl?.executionNote ?? "");
+    setAssignmentReviewer(selectedControl?.reviewer ?? selectedControl?.reviewDept ?? "");
+    setAssignmentReviewChecked(selectedControl?.reviewChecked ?? "미검토");
+  }, [selectedControlId, selectedControl?.executionNote, selectedControl?.reviewChecked, selectedControl?.reviewDept, selectedControl?.reviewer]);
+
+  useEffect(() => {
+    if (!GOOGLE_SCRIPT_URL) {
+      return;
+    }
+
+    fetchIntegrationStatus(GOOGLE_SCRIPT_URL)
+      .then((status) => {
+        setIntegrationStatus({
+          spreadsheet: status.spreadsheet ? "연결됨" : "오류",
+          drive: status.drive ? "연결됨" : "오류",
+        });
+      })
+      .catch(() => {
+        setIntegrationStatus({
+          spreadsheet: "오류",
+          drive: "오류",
+        });
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!GOOGLE_SCRIPT_URL) {
+      return;
+    }
+
+    let active = true;
+
+    fetchRemoteWorkspace(GOOGLE_SCRIPT_URL)
+      .then((remoteWorkspace) => {
+        if (!active || !remoteWorkspace || !Array.isArray(remoteWorkspace.controls)) {
+          return;
+        }
+
+        const remoteControls = remoteWorkspace.controls.map(normalizeControl);
+        if (remoteControls.length === 0) {
+          const seededWorkspace = {
+            controls: structuredClone(defaultData.controls),
+            workflows: structuredClone(defaultData.workflows),
+            people: structuredClone(defaultPeople),
+          };
+
+          setWorkspace(seededWorkspace);
+          persistWorkspace(seededWorkspace);
+          syncRemoteWorkspace(GOOGLE_SCRIPT_URL, seededWorkspace).catch(() => {});
+          return;
+        }
+
+        const nextWorkspace = {
+          controls: remoteControls,
+          workflows: mergeMissingWorkflows(remoteControls, Array.isArray(remoteWorkspace.workflows) ? remoteWorkspace.workflows : []),
+          people: Array.isArray(remoteWorkspace.people) && remoteWorkspace.people.length > 0
+            ? remoteWorkspace.people
+            : structuredClone(defaultPeople),
+        };
+
+        setIntegrationStatus((current) => ({
+          ...current,
+          spreadsheet: "연결됨",
+        }));
+        setWorkspace(nextWorkspace);
+        persistWorkspace(nextWorkspace);
+      })
+      .catch(() => {
+        setIntegrationStatus((current) => ({
+          ...current,
+          spreadsheet: "오류",
+        }));
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  function updateWorkspace(nextWorkspace) {
+    setWorkspace(nextWorkspace);
+    persistWorkspace(nextWorkspace);
+    if (GOOGLE_SCRIPT_URL) {
+      syncRemoteWorkspace(GOOGLE_SCRIPT_URL, nextWorkspace)
+        .then(() => {
+          setIntegrationStatus((current) => ({
+            ...current,
+            spreadsheet: "연결됨",
+          }));
+        })
+        .catch(() => {
+          setIntegrationStatus((current) => ({
+            ...current,
+            spreadsheet: "오류",
+          }));
+        });
+    }
+  }
+
+  function resetWorkspace() {
+    updateWorkspace({ ...structuredClone(defaultData), people: structuredClone(defaultPeople) });
+    setCurrentView("controls");
+    setSelectedControlId("");
+    setProcessFilter("전체");
+    setControlListPage(1);
+    setControlPanelMode("create");
+  }
+
+  function advanceWorkflow(workflowId) {
+    updateWorkspace({
+      ...workspace,
+      workflows: workflows.map((workflow) =>
+        workflow.id === workflowId ? { ...workflow, status: nextWorkflowStatus(workflow.status) } : workflow,
+      ),
+    });
+  }
+
+  function updateRegistrationField(key, value) {
+    setRegistrationForm((prev) => ({ ...prev, [key]: value }));
+  }
+
+  function toggleRegistrationSystem(system) {
+    setRegistrationForm((prev) => ({
+      ...prev,
+      targetSystems: (prev.targetSystems ?? []).includes(system)
+        ? prev.targetSystems.filter((item) => item !== system)
+        : [...(prev.targetSystems ?? []), system],
+    }));
+  }
+
+  function saveRegistrationDraft() {
+    window.localStorage.setItem(REGISTRATION_DRAFT_KEY, JSON.stringify(registrationForm));
+    window.alert("통제 등록 초안을 임시 저장했습니다.");
+  }
+
+  function loadRegistrationControl(control) {
+    setRegistrationSelectedControlId(control.id);
+    setRegistrationForm({
+      controlId: control.id ?? "",
+      process: control.process ?? "",
+      subProcess: control.subProcess ?? "",
+      risk: control.riskName ?? "",
+      controlName: control.title ?? "",
+      controlObjective: control.controlObjective ?? control.purpose ?? "",
+      controlActivity: control.controlActivity ?? "",
+      description: control.description ?? "",
+      frequency: control.frequency ?? "수시",
+      controlType: control.controlType ?? "예방",
+      automationLevel: control.automationLevel ?? "수동",
+      keyControl: control.keyControl === "Yes",
+      ownerDept: control.performDept ?? control.performer ?? "",
+      evidence: control.evidenceText ?? (control.evidences ?? []).join(", "),
+      testMethod: control.testMethod ?? (control.procedures ?? []).join(", "),
+      population: control.population ?? "",
+      policyReference: control.policyReference ?? "",
+      deficiencyImpact: control.deficiencyImpact ?? "높음",
+      targetSystems: control.targetSystems ?? [],
+    });
+  }
+
+  function startNewRegistration() {
+    setRegistrationSelectedControlId("");
+    setRegistrationForm(initialRegistrationForm);
+  }
+
+  function saveRegisteredControl() {
+    if (!canSubmitRegistration) {
+      window.alert(`필수 항목이 누락되었습니다: ${registrationMissingFields.join(", ")}`);
+      return;
+    }
+
+    const editingControl = controls.find((control) => control.id === registrationSelectedControlId) ?? null;
+    const preservedReviewer = editingControl?.reviewer ?? editingControl?.reviewDept ?? "";
+    const preservedOwnerPerson = editingControl?.ownerPerson ?? "";
+
+    const nextControl = normalizeControl({
+      id: registrationForm.controlId.trim(),
+      cycle: "",
+      process: registrationForm.process.trim(),
+      subProcess: registrationForm.subProcess.trim() || registrationForm.process.trim(),
+      title: registrationForm.controlName.trim(),
+      purpose: registrationForm.controlObjective.trim(),
+      riskId: "",
+      riskName: registrationForm.risk.trim(),
+      controlObjective: registrationForm.controlObjective.trim(),
+      controlActivity: registrationForm.controlActivity.trim(),
+      description: registrationForm.description.trim(),
+      frequency: registrationForm.frequency,
+      controlType: registrationForm.controlType,
+      keyControl: registrationForm.keyControl ? "Yes" : "No",
+      status: "점검 예정",
+      evidenceStatus: "미수집",
+      ownerDept: registrationForm.ownerDept.trim(),
+      performer: registrationForm.ownerDept.trim(),
+      reviewer: preservedReviewer,
+      performDept: registrationForm.ownerDept.trim(),
+      reviewDept: preservedReviewer,
+      ownerPerson: preservedOwnerPerson,
+      targetSystems: registrationForm.targetSystems ?? [],
+      note: "",
+      population: registrationForm.population.trim(),
+      attributes: [
+        registrationForm.controlActivity.trim(),
+        registrationForm.policyReference.trim(),
+        registrationForm.deficiencyImpact.trim(),
+      ].filter(Boolean),
+      evidences: registrationForm.evidence.split(",").map((item) => item.trim()).filter(Boolean),
+      procedures: registrationForm.testMethod.split(",").map((item) => item.trim()).filter(Boolean),
+      automationLevel: registrationForm.automationLevel,
+      evidenceText: registrationForm.evidence.trim(),
+      testMethod: registrationForm.testMethod.trim(),
+      policyReference: registrationForm.policyReference.trim(),
+      deficiencyImpact: registrationForm.deficiencyImpact.trim(),
+    });
+    const duplicateControl = controls.find((control) => control.id === nextControl.id);
+
+    if (duplicateControl && duplicateControl.id !== editingControl?.id) {
+      window.alert("같은 통제번호가 이미 존재합니다.");
+      return;
+    }
+
+    if (editingControl) {
+      updateWorkspace({
+        ...workspace,
+        controls: controls.map((control) =>
+          control.id === editingControl.id ? nextControl : control,
+        ),
+        workflows: workflows.map((workflow) =>
+          workflow.controlId === editingControl.id
+            ? {
+                ...workflow,
+                controlId: nextControl.id,
+                assignee: nextControl.performDept,
+                reviewer: nextControl.reviewDept,
+              }
+            : workflow,
+        ),
+      });
+      setRegistrationSelectedControlId(nextControl.id);
+      window.alert("통제를 수정했습니다.");
+      return;
+    }
+
+    const seededWorkflows = createDefaultWorkflowSeeds([nextControl]).map((workflow, index) => ({
+      ...workflow,
+      id: `WF-${String(workflows.length + index + 1).padStart(3, "0")}`,
+    }));
+
+    updateWorkspace({
+      ...workspace,
+      controls: [nextControl, ...controls],
+      workflows: [...seededWorkflows, ...workflows],
+    });
+    window.localStorage.removeItem(REGISTRATION_DRAFT_KEY);
+    setRegistrationSelectedControlId(nextControl.id);
+    window.alert("통제를 등록했습니다.");
+  }
+
+  useEffect(() => {
+    if (!registrationSelectedControlId) {
+      return;
+    }
+
+    const control = controls.find((item) => item.id === registrationSelectedControlId);
+    if (control) {
+      loadRegistrationControl(control);
+    }
+  }, [registrationSelectedControlId]);
+
+  useEffect(() => {
+    if (!registrationSelectedControlId) {
+      return;
+    }
+
+    if (!controls.some((control) => control.id === registrationSelectedControlId)) {
+      setRegistrationSelectedControlId("");
+    }
+  }, [controls, registrationSelectedControlId]);
+
+  function handlePersonSubmit(event) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const person = {
+      id: formData.get("personId").toString().trim(),
+      name: formData.get("personName").toString().trim(),
+      email: formData.get("personEmail").toString().trim().toLowerCase(),
+      role: "both",
+      team: formData.get("personTeam").toString().trim(),
+      accessRole: "user",
+    };
+
+    if (people.some((entry) => entry.id === person.id)) {
+      window.alert("같은 담당자 ID가 이미 존재합니다.");
+      return;
+    }
+
+    if (person.email && !person.email.endsWith("@muhayu.com")) {
+      window.alert("muhayu.com 이메일만 등록할 수 있습니다.");
+      return;
+    }
+
+    updateWorkspace({
+      ...workspace,
+      people: [person, ...people],
+    });
+    event.currentTarget.reset();
+  }
+
+  function handleMemberAccessRoleChange(personId, accessRole) {
+    updateWorkspace({
+      ...workspace,
+      people: people.map((person) =>
+        person.id === personId
+          ? { ...person, accessRole }
+          : person,
+      ),
+    });
+  }
+
+  function handleRoleAssignmentSubmit(event) {
+    event.preventDefault();
+    if (!roleAssignmentControl) return;
+
+    const formData = new FormData(event.currentTarget);
+    const performer = formData.get("performer").toString().trim();
+    const reviewer = formData.get("reviewer").toString().trim();
+
+    updateWorkspace({
+      ...workspace,
+      controls: controls.map((control) =>
+        control.id === roleAssignmentControl.id
+          ? {
+              ...control,
+              performer,
+              reviewer,
+              performDept: performer,
+              reviewDept: reviewer,
+            }
+          : control,
+      ),
+      workflows: workflows.map((workflow) =>
+        workflow.controlId === roleAssignmentControl.id
+          ? {
+              ...workflow,
+              assignee: performer,
+              reviewer,
+            }
+          : workflow,
+      ),
+    });
+  }
+
+  async function handleAssignmentSubmit(event) {
+    event.preventDefault();
+    if (!selectedControl) return;
+
+    const formData = new FormData(event.currentTarget);
+    const files = formData
+      .getAll("evidenceFiles")
+      .filter((value) => value instanceof File && value.size > 0);
+    const performer = formData.get("performer").toString().trim();
+    const reviewer = formData.get("reviewer").toString().trim();
+    const executionNote = formData.get("executionNote").toString().trim();
+    const reviewChecked = executionNote ? formData.get("reviewChecked").toString() : "미검토";
+    const status = deriveAssignmentStatus(executionNote, reviewChecked);
+    const note = formData.get("note").toString().trim();
+    let nextEvidenceFiles = selectedControl.evidenceFiles ?? [];
+    let uploaded = false;
+
+    if (files.length > 0) {
+      try {
+        const uploadResult = await uploadEvidenceFiles(selectedControl.id, files);
+        nextEvidenceFiles = [...nextEvidenceFiles, ...uploadResult.files];
+        uploaded = uploadResult.uploaded;
+        setIntegrationStatus((current) => ({
+          ...current,
+          drive: uploadResult.uploaded ? "연결됨" : current.drive,
+        }));
+      } catch {
+        setIntegrationStatus((current) => ({
+          ...current,
+          drive: "오류",
+        }));
+        window.alert("증적 파일 업로드에 실패했습니다.");
+        return;
+      }
+    }
+
+    updateWorkspace({
+      ...workspace,
+      controls: controls.map((control) =>
+        control.id === selectedControl.id
+          ? {
+              ...control,
+              status,
+              performer,
+              reviewer,
+              performDept: performer,
+              reviewDept: reviewer,
+              executionNote,
+              reviewChecked,
+              evidenceFiles: nextEvidenceFiles,
+              evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
+              note,
+            }
+          : control,
+      ),
+    });
+  }
+
+  function handleWorkflowSubmit(event) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const nextWorkflow = {
+      id: formData.get("workflowId").toString().trim(),
+      controlId: formData.get("controlId").toString(),
+      step: formData.get("step").toString().trim(),
+      assignee: formData.get("assignee").toString().trim(),
+      reviewer: formData.get("reviewer").toString().trim(),
+      dueDate: formData.get("dueDate").toString(),
+      status: formData.get("workflowStatus").toString(),
+      memo: formData.get("memo").toString().trim(),
+    };
+
+    updateWorkspace({
+      ...workspace,
+      workflows: [nextWorkflow, ...workflows],
+    });
+    event.currentTarget.reset();
+  }
+
+  function handleControlSubmit(event) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const targetSystems = formData.getAll("targetSystems").map((value) => value.toString());
+    const nextControl = {
+      id: formData.get("controlId").toString().trim(),
+      cycle: "",
+      process: formData.get("category").toString().trim(),
+      subProcess: formData.get("category").toString().trim(),
+      title: formData.get("title").toString().trim(),
+      purpose: "",
+      riskId: "",
+      riskName: "",
+      frequency: formData.get("frequency").toString(),
+      controlType: formData.get("controlType").toString(),
+      keyControl: formData.get("keyControl").toString(),
+      status: "점검 예정",
+      evidenceStatus: "수집 중",
+      ownerDept: formData.get("performDept").toString().trim(),
+      performer: formData.get("performDept").toString().trim(),
+      reviewer: formData.get("reviewDept").toString().trim(),
+      performDept: formData.get("performDept").toString().trim(),
+      reviewDept: formData.get("reviewDept").toString().trim(),
+      targetSystems,
+      note: "",
+      population: "",
+      attributes: [],
+      evidences: [],
+      procedures: [],
+    };
+
+    if (controls.some((control) => control.id === nextControl.id)) {
+      window.alert("같은 통제번호가 이미 존재합니다.");
+      return;
+    }
+
+    const seededWorkflows = createDefaultWorkflowSeeds([nextControl]).map((workflow, index) => ({
+      ...workflow,
+      id: `WF-${String(workflows.length + index + 1).padStart(3, "0")}`,
+    }));
+
+    updateWorkspace({
+      ...workspace,
+      controls: [nextControl, ...controls],
+      workflows: [...seededWorkflows, ...workflows],
+    });
+    setSelectedControlId(nextControl.id);
+    setProcessFilter("전체");
+    setControlListPage(1);
+    setControlPanelMode("edit");
+    event.currentTarget.reset();
+  }
+
+  function handleControlUpdate(event) {
+    event.preventDefault();
+    if (!selectedControl) return;
+
+    const formData = new FormData(event.currentTarget);
+    const targetSystems = formData.getAll("targetSystems").map((value) => value.toString());
+    const performDept = formData.get("performDept").toString().trim();
+    const reviewDept = formData.get("reviewDept").toString().trim();
+
+    updateWorkspace({
+      ...workspace,
+      controls: controls.map((control) =>
+        control.id === selectedControl.id
+          ? {
+              ...control,
+              process: formData.get("category").toString().trim(),
+              subProcess: formData.get("category").toString().trim(),
+              title: formData.get("title").toString().trim(),
+              keyControl: formData.get("keyControl").toString(),
+              frequency: formData.get("frequency").toString(),
+              controlType: formData.get("controlType").toString(),
+              ownerDept: performDept,
+              performer: performDept,
+              reviewer: reviewDept,
+              performDept,
+              reviewDept,
+              targetSystems,
+            }
+          : control,
+      ),
+      workflows: workflows.map((workflow) =>
+        workflow.controlId === selectedControl.id
+          ? { ...workflow, assignee: performDept, reviewer: reviewDept }
+          : workflow,
+      ),
+    });
+  }
+
+  if (!authUser) {
+    return (
+      <div className="login-shell">
+        <section className="login-card">
+          <p className="eyebrow">IT 통제(ITGC)</p>
+          <h1>관리 시스템 로그인</h1>
+          <p className="login-copy">구글 계정으로 로그인해야 페이지를 열 수 있습니다. `muhayu.com` 도메인 계정만 허용됩니다.</p>
+          {GOOGLE_CLIENT_ID ? (
+            <div className="google-login-button-wrap" ref={googleLoginRef} />
+          ) : (
+            <p className="login-error">`.env`에 `VITE_GOOGLE_CLIENT_ID`를 설정하세요.</p>
+          )}
+          {authError ? <p className="login-error">{authError}</p> : null}
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className={isSidebarOpen ? "app-shell" : "app-shell sidebar-collapsed"}>
+      <button
+        type="button"
+        className={isSidebarOpen ? "sidebar-overlay visible" : "sidebar-overlay"}
+        aria-label="사이드바 닫기"
+        onClick={() => setIsSidebarOpen(false)}
+      />
+
+      <aside className={isSidebarOpen ? "sidebar open" : "sidebar collapsed"}>
+        <div className="sidebar-brand-row">
+          <div className="sidebar-brand">
+            <p className="eyebrow">IT 통제(ITGC)</p>
+            <h1>관리 시스템</h1>
+          </div>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            aria-label={isSidebarOpen ? "왼쪽 메뉴 접기" : "왼쪽 메뉴 펼치기"}
+            aria-expanded={isSidebarOpen}
+            onClick={() => setIsSidebarOpen((open) => !open)}
+          >
+            {isSidebarOpen ? "←" : "→"}
+          </button>
+        </div>
+        <nav className="sidebar-nav">
+          {menuItems.map(({ key, label, icon }) => (
+            <button
+              key={key}
+              type="button"
+              className={currentView === key ? "nav-button active" : "nav-button"}
+              aria-label={label}
+              title={label}
+              onClick={() => handleViewChange(key)}
+            >
+              <span className="nav-button-icon" aria-hidden="true">{icon}</span>
+              <span className="nav-button-label">{label}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-footer">
+          <div className="sidebar-user-card">
+            <strong>{authUser.name}</strong>
+            <span>{authUser.email}</span>
+            <button className="secondary-button sidebar-logout" type="button" onClick={handleLogout}>
+              로그아웃
+            </button>
+          </div>
+          <div className="integration-panel">
+            <p className="eyebrow">Integration</p>
+            <div className="integration-list">
+              <div className="integration-item">
+                <strong>스프레드시트</strong>
+                <span className={`status-badge ${integrationClass(integrationStatus.spreadsheet)}`}>
+                  {integrationStatus.spreadsheet}
+                </span>
+              </div>
+              <div className="integration-item">
+                <strong>구글드라이브</strong>
+                <span className={`status-badge ${integrationClass(integrationStatus.drive)}`}>
+                  {integrationStatus.drive}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <nav className="mobile-bottom-nav" aria-label="모바일 메뉴">
+        {menuItems.map(({ key, label, icon }) => (
+          <button
+            key={key}
+            type="button"
+            className={currentView === key ? "mobile-nav-button active" : "mobile-nav-button"}
+            onClick={() => handleViewChange(key)}
+            aria-label={label}
+          >
+            <span className="mobile-nav-icon" aria-hidden="true">{icon}</span>
+            <span className="mobile-nav-label">{label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <div className="page-shell">
+        <main className="layout">
+          {currentView === "dashboard" ? (
+            <>
+              <section className={`dashboard-card control-progress-section dashboard-view-${dashboardView}`}>
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Control Progress</p>
+                    <h2>통제 항목별 진행 현황</h2>
+                  </div>
+                </div>
+                <div className="control-progress-summary-grid">
+                  {dashboardSummaryCards.map((card) => (
+                    <button
+                      type="button"
+                      className="control-progress-summary-card"
+                      key={card.label}
+                      onClick={() => moveToDashboardTarget(card.targetId)}
+                    >
+                      <span>{card.label}</span>
+                      <strong>{card.value}</strong>
+                    </button>
+                  ))}
+                </div>
+                <div className="detail-tabs dashboard-tabs">
+                  <button
+                    type="button"
+                    className={dashboardView === "frequency" ? "tab-button active" : "tab-button"}
+                    onClick={() => setDashboardView("frequency")}
+                  >
+                    주기별
+                  </button>
+                  <button
+                    type="button"
+                    className={dashboardView === "control" ? "tab-button active" : "tab-button"}
+                    onClick={() => setDashboardView("control")}
+                  >
+                    통제별
+                  </button>
+                  <button
+                    type="button"
+                    className={dashboardView === "category" ? "tab-button active" : "tab-button"}
+                    onClick={() => setDashboardView("category")}
+                  >
+                    카테고리별
+                  </button>
+                </div>
+                {dashboardView === "frequency" ? (
+                  <div className="control-progress-group-list" id="dashboard-frequency-root">
+                    {controlProgressGroups.map((group) => (
+                      <section
+                        className={`control-progress-group tone-${toDashboardAnchor(group.frequency)}`}
+                        key={group.frequency}
+                        id={`dashboard-frequency-${toDashboardAnchor(group.frequency)}`}
+                      >
+                        <div className="control-progress-group-head">
+                          <strong>{group.label}</strong>
+                          <span>{group.items.length}건</span>
+                        </div>
+                        <div className="control-progress-list">
+                          {group.items.map((item) => (
+                            <article className="control-progress-card" key={item.id}>
+                              <div className="control-progress-head">
+                                <strong>{item.id}</strong>
+                                <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
+                              </div>
+                              <p>{item.title}</p>
+                              <small>{item.process}</small>
+                              <div className="progress-track" aria-hidden="true">
+                                <span style={{ width: `${item.progress}%` }} />
+                              </div>
+                              <div className="progress-caption">
+                                <span>진행률</span>
+                                <strong>{item.progress}%</strong>
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                ) : null}
+                {dashboardView === "control" ? (
+                  <div className="control-progress-group-list" id="dashboard-control-root">
+                    {dashboardControlGroups.map((group) => (
+                      <section className={`control-progress-group tone-${toDashboardAnchor(group.group)}`} key={group.group}>
+                        <div className="control-progress-group-head">
+                          <strong>{group.group}</strong>
+                          <span>{group.items.length}건</span>
+                        </div>
+                        <div className="control-progress-list control-progress-list-by-control">
+                          {group.items.map((item) => (
+                            <article className="control-progress-card" key={item.id} id={`dashboard-control-${toDashboardAnchor(item.id)}`}>
+                              <div className="control-progress-head">
+                                <strong>{item.id}</strong>
+                                <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
+                              </div>
+                              <p>{item.title}</p>
+                              <small>{item.process} · {item.frequency}</small>
+                              <div className="progress-track" aria-hidden="true">
+                                <span style={{ width: `${item.progress}%` }} />
+                              </div>
+                              <div className="progress-caption">
+                                <span>진행률</span>
+                                <strong>{item.progress}%</strong>
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                ) : null}
+                {dashboardView === "category" ? (
+                  <div className="control-progress-list category-progress-list" id="dashboard-category-root">
+                    {processSummary.map((item) => (
+                      <article
+                        className={`control-progress-card category-progress-card tone-${toDashboardAnchor(item.process)}`}
+                        key={item.process}
+                        id={`dashboard-category-${toDashboardAnchor(item.process)}`}
+                      >
+                        <div className="control-progress-head">
+                          <strong>{item.process}</strong>
+                          <span>{item.controls}건</span>
+                        </div>
+                        <small>완료 {item.done} · 관리 필요 {item.pending}</small>
+                        <div className="progress-track" aria-hidden="true">
+                          <span style={{ width: `${item.progressRate}%` }} />
+                        </div>
+                        <div className="progress-caption">
+                          <span>카테고리 진행률</span>
+                          <strong>{item.progressRate}%</strong>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            </>
+          ) : null}
+
+          {currentView === "register" ? (
+            <section className="control-browser-layout registration-management-layout">
+              <article className="panel control-list-panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Controls</p>
+                    <h2>통제 목록</h2>
+                  </div>
+                  <button className="secondary-button slim-button" type="button" onClick={startNewRegistration}>
+                    신규 추가
+                  </button>
+                </div>
+                <div className="control-browser-list">
+                  <div className="control-list">
+                    {registrationPagedControls.map((control) => (
+                      <button
+                        type="button"
+                        key={control.id}
+                        className={
+                          control.id === registrationSelectedControlId
+                            ? "registration-example-item registration-control-item control-operation-card active"
+                            : "registration-example-item registration-control-item control-operation-card"
+                        }
+                        onClick={() => loadRegistrationControl(control)}
+                      >
+                        <div className="registration-example-head">
+                          <strong>{control.id}</strong>
+                          <span className={control.keyControl === "Yes" ? "status-badge key-badge" : "status-badge normal-badge"}>
+                            {control.keyControl === "Yes" ? "Key" : "Normal"}
+                          </span>
+                        </div>
+                        <p>{control.title}</p>
+                        <small>{control.process} · {control.subProcess || "-"} · {control.performDept ?? control.performer}</small>
+                      </button>
+                    ))}
+                  </div>
+                  {registrationTotalPages > 1 ? (
+                    <div className="pagination registration-pagination">
+                      {Array.from({ length: registrationTotalPages }, (_, index) => index + 1).map((page) => (
+                        <button
+                          key={page}
+                          type="button"
+                          className={page === registrationCurrentPage ? "page-button active" : "page-button"}
+                          onClick={() => setRegistrationListPage(page)}
+                        >
+                          {page}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </article>
+
+              <div className="registration-main">
+                <section className="registration-hero-card">
+                  <div className="registration-hero-head">
+                    <div>
+                      <h2>ITGC 통제 등록/수정</h2>
+                      <p>좌측 목록에서 통제를 선택해 수정하거나, 신규 통제를 추가할 수 있습니다.</p>
+                    </div>
+                    <div className="registration-badges">
+                      <span className="status-badge status-normal">{registrationForm.keyControl ? "Key Control" : "Normal Control"}</span>
+                      <span className="status-badge status-warning">등록 완성도 {registrationCompletion}%</span>
+                    </div>
+                  </div>
+
+                  <div className="registration-metric-grid">
+                    <article className="registration-metric-card">
+                      <div className="registration-metric-icon"><ShieldCheckIcon /></div>
+                      <div>
+                        <p>통제유형</p>
+                        <strong>{registrationForm.controlType}</strong>
+                      </div>
+                    </article>
+                    <article className="registration-metric-card">
+                      <div className="registration-metric-icon"><FileStackIcon /></div>
+                      <div>
+                        <p>증적</p>
+                        <strong>필수 관리</strong>
+                      </div>
+                    </article>
+                    <article className="registration-metric-card">
+                      <div className="registration-metric-icon"><OwnerIcon /></div>
+                      <div>
+                        <p>담당부서</p>
+                        <strong>{registrationForm.ownerDept}</strong>
+                      </div>
+                    </article>
+                    <article className="registration-metric-card">
+                      <div className="registration-metric-icon"><CheckBadgeIcon /></div>
+                      <div>
+                        <p>수행주기</p>
+                        <strong>{registrationForm.frequency}</strong>
+                      </div>
+                    </article>
+                  </div>
+                </section>
+
+                <article className="panel registration-section-card">
+                  <div className="registration-section-head">
+                    <h2>기본 정보</h2>
+                    <p>통제 식별 및 RCM 매핑을 위한 기본 정보</p>
+                  </div>
+                  <div className="registration-form-grid two-col">
+                    <label className="registration-field">
+                      <span>Control ID <em>필수</em></span>
+                      <input value={registrationForm.controlId} onChange={(event) => updateRegistrationField("controlId", event.target.value)} />
+                      <small>예: APD-03, CHG-01</small>
+                    </label>
+                    <label className="registration-field">
+                      <span>통제명 <em>필수</em></span>
+                      <input value={registrationForm.controlName} onChange={(event) => updateRegistrationField("controlName", event.target.value)} />
+                      <small>감사자가 봐도 바로 이해되는 이름으로 작성</small>
+                    </label>
+                    <label className="registration-field">
+                      <span>Process <em>필수</em></span>
+                      <select value={registrationForm.process} onChange={(event) => updateRegistrationField("process", event.target.value)}>
+                        <option value="IT 정책관리">IT 정책관리</option>
+                        <option value="계정관리">계정관리</option>
+                        <option value="변경관리">변경관리</option>
+                        <option value="운영관리">운영관리</option>
+                        <option value="백업관리">백업관리</option>
+                      </select>
+                    </label>
+                    <label className="registration-field">
+                      <span>Sub Process</span>
+                      <input value={registrationForm.subProcess} onChange={(event) => updateRegistrationField("subProcess", event.target.value)} />
+                    </label>
+                    <fieldset className="system-fieldset registration-field">
+                      <legend>관련 시스템 <em>필수</em></legend>
+                      <div className="system-options">
+                        {systemOptions.map((system) => (
+                          <label key={system} className="system-option">
+                            <input
+                              type="checkbox"
+                              checked={(registrationForm.targetSystems ?? []).includes(system)}
+                              onChange={() => toggleRegistrationSystem(system)}
+                            />
+                            <span className="system-option-label">{system}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </fieldset>
+                    <label className="registration-field">
+                      <span>정책/기준서 참조</span>
+                      <input value={registrationForm.policyReference} onChange={(event) => updateRegistrationField("policyReference", event.target.value)} />
+                    </label>
+                  </div>
+                </article>
+
+                <article className="panel registration-section-card">
+                  <div className="registration-section-head">
+                    <h2>Risk &amp; Control 정의</h2>
+                    <p>통제가 어떤 위험을 어떤 방식으로 줄이는지 명확히 정의</p>
+                  </div>
+                  <div className="registration-form-grid two-col">
+                    <label className="registration-field">
+                      <span>Risk <em>필수</em></span>
+                      <textarea rows="4" value={registrationForm.risk} onChange={(event) => updateRegistrationField("risk", event.target.value)} />
+                      <small>무엇이 잘못될 수 있는지 위험을 구체적으로 작성</small>
+                    </label>
+                    <label className="registration-field">
+                      <span>Control Objective <em>필수</em></span>
+                      <textarea rows="4" value={registrationForm.controlObjective} onChange={(event) => updateRegistrationField("controlObjective", event.target.value)} />
+                      <small>이 통제가 존재해야 하는 목적</small>
+                    </label>
+                    <label className="registration-field">
+                      <span>Activity <em>필수</em></span>
+                      <textarea rows="4" value={registrationForm.controlActivity} onChange={(event) => updateRegistrationField("controlActivity", event.target.value)} />
+                      <small>실제로 수행하는 핵심 통제행위</small>
+                    </label>
+                    <label className="registration-field">
+                      <span>Description <em>필수</em></span>
+                      <textarea rows="4" value={registrationForm.description} onChange={(event) => updateRegistrationField("description", event.target.value)} />
+                      <small>누가, 어떻게, 무엇을 증적으로 남기는지 포함해서 작성</small>
+                    </label>
+                  </div>
+                </article>
+
+                <article className="panel registration-section-card">
+                  <div className="registration-section-head">
+                    <h2>운영 및 감사 정보</h2>
+                    <p>실행 가능성과 감사 검증 가능성을 높이는 필수 운영 정보</p>
+                  </div>
+                  <div className="registration-form-grid three-col">
+                    <label className="registration-field">
+                      <span>Frequency <em>필수</em></span>
+                      <select value={registrationForm.frequency} onChange={(event) => updateRegistrationField("frequency", event.target.value)}>
+                        <option value="수시">수시</option>
+                        <option value="일별">일별</option>
+                        <option value="주별">주별</option>
+                        <option value="월별">월별</option>
+                        <option value="분기별">분기별</option>
+                        <option value="반기별">반기별</option>
+                        <option value="연 1회 + 변경 시">연 1회 + 변경 시</option>
+                        <option value="이벤트 발생 시">이벤트 발생 시</option>
+                      </select>
+                    </label>
+                    <label className="registration-field">
+                      <span>Control Type <em>필수</em></span>
+                      <select value={registrationForm.controlType} onChange={(event) => updateRegistrationField("controlType", event.target.value)}>
+                        <option value="예방">예방</option>
+                        <option value="탐지">탐지</option>
+                        <option value="예방 + 탐지">예방 + 탐지</option>
+                      </select>
+                    </label>
+                    <label className="registration-field">
+                      <span>자동화 수준</span>
+                      <select value={registrationForm.automationLevel} onChange={(event) => updateRegistrationField("automationLevel", event.target.value)}>
+                        <option value="수동">수동</option>
+                        <option value="반자동">반자동</option>
+                        <option value="자동">자동</option>
+                      </select>
+                    </label>
+                    <label className="registration-field">
+                      <span>결함 영향도</span>
+                      <select value={registrationForm.deficiencyImpact} onChange={(event) => updateRegistrationField("deficiencyImpact", event.target.value)}>
+                        <option value="높음">높음</option>
+                        <option value="중간">중간</option>
+                        <option value="낮음">낮음</option>
+                      </select>
+                    </label>
+                    <label className="registration-field">
+                      <span>담당 부서 <em>필수</em></span>
+                      <input value={registrationForm.ownerDept} onChange={(event) => updateRegistrationField("ownerDept", event.target.value)} />
+                    </label>
+                    <label className="registration-field registration-field-row-start">
+                      <span>Evidence <em>필수</em></span>
+                      <textarea rows="4" value={registrationForm.evidence} onChange={(event) => updateRegistrationField("evidence", event.target.value)} />
+                      <small className="registration-field-spacer" aria-hidden="true">placeholder</small>
+                    </label>
+                    <label className="registration-field">
+                      <span>테스트 방법</span>
+                      <textarea rows="4" value={registrationForm.testMethod} onChange={(event) => updateRegistrationField("testMethod", event.target.value)} />
+                      <small>감사/자가점검 시 어떻게 검증할지 기술</small>
+                    </label>
+                    <label className="registration-field">
+                      <span>모집단</span>
+                      <textarea rows="4" value={registrationForm.population} onChange={(event) => updateRegistrationField("population", event.target.value)} />
+                      <small>점검 대상 기간, 건수, 추출 기준 등을 작성</small>
+                    </label>
+                    <div className="registration-switch-card">
+                      <div>
+                        <strong>핵심통제(Key Control)</strong>
+                        <p>재무/감사 영향도가 높아 별도 검증이 필요한 통제</p>
+                      </div>
+                      <label className="switch">
+                        <input
+                          type="checkbox"
+                          checked={registrationForm.keyControl}
+                          onChange={(event) => updateRegistrationField("keyControl", event.target.checked)}
+                        />
+                        <span className="switch-slider" />
+                      </label>
+                    </div>
+                  </div>
+                </article>
+                  <div className="registration-action-group">
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={saveRegisteredControl}
+                      disabled={!canSubmitRegistration}
+                    >
+                      통제 등록
+                    </button>
+                  </div>
+              </div>
+              
+            </section>
+          ) : null}
+
+          {currentView === "control-list" ? (
+            <section className="panel registration-examples-card">
+              <div className="registration-section-head registration-list-head">
+                <div>
+                  <h2>통제 목록</h2>
+                  <p>등록된 통제를 선택하면 상세 정보가 표시됩니다.</p>
+                </div>
+                <label className="registration-filter-field">
+                  <span>카테고리</span>
+                  <select
+                    value={registrationCategoryFilter}
+                    onChange={(event) => {
+                      setRegistrationCategoryFilter(event.target.value);
+                      setRegistrationListPage(1);
+                    }}
+                  >
+                    {registrationCategoryOptions.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="control-browser-layout">
+                <div className="control-browser-list">
+                  <div className="registration-example-list">
+                  {registrationPagedControls.map((control) => (
+                    <button
+                      type="button"
+                      key={control.id}
+                      className={
+                        control.id === registrationSelectedControl?.id
+                          ? "registration-example-item registration-control-item active"
+                          : "registration-example-item registration-control-item"
+                      }
+                      onClick={() => {
+                        setRegistrationSelectedControlId(control.id);
+                      }}
+                    >
+                      <div className="registration-example-head">
+                        <strong>{control.id}</strong>
+                        <span className={control.keyControl === "Yes" ? "status-badge key-badge" : "status-badge normal-badge"}>
+                          {control.keyControl === "Yes" ? "Key" : "Normal"}
+                        </span>
+                      </div>
+                      <p>{control.title}</p>
+                      <small>{control.process} · {control.subProcess || "-"} · {control.performDept ?? control.performer}</small>
+                    </button>
+                  ))}
+                  </div>
+                  {registrationTotalPages > 1 ? (
+                    <div className="pagination registration-pagination">
+                      {Array.from({ length: registrationTotalPages }, (_, index) => index + 1).map((page) => (
+                        <button
+                          key={page}
+                          type="button"
+                          className={page === registrationCurrentPage ? "page-button active" : "page-button"}
+                          onClick={() => setRegistrationListPage(page)}
+                        >
+                          {page}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+
+                <article className="registration-summary-card control-detail-card">
+                  <div className="registration-section-head">
+                    <h2>통제 상세</h2>
+                    <p>목록에서 선택한 통제의 상세 정보</p>
+                  </div>
+                  <div className="registration-identity-box">
+                    <p>통제 식별자</p>
+                    <strong>{registrationSelectedControl?.id || "미선택"}</strong>
+                  </div>
+                  <div className="control-detail-grid-view">
+                    <div><p>Cycle</p><strong>{registrationSelectedControl?.cycle || "-"}</strong></div>
+                    <div><p>프로세스</p><strong>{registrationSelectedControl?.process || "-"}</strong></div>
+                    <div><p>서브 프로세스</p><strong>{registrationSelectedControl?.subProcess || "-"}</strong></div>
+                    <div><p>통제명</p><strong>{registrationSelectedControl?.title || "-"}</strong></div>
+                    <div><p>위험 ID</p><span>{registrationSelectedControl?.riskId || "-"}</span></div>
+                    <div><p>위험명</p><span>{registrationSelectedControl?.riskName || "-"}</span></div>
+                    <div><p>통제 목적</p><span>{registrationSelectedControl?.controlObjective || registrationSelectedControl?.purpose || "-"}</span></div>
+                    <div><p>통제 활동</p><span>{registrationSelectedControl?.controlActivity || "-"}</span></div>
+                    <div><p>상세 설명</p><span>{registrationSelectedControl?.description || registrationSelectedControl?.population || "-"}</span></div>
+                    <div><p>핵심통제</p><span>{registrationSelectedControl?.keyControl || "-"}</span></div>
+                    <div><p>주기</p><span>{registrationSelectedControl?.frequency || "-"}</span></div>
+                    <div><p>통제유형</p><span>{registrationSelectedControl?.controlType || "-"}</span></div>
+                    <div><p>자동화 수준</p><span>{registrationSelectedControl?.automationLevel || "-"}</span></div>
+                    <div><p>수행부서</p><span>{registrationSelectedControl?.performDept ?? registrationSelectedControl?.performer ?? "-"}</span></div>
+                    <div><p>담당자</p><span>{registrationSelectedControl?.ownerPerson || "-"}</span></div>
+                    <div><p>검토부서</p><span>{registrationSelectedControl?.reviewDept ?? registrationSelectedControl?.reviewer ?? "-"}</span></div>
+                    <div>
+                      <p>관련 시스템</p>
+                      {renderSystemChips(registrationSelectedControl?.targetSystems)}
+                    </div>
+                    <div><p>관련 정책</p><span>{registrationSelectedControl?.policyReference || "-"}</span></div>
+                    <div><p>결함 영향도</p><span>{registrationSelectedControl?.deficiencyImpact || "-"}</span></div>
+                    <div><p>증적</p><span>{registrationSelectedControl?.evidenceText || (registrationSelectedControl?.evidences ?? []).join(" | ") || "-"}</span></div>
+                    <div><p>테스트 절차</p><span>{registrationSelectedControl?.testMethod || (registrationSelectedControl?.procedures ?? []).join(" | ") || "-"}</span></div>
+                    <div><p>모집단</p><span>{registrationSelectedControl?.population || "-"}</span></div>
+                  </div>
+                </article>
+              </div>
+            </section>
+          ) : null}
+
+          {currentView === "controls" ? (
+            <section className="controls-layout">
+              <article className="panel control-list-panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Controls</p>
+                    <h2>통제 항목 목록</h2>
+                  </div>
+                  <label className="filter-label">
+                    <select value={processFilter} onChange={(event) => { setProcessFilter(event.target.value); setControlListPage(1); }}>
+                      {processOptions.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="control-list">
+                  {limitedControls.map((control) => {
+                    return (
+                      <button
+                        type="button"
+                        key={control.id}
+                        className={
+                          control.id === selectedControl?.id
+                            ? "registration-example-item registration-control-item control-operation-card active"
+                            : "registration-example-item registration-control-item control-operation-card"
+                        }
+                      onClick={() => {
+                        setSelectedControlId(control.id);
+                      }}
+                    >
+                        <div className="registration-example-head">
+                          <strong>{control.id}</strong>
+                          <span className={`status-badge ${control.keyControl === "Yes" ? "key-badge" : "normal-badge"}`}>
+                            {control.keyControl === "Yes" ? "Key" : "Normal"}
+                          </span>
+                        </div>
+                        <p>{control.title}</p>
+                        <small>{control.process} · {control.subProcess || "-"} · {control.performDept ?? control.performer}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="pagination">
+                  {Array.from({ length: totalControlPages }, (_, index) => index + 1).map((page) => (
+                    <button
+                      key={page}
+                      type="button"
+                      className={page === currentControlPage ? "page-button active" : "page-button"}
+                      onClick={() => setControlListPage(page)}
+                    >
+                      {page}
+                    </button>
+                  ))}
+                </div>
+              </article>
+
+              <div className="control-main control-execution-panel">
+                {selectedControl ? (
+                  <>
+                    <article className="panel detail-hero">
+                      <div className="detail-title-row">
+                        <div className="detail-inline-heading">
+                          <span className="detail-inline-eyebrow">Execution</span>
+                          <h2>통제 활동 수행 등록</h2>
+                        </div>
+                        <div className="badge-row">
+                          <span className={`status-badge ${statusClass(selectedControl.status)}`}>{selectedControl.status}</span>
+                          <span className={`status-badge ${evidenceClass(selectedControl.evidenceStatus)}`}>{selectedControl.evidenceStatus}</span>
+                        </div>
+                      </div>
+                      <p className="detail-purpose">{selectedControl.id} · {selectedControl.title}</p>
+                      <div className="info-block">
+                        <span>통제 활동 설명</span>
+                        <strong>{selectedControl.purpose || selectedControl.title}</strong>
+                      </div>
+                      <div className="detail-meta-grid execution-meta-grid">
+                        <div className="execution-meta-item">
+                          <span>테스트 방법</span>
+                          <span className="detail-body-text">
+                            {preserveDisplayLineBreaks(selectedControl.testMethod || (selectedControl.procedures ?? []).join("\n")) || "-"}
+                          </span>
+                        </div>
+                        <div className="execution-meta-item">
+                          <span>증적</span>
+                          <span className="detail-body-text">
+                            {preserveDisplayLineBreaks(selectedControl.evidenceText || (selectedControl.evidences ?? []).join("\n")) || "-"}
+                          </span>
+                        </div>
+                        <div className="execution-meta-item">
+                          <span>모집단</span>
+                          <span className="detail-body-text">{preserveDisplayLineBreaks(selectedControl.population) || "-"}</span>
+                        </div>
+                      </div>
+                      <form className="stack-form execution-form" onSubmit={handleAssignmentSubmit}>
+                        <label className="execution-form-item">
+                          수행 내역
+                          <textarea
+                            name="executionNote"
+                            rows="7"
+                            value={assignmentExecutionNote}
+                            onChange={(event) => {
+                              const nextValue = event.target.value;
+                              setAssignmentExecutionNote(nextValue);
+                              if (!nextValue.trim()) {
+                                setAssignmentReviewChecked("미검토");
+                              }
+                            }}
+                            placeholder="수행한 작업 내용을 입력"
+                          />
+                        </label>
+                        <div className="evidence-upload-group execution-form-item">
+                          <label>
+                            <span className="evidence-upload-label">증적 파일 첨부</span>
+                            <div className="evidence-input-stack">
+                              {Array.from({ length: evidenceInputCount }, (_, index) => (
+                                <div className="evidence-input-row" key={index}>
+                                  <input
+                                    className="file-input"
+                                    name="evidenceFiles"
+                                    type="file"
+                                  />
+                                </div>
+                              ))}
+                              <span className="evidence-upload-actions">
+                                <button
+                                  className="secondary-button evidence-count-button"
+                                  type="button"
+                                  onClick={() => setEvidenceInputCount((count) => Math.max(1, count - 1))}
+                                >
+                                  -
+                                </button>
+                                <button
+                                  className="secondary-button evidence-count-button"
+                                  type="button"
+                                  onClick={() => setEvidenceInputCount((count) => Math.min(5, count + 1))}
+                                >
+                                  +
+                                </button>
+                              </span>
+                            </div>
+                          </label>
+                        </div>
+                        <div className="evidence-file-list execution-form-item">
+                          {(selectedControl.evidenceFiles ?? []).length > 0 ? (
+                            (selectedControl.evidenceFiles ?? []).map((file, index) => (
+                              <span className="system-chip" key={`${file.name}-${index}`}>
+                                {file.url ? file.name : `${file.name} (대기)`}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="empty-text">첨부된 증적 없음</span>
+                          )}
+                        </div>
+                        {!GOOGLE_SCRIPT_URL ? (
+                          <p className="field-help">현재는 업로드 URL 미설정 상태라 파일명이 먼저 저장됩니다.</p>
+                        ) : null}
+                        <div className="execution-form-item execution-form-action">
+                          <button className="primary-button" type="submit">수행 내역 저장</button>
+                        </div>
+                        <label className="execution-form-item">
+                          메모
+                          <textarea
+                            name="note"
+                            rows="3"
+                            defaultValue={selectedControl.note ?? ""}
+                            placeholder="검토 코멘트, 이슈, 추가 요청사항"
+                          />
+                        </label>
+                        <div className="compact-form-grid execution-footer-grid execution-form-item">
+                          <label>
+                            통제 상태
+                            <input name="status" type="text" value={assignmentStatus} readOnly />
+                          </label>
+                          <label>
+                            수행자
+                            <input
+                              name="performer"
+                              type="text"
+                              defaultValue={selectedControl.performer ?? selectedControl.performDept ?? ""}
+                              placeholder="수행자 입력"
+                            />
+                          </label>
+                          <label>
+                            검토자
+                            <div className="reviewer-input-row">
+                              <input
+                                name="reviewer"
+                                type="text"
+                                value={assignmentReviewer}
+                                onChange={(event) => {
+                                  const nextReviewer = event.target.value;
+                                  setAssignmentReviewer(nextReviewer);
+                                  if (!nextReviewer.trim()) {
+                                    setAssignmentReviewChecked("미검토");
+                                  }
+                                }}
+                                placeholder="검토자 입력"
+                              />
+                              <button
+                                className={assignmentReviewChecked === "검토 완료" ? "secondary-button review-complete-button active" : "secondary-button review-complete-button"}
+                                type="button"
+                                onClick={() => {
+                                  if (!assignmentReviewer.trim()) {
+                                    window.alert("검토자를 먼저 입력하세요.");
+                                    return;
+                                  }
+                                  setAssignmentReviewChecked("검토 완료");
+                                }}
+                              >
+                                검토 완료
+                              </button>
+                            </div>
+                            <input name="reviewChecked" type="hidden" value={assignmentReviewChecked} />
+                          </label>
+                        </div>
+                      </form>
+                    </article>
+
+                  </>
+                ) : (
+                  <article className="panel detail-hero empty-selection-panel">
+                    <p className="eyebrow">Selected Control</p>
+                    <h2>통제 항목을 선택하세요</h2>
+                    <p className="detail-purpose">기본 화면은 등록 상태로 열리고, 목록에서 통제를 선택하면 상세와 처리 플로우가 표시됩니다.</p>
+                  </article>
+                )}
+              </div>
+            </section>
+          ) : null}
+
+          {currentView === "people" ? (
+            <section className="double-grid">
+              <article className="panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">People</p>
+                    <h2>수행자/검토자 등록</h2>
+                  </div>
+                </div>
+                <form className="stack-form" onSubmit={handlePersonSubmit}>
+                  <label>담당자 ID<input name="personId" type="text" placeholder="예: USR-005" required /></label>
+                  <label>이름<input name="personName" type="text" placeholder="예: 인프라운영팀" required /></label>
+                  <label>팀<input name="personTeam" type="text" placeholder="예: 인프라" required /></label>
+                  <label>
+                    역할
+                    <select name="personRole" required>
+                      <option value="performer">수행자</option>
+                      <option value="reviewer">검토자</option>
+                      <option value="both">둘 다</option>
+                    </select>
+                  </label>
+                  <button className="primary-button" type="submit">담당자 등록</button>
+                </form>
+              </article>
+
+              <article className="panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Directory</p>
+                    <h2>등록된 담당자</h2>
+                  </div>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>ID</th>
+                        <th>이름</th>
+                        <th>팀</th>
+                        <th>역할</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {people.map((person) => (
+                        <tr key={person.id}>
+                          <td>{person.id}</td>
+                          <td>{person.name}</td>
+                          <td>{person.team}</td>
+                          <td>{person.role}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+            </section>
+          ) : null}
+
+          {currentView === "roles" ? (
+            <section className="controls-layout">
+              <article className="panel control-list-panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Roles</p>
+                    <h2>통제별 역할 지정</h2>
+                  </div>
+                </div>
+                <div className="control-list">
+                  {controls.map((control) => (
+                    <button
+                      type="button"
+                      key={control.id}
+                      className={
+                        control.id === roleAssignmentControl?.id
+                          ? "registration-example-item registration-control-item control-operation-card active"
+                          : "registration-example-item registration-control-item control-operation-card"
+                      }
+                      onClick={() => setRoleAssignmentControlId(control.id)}
+                    >
+                      <div className="registration-example-head">
+                        <strong>{control.id}</strong>
+                        <span className={control.keyControl === "Yes" ? "status-badge key-badge" : "status-badge normal-badge"}>
+                          {control.keyControl === "Yes" ? "Key" : "Normal"}
+                        </span>
+                      </div>
+                      <p>{control.title}</p>
+                      <small>{control.performDept ?? control.performer} · {control.reviewDept ?? control.reviewer}</small>
+                    </button>
+                  ))}
+                </div>
+              </article>
+
+              <article className="panel detail-hero">
+                {roleAssignmentControl ? (
+                  <>
+                    <div className="detail-title-row">
+                      <div>
+                        <p className="eyebrow">Assignment</p>
+                        <h2>통제 역할 지정</h2>
+                      </div>
+                    </div>
+                    <p className="detail-purpose">{roleAssignmentControl.id} · {roleAssignmentControl.title}</p>
+                    <div className="detail-meta-grid execution-meta-grid">
+                      <div className="execution-meta-item">
+                        <span>현재 수행자</span>
+                        <span className="detail-body-text">{roleAssignmentControl.performDept ?? roleAssignmentControl.performer ?? "-"}</span>
+                      </div>
+                      <div className="execution-meta-item">
+                        <span>현재 검토자</span>
+                        <span className="detail-body-text">{roleAssignmentControl.reviewDept ?? roleAssignmentControl.reviewer ?? "-"}</span>
+                      </div>
+                      <div className="execution-meta-item">
+                        <span>프로세스</span>
+                        <span className="detail-body-text">{roleAssignmentControl.process || "-"}</span>
+                      </div>
+                    </div>
+                    <form className="stack-form execution-form" onSubmit={handleRoleAssignmentSubmit}>
+                      <label className="execution-form-item">
+                        수행자
+                        <select name="performer" defaultValue={roleAssignmentControl.performDept ?? roleAssignmentControl.performer ?? ""}>
+                          {(performerPeople.length > 0 ? performerPeople : people).map((person) => (
+                            <option key={person.id} value={person.name}>{person.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="execution-form-item">
+                        검토자
+                        <select name="reviewer" defaultValue={roleAssignmentControl.reviewDept ?? roleAssignmentControl.reviewer ?? ""}>
+                          {(reviewerPeople.length > 0 ? reviewerPeople : people).map((person) => (
+                            <option key={person.id} value={person.name}>{person.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <div className="execution-form-item execution-form-action">
+                        <button className="primary-button" type="submit">역할 저장</button>
+                      </div>
+                    </form>
+                  </>
+                ) : (
+                  <div className="empty-selection-panel">
+                    <p className="eyebrow">Assignment</p>
+                    <h2>통제를 선택하세요</h2>
+                  </div>
+                )}
+              </article>
+            </section>
+          ) : null}
+
+        </main>
+      </div>
+    </div>
+  );
+}
