@@ -48,31 +48,107 @@ textarea {
   display: grid;
   place-items: center;
   padding: 24px;
+  background: linear-gradient(180deg, #dfe3eb 0%, #d7dce6 100%);
 }
 
 .login-card {
-  width: min(420px, 100%);
+  width: min(360px, 100%);
   display: grid;
-  gap: 14px;
-  padding: 22px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(255, 252, 247, 0.94);
-  box-shadow: var(--shadow);
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(164, 172, 185, 0.32);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 14px 30px rgba(65, 74, 89, 0.14);
 }
 
 .login-card h1 {
   margin: 0;
-  font-size: 1.5rem;
+  font-size: 1.12rem;
+  line-height: 1.28;
+  color: #202733;
+}
+
+.login-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  width: fit-content;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(176, 184, 196, 0.65);
+  background: #f5f7fb;
+  color: #7c8697;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+.login-copy-block {
+  display: grid;
+  gap: 4px;
 }
 
 .login-copy {
   margin: 0;
-  color: var(--muted);
+  color: #7a8392;
+  font-size: 0.76rem;
+}
+
+.login-method-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(199, 205, 214, 0.9);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #f6f7fa 0%, #eff2f6 100%);
+}
+
+.login-method-label {
+  color: #98a0ae;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.login-method-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.login-method-row strong {
+  color: #253041;
+  font-size: 0.8rem;
+}
+
+.login-method-row span,
+.login-method-note,
+.login-footnote {
+  color: #7a8392;
+  font-size: 0.72rem;
+}
+
+.login-method-note,
+.login-footnote {
+  margin: 0;
+}
+
+.login-button-panel {
+  display: grid;
+  gap: 8px;
 }
 
 .google-login-button-wrap {
-  min-height: 44px;
+  min-height: 40px;
+  justify-items: stretch;
+}
+
+.google-login-button-wrap > div {
+  width: 100% !important;
+  display: flex;
+  justify-content: center;
 }
 
 .login-error {

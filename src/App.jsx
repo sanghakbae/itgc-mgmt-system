@@ -1470,11 +1470,11 @@ export default function App() {
       });
       googleLoginRef.current.innerHTML = "";
       window.google.accounts.id.renderButton(googleLoginRef.current, {
-        theme: "outline",
+        theme: "filled_black",
         size: "large",
         shape: "rectangular",
-        text: "signin_with",
-        width: 320,
+        text: "continue_with",
+        width: 300,
       });
     }
 
@@ -2039,15 +2039,28 @@ export default function App() {
     return (
       <div className="login-shell">
         <section className="login-card">
-          <p className="eyebrow">IT 통제(ITGC)</p>
-          <h1>관리 시스템 로그인</h1>
-          <p className="login-copy">구글 계정으로 로그인해야 페이지를 열 수 있습니다. `muhayu.com` 도메인 계정만 허용됩니다.</p>
+          <div className="login-badge">itgc management system</div>
+          <div className="login-copy-block">
+            <h1>IT 통제(ITGC) 관리 시스템</h1>
+            <p className="login-copy">Google 계정으로 로그인합니다.</p>
+          </div>
+          <div className="login-method-card">
+            <span className="login-method-label">로그인 방식</span>
+            <div className="login-method-row">
+              <strong>Google OAuth</strong>
+              <span>muhayu.com</span>
+            </div>
+            <p className="login-method-note">로그인 시 이름과 이메일 정보를 수집합니다.</p>
+          </div>
           {GOOGLE_CLIENT_ID ? (
-            <div className="google-login-button-wrap" ref={googleLoginRef} />
+            <div className="login-button-panel">
+              <div className="google-login-button-wrap" ref={googleLoginRef} />
+            </div>
           ) : (
             <p className="login-error">`.env`에 `VITE_GOOGLE_CLIENT_ID`를 설정하세요.</p>
           )}
           {authError ? <p className="login-error">{authError}</p> : null}
+          <p className="login-footnote">인가된 `muhayu.com` 계정만 접근할 수 있습니다.</p>
         </section>
       </div>
     );
