@@ -715,6 +715,32 @@ function isRegistrationFieldFilled(form, key) {
   return String(form[key] ?? "").trim().length > 0;
 }
 
+function isImageEvidence(file) {
+  const candidate = String(file?.mimeType || file?.name || file?.url || "").toLowerCase();
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(candidate) || candidate.startsWith("image/");
+}
+
+function getEvidencePreviewUrl(file) {
+  const rawUrl = String(file?.url ?? "").trim();
+  const driveFileId = String(file?.driveFileId ?? "").trim();
+
+  if (driveFileId) {
+    return `https://drive.google.com/uc?export=view&id=${driveFileId}`;
+  }
+
+  const byIdMatch = rawUrl.match(/[?&]id=([^&]+)/i);
+  if (byIdMatch?.[1]) {
+    return `https://drive.google.com/uc?export=view&id=${byIdMatch[1]}`;
+  }
+
+  const byPathMatch = rawUrl.match(/\/d\/([^/]+)/i);
+  if (byPathMatch?.[1]) {
+    return `https://drive.google.com/uc?export=view&id=${byPathMatch[1]}`;
+  }
+
+  return rawUrl;
+}
+
 function normalizeControl(control) {
   const catalog = controlCatalog[control.id] ?? {};
   const performDept = control.performDept ?? control.performer ?? control.ownerDept ?? "";
@@ -848,7 +874,7 @@ function mergeMissingWorkflows(controls, workflows) {
 
 function loadWorkspace() {
   const saved = window.localStorage.getItem(STORAGE_KEY);
-  if (!saved) return { ...structuredClone(defaultData), people: structuredClone(defaultPeople) };
+  if (!saved) return { ...structuredClone(defaultData), people: structuredClone(defaultPeople), auditLogs: [] };
 
   try {
     const parsed = JSON.parse(saved);
@@ -858,11 +884,12 @@ function loadWorkspace() {
         controls: parsed.controls.map(normalizeControl),
         workflows: mergeMissingWorkflows(parsed.controls.map(normalizeControl), parsed.workflows),
         people: Array.isArray(parsed.people) ? parsed.people : structuredClone(defaultPeople),
+        auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
       };
     }
   } catch {}
 
-  return { ...structuredClone(defaultData), people: structuredClone(defaultPeople) };
+  return { ...structuredClone(defaultData), people: structuredClone(defaultPeople), auditLogs: [] };
 }
 
 function persistWorkspace(workspace) {
@@ -975,6 +1002,29 @@ function workflowLabel(status) {
   return "대기";
 }
 
+function auditActionLabel(action) {
+  const labels = {
+    LOGIN_SUCCESS: "로그인",
+    LOGOUT: "로그아웃",
+    MEMBER_JOINED: "회원 가입",
+    MEMBER_UPDATED: "회원 정보 수정",
+    ROLE_CHANGED: "권한 변경",
+    MENU_OPEN: "메뉴 열람",
+    CONTROL_VIEWED: "통제 상세 조회",
+    CONTROL_EDIT_VIEWED: "통제 등록/수정 조회",
+    EXECUTION_VIEWED: "통제 운영 조회",
+    CONTROL_CREATED: "통제 등록",
+    CONTROL_UPDATED: "통제 수정",
+    EXECUTION_SAVED: "통제 운영 저장",
+    REVIEW_COMPLETED: "승인 완료",
+    REPORT_VIEWED: "리포트 조회",
+    REPORT_HTML_EXPORTED: "HTML 리포트 출력",
+    REPORT_PDF_PRINTED: "PDF 리포트 출력",
+  };
+
+  return labels[action] ?? "기타";
+}
+
 function DashboardIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -1002,6 +1052,15 @@ function PeopleIcon() {
       <circle cx="17" cy="10" r="2.5" fill="currentColor" opacity="0.72" />
       <path d="M4.5 18a4.5 4.5 0 0 1 9 0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
       <path d="M13.5 18a3.6 3.6 0 0 1 7 0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" opacity="0.72" />
+    </svg>
+  );
+}
+
+function AuditIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 4h8l3 3v13H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M15 4v4h4M9 11h6M9 15h6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
 }
@@ -1068,6 +1127,19 @@ function formatDate(value) {
     month: "short",
     day: "numeric",
   }).format(new Date(value));
+}
+
+function formatSeoulDateTime(value) {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date(value)).replace(" ", " ");
 }
 
 function progressForControl(controlId, workflows) {
@@ -1199,13 +1271,22 @@ export default function App() {
   const [assignmentReviewer, setAssignmentReviewer] = useState("");
   const [assignmentReviewChecked, setAssignmentReviewChecked] = useState("미검토");
   const [dashboardView, setDashboardView] = useState("frequency");
+  const [reportPeriod, setReportPeriod] = useState("monthly");
+  const [reportFormat, setReportFormat] = useState("html");
+  const [reportPreviewOpen, setReportPreviewOpen] = useState(false);
+  const [reportPreviewMarkup, setReportPreviewMarkup] = useState("");
+  const [memberDrafts, setMemberDrafts] = useState({});
+  const [auditLogQuery, setAuditLogQuery] = useState("");
+  const [auditLogPage, setAuditLogPage] = useState(1);
   const [integrationStatus, setIntegrationStatus] = useState(() => ({
     spreadsheet: GOOGLE_SCRIPT_URL ? "미확인" : "미설정",
     drive: GOOGLE_SCRIPT_URL ? "미확인" : "미설정",
   }));
   const googleLoginRef = useRef(null);
+  const reportPreviewFrameRef = useRef(null);
 
   const { controls, workflows, people } = workspace;
+  const auditLogs = workspace.auditLogs ?? [];
   const selectedControl = controls.find((control) => control.id === selectedControlId) ?? null;
   const roleAssignmentControl = controls.find((control) => control.id === roleAssignmentControlId) ?? controls[0] ?? null;
   const processSummary = summarizeByProcess(controls, workflows);
@@ -1216,9 +1297,10 @@ export default function App() {
     const syncedPeople = people
       .filter((person) => String(person.email ?? "").trim().length > 0)
       .map((person) => ({
-      ...person,
-      email: person.email ?? "",
-      accessRole: person.accessRole ?? "user",
+        ...person,
+        email: person.email ?? "",
+        unit: person.unit ?? person.team ?? "미지정",
+        accessRole: person.accessRole ?? "viewer",
       }));
 
     if (!authUser?.email) {
@@ -1235,13 +1317,15 @@ export default function App() {
         id: "AUTH-CURRENT",
         name: authUser.name ?? authUser.email,
         email: authUser.email,
+        unit: "미지정",
         team: "미지정",
         accessRole: "admin",
-        locked: true,
       },
       ...syncedPeople,
     ];
   }, [authUser, people]);
+  const canManageMembers =
+    (memberDirectory.find((person) => person.email === authUser?.email)?.accessRole ?? "viewer") === "admin";
 
   const visibleControls =
     processFilter === "전체" ? controls : controls.filter((control) => control.process === processFilter);
@@ -1271,6 +1355,111 @@ export default function App() {
     ?? controls[0]
     ?? null;
   const assignmentStatus = deriveAssignmentStatus(assignmentExecutionNote, assignmentReviewChecked);
+  const reportPeriodConfig = {
+    monthly: { label: "월", frequencies: ["Monthly", "월별"] },
+    quarterly: { label: "분기", frequencies: ["Quarterly", "분기별"] },
+    semiannual: { label: "반기", frequencies: ["Half-Bi-annual", "반기별"] },
+    annual: { label: "연", frequencies: ["Annual", "연 1회 + 변경 시"] },
+  };
+  const reportControls = useMemo(() => {
+    const config = reportPeriodConfig[reportPeriod];
+    if (!config) {
+      return [];
+    }
+
+    return controls
+      .filter((control) => config.frequencies.includes(control.frequency))
+      .map((control) => ({
+        id: control.id,
+        title: control.title,
+        process: control.process,
+        frequency: control.frequency,
+        performer: control.performDept ?? control.performer ?? "-",
+        reviewer: control.reviewDept ?? control.reviewer ?? "-",
+        status: control.status ?? "-",
+        reviewChecked: control.reviewChecked ?? "미검토",
+        executionNote: control.executionNote?.trim() || "-",
+        evidenceCount: Array.isArray(control.evidenceFiles) ? control.evidenceFiles.length : 0,
+        evidenceFiles: Array.isArray(control.evidenceFiles) ? control.evidenceFiles : [],
+      }));
+  }, [controls, reportPeriod]);
+  const reportSummary = useMemo(() => ({
+    total: reportControls.length,
+    completed: reportControls.filter((item) => item.status === "점검 완료" || item.status === "정상").length,
+    inProgress: reportControls.filter((item) => item.status === "점검 중").length,
+    scheduled: reportControls.filter((item) => item.status === "점검 예정").length,
+  }), [reportControls]);
+  const filteredAuditLogs = useMemo(() => {
+    const normalizedQuery = auditLogQuery.trim().toLowerCase();
+    if (!normalizedQuery) {
+      return auditLogs;
+    }
+
+    return auditLogs.filter((log) =>
+      [
+        log.createdAt,
+        log.actorName,
+        log.actorEmail,
+        log.action,
+        auditActionLabel(log.action),
+        log.ip,
+        log.target,
+        log.detail,
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(normalizedQuery),
+    );
+  }, [auditLogQuery, auditLogs]);
+  const totalAuditLogPages = Math.max(1, Math.ceil(filteredAuditLogs.length / 30));
+  const currentAuditLogPage = Math.min(auditLogPage, totalAuditLogPages);
+  const pagedAuditLogs = filteredAuditLogs.slice((currentAuditLogPage - 1) * 30, currentAuditLogPage * 30);
+
+  useEffect(() => {
+    setMemberDrafts(
+      Object.fromEntries(
+        memberDirectory.map((person) => [
+          person.id,
+          {
+            unit: person.unit ?? person.team ?? "미지정",
+            accessRole: person.accessRole ?? "viewer",
+          },
+        ]),
+      ),
+    );
+  }, [memberDirectory]);
+
+  useEffect(() => {
+    if (auditLogPage > totalAuditLogPages) {
+      setAuditLogPage(totalAuditLogPages);
+    }
+  }, [auditLogPage, totalAuditLogPages]);
+
+  useEffect(() => {
+    setAuditLogPage(1);
+  }, [auditLogQuery]);
+
+  useEffect(() => {
+    if (!authUser?.email) {
+      return;
+    }
+
+    const normalizedEmail = authUser.email.toLowerCase();
+    const currentMember = people.find((person) => String(person.email ?? "").toLowerCase() === normalizedEmail);
+    if (!currentMember || currentMember.accessRole === "admin") {
+      return;
+    }
+
+    updateWorkspace({
+      ...workspace,
+      people: people.map((person) =>
+        String(person.email ?? "").toLowerCase() === normalizedEmail
+          ? { ...person, accessRole: "admin" }
+          : person,
+      ),
+    });
+  }, [authUser, people]);
+
   const controlProgressGroups = useMemo(() => {
     const grouped = controls.reduce((acc, control) => {
       const frequency = control.frequency || "미지정";
@@ -1408,7 +1597,9 @@ export default function App() {
     { key: "control-list", label: "통제 목록", icon: <ControlIcon /> },
     { key: "controls", label: "통제 운영", icon: <ControlIcon /> },
     { key: "register", label: "통제 등록/수정", icon: <ControlIcon /> },
+    { key: "report", label: "리포트", icon: <FileStackIcon /> },
     { key: "people", label: "회원 관리", icon: <PeopleIcon /> },
+    { key: "audit", label: "감사 로그", icon: <AuditIcon /> },
   ];
 
   function handleViewChange(nextView) {
@@ -1418,6 +1609,9 @@ export default function App() {
       setSelectedControlId(controls[0]?.id ?? "");
     }
     setCurrentView(nextView);
+    if (["control-list", "controls", "register", "report"].includes(nextView)) {
+      writeAuditLog("MENU_OPEN", nextView, `${nextView} 메뉴 열람`);
+    }
     if (window.matchMedia("(max-width: 960px)").matches) {
       setIsSidebarOpen(false);
     }
@@ -1456,6 +1650,8 @@ export default function App() {
                 ...person,
                 name: nextUser.name,
                 email,
+                unit: person.unit ?? person.team ?? "미지정",
+                accessRole: "admin",
               }
             : person,
         )
@@ -1465,8 +1661,9 @@ export default function App() {
             name: nextUser.name,
             email,
             role: "both",
+            unit: "미지정",
             team: "미지정",
-            accessRole: people.some((person) => String(person.email ?? "").trim()) ? "user" : "admin",
+            accessRole: "admin",
           },
           ...people,
         ];
@@ -1474,13 +1671,19 @@ export default function App() {
     window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextUser));
     setAuthError("");
     setAuthUser(nextUser);
-    updateWorkspace({
-      ...workspace,
-      people: nextPeople,
-    });
+    writeAuditLog(
+      existingMember ? "LOGIN_SUCCESS" : "MEMBER_JOINED",
+      email,
+      existingMember ? `${nextUser.name} 로그인` : `${nextUser.name} 최초 로그인 및 회원 등록`,
+      {
+        ...workspace,
+        people: nextPeople,
+      },
+    );
   }
 
   function handleLogout() {
+    writeAuditLog("LOGOUT", authUser?.email ?? "", `${authUser?.name ?? ""} 로그아웃`);
     window.localStorage.removeItem(AUTH_STORAGE_KEY);
     window.google?.accounts?.id?.disableAutoSelect?.();
     setAuthUser(null);
@@ -1650,6 +1853,149 @@ export default function App() {
     }
   }
 
+  function writeAuditLog(action, target, detail, baseWorkspace = workspace) {
+    const nextWorkspace = {
+      ...baseWorkspace,
+      auditLogs: [
+        {
+          id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          action,
+          target,
+          detail,
+          actorName: authUser?.name ?? "",
+          actorEmail: authUser?.email ?? "",
+          ip: "-",
+          createdAt: formatSeoulDateTime(new Date()),
+        },
+        ...(baseWorkspace.auditLogs ?? auditLogs),
+      ].slice(0, 300),
+    };
+
+    updateWorkspace(nextWorkspace);
+    return nextWorkspace;
+  }
+
+  function buildReportMarkup() {
+    const periodLabel = reportPeriodConfig[reportPeriod]?.label ?? "주기";
+    const rows = reportControls.map((item) => `
+      <tr>
+        <td>${item.id}</td>
+        <td>${item.title}</td>
+        <td>${item.process}</td>
+        <td>${item.performer}</td>
+        <td>${item.reviewer}</td>
+        <td>${item.status}</td>
+        <td>${item.reviewChecked}</td>
+        <td>
+          <div>${item.evidenceCount}건</div>
+          <div class="evidence-preview-list">
+            ${item.evidenceFiles
+              .filter((file) => isImageEvidence(file) && file.url)
+              .map((file) => `<img src="${getEvidencePreviewUrl(file)}" alt="${file.name}" class="evidence-preview-image" />`)
+              .join("")}
+          </div>
+        </td>
+        <td>${item.executionNote}</td>
+      </tr>
+    `).join("");
+
+    return `<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>${periodLabel} 수행 리포트</title>
+  <style>
+    @page { size: A4 landscape; margin: 8mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; padding: 4px; margin: 0; color: #111827; }
+    h1 { margin: 0 0 4px; font-size: 18px; line-height: 1.2; }
+    p { margin: 0 0 8px; font-size: 10px; color: #4b5563; }
+    .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-bottom: 10px; }
+    .summary div { border: 1px solid #d1d5db; border-radius: 4px; padding: 6px 8px; }
+    .summary span { font-size: 9px; white-space: nowrap; }
+    .summary strong { display: block; margin-top: 2px; font-size: 14px; white-space: nowrap; }
+    table { width: 100%; border-collapse: collapse; table-layout: auto; }
+    th, td {
+      border: 1px solid #d1d5db;
+      padding: 4px 5px;
+      font-size: 9px;
+      vertical-align: middle;
+      text-align: center;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    th { background: #f3f4f6; }
+    .evidence-preview-list { display: flex; gap: 4px; align-items: center; margin-top: 4px; }
+    .evidence-preview-image { width: 44px; height: 44px; object-fit: cover; border: 1px solid #d1d5db; }
+  </style>
+</head>
+<body>
+  <h1>${periodLabel} 수행 리포트</h1>
+  <p>생성 시각: ${formatSeoulDateTime(new Date())}</p>
+  <div class="summary">
+    <div><span>전체</span><strong>${reportSummary.total}건</strong></div>
+    <div><span>완료</span><strong>${reportSummary.completed}건</strong></div>
+    <div><span>진행 중</span><strong>${reportSummary.inProgress}건</strong></div>
+    <div><span>예정</span><strong>${reportSummary.scheduled}건</strong></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th><th>통제명</th><th>카테고리</th><th>수행자</th><th>검토자</th><th>상태</th><th>승인</th><th>증적</th><th>수행 내역</th>
+      </tr>
+    </thead>
+    <tbody>${rows || '<tr><td colspan="9">대상 통제가 없습니다.</td></tr>'}</tbody>
+  </table>
+</body>
+</html>`;
+  }
+
+  function handleRemoveEvidenceFile(fileIndex) {
+    if (!selectedControl) {
+      return;
+    }
+
+    const nextEvidenceFiles = (selectedControl.evidenceFiles ?? []).filter((_, index) => index !== fileIndex);
+    const nextWorkspace = {
+      ...workspace,
+      controls: controls.map((control) =>
+        control.id === selectedControl.id
+          ? {
+              ...control,
+              evidenceFiles: nextEvidenceFiles,
+              evidenceStatus: nextEvidenceFiles.length > 0 ? control.evidenceStatus || "수집 중" : "미수집",
+            }
+          : control,
+      ),
+    };
+
+    writeAuditLog("EXECUTION_SAVED", selectedControl.id, `${selectedControl.title} 증적 파일 삭제`, nextWorkspace);
+  }
+
+  function handleReportExport() {
+    const periodLabel = reportPeriodConfig[reportPeriod]?.label ?? "주기";
+    const markup = buildReportMarkup();
+    setReportPreviewMarkup(markup);
+    setReportPreviewOpen(true);
+    writeAuditLog("REPORT_VIEWED", reportPeriod, `${periodLabel} 수행 리포트 미리보기`);
+  }
+
+  function handlePrintReportPreview() {
+    const periodLabel = reportPeriodConfig[reportPeriod]?.label ?? "주기";
+    const frameWindow = reportPreviewFrameRef.current?.contentWindow;
+    if (!frameWindow) {
+      return;
+    }
+
+    frameWindow.focus();
+    frameWindow.print();
+    writeAuditLog(
+      reportFormat === "html" ? "REPORT_HTML_EXPORTED" : "REPORT_PDF_PRINTED",
+      reportPeriod,
+      `${periodLabel} 수행 리포트 ${reportFormat === "html" ? "HTML 출력" : "PDF 출력"}`,
+    );
+  }
+
   function resetWorkspace() {
     updateWorkspace({ ...structuredClone(defaultData), people: structuredClone(defaultPeople) });
     setCurrentView("controls");
@@ -1773,7 +2119,7 @@ export default function App() {
     }
 
     if (editingControl) {
-      updateWorkspace({
+      const nextWorkspace = {
         ...workspace,
         controls: controls.map((control) =>
           control.id === editingControl.id ? nextControl : control,
@@ -1788,7 +2134,8 @@ export default function App() {
               }
             : workflow,
         ),
-      });
+      };
+      writeAuditLog("CONTROL_UPDATED", nextControl.id, `${nextControl.title} 수정`, nextWorkspace);
       setRegistrationSelectedControlId(nextControl.id);
       window.alert("통제를 수정했습니다.");
       return;
@@ -1799,11 +2146,12 @@ export default function App() {
       id: `WF-${String(workflows.length + index + 1).padStart(3, "0")}`,
     }));
 
-    updateWorkspace({
+    const nextWorkspace = {
       ...workspace,
       controls: [nextControl, ...controls],
       workflows: [...seededWorkflows, ...workflows],
-    });
+    };
+    writeAuditLog("CONTROL_CREATED", nextControl.id, `${nextControl.title} 등록`, nextWorkspace);
     window.localStorage.removeItem(REGISTRATION_DRAFT_KEY);
     setRegistrationSelectedControlId(nextControl.id);
     window.alert("통제를 등록했습니다.");
@@ -1866,8 +2214,72 @@ export default function App() {
         person.id === personId
           ? { ...person, accessRole }
           : person,
-      ),
+        ),
     });
+  }
+
+  function handleMemberDraftChange(personId, key, value) {
+    if (!canManageMembers) {
+      return;
+    }
+
+    setMemberDrafts((current) => ({
+      ...current,
+      [personId]: {
+        ...(current[personId] ?? {}),
+        [key]: value,
+      },
+    }));
+  }
+
+  function handleMemberSave(personId, overrideDraft = null) {
+    if (!canManageMembers) {
+      return;
+    }
+
+    const sourcePerson = memberDirectory.find((person) => person.id === personId);
+    if (!sourcePerson) return;
+
+    const draft = overrideDraft ?? memberDrafts[personId] ?? {
+      unit: sourcePerson.unit ?? sourcePerson.team ?? "미지정",
+      accessRole: sourcePerson.accessRole ?? "viewer",
+    };
+    const normalizedEmail = String(sourcePerson.email ?? "").trim().toLowerCase();
+    if (!normalizedEmail) return;
+
+    const existingIndex = people.findIndex((person) => String(person.email ?? "").trim().toLowerCase() === normalizedEmail);
+    const nextEntry = {
+      id: existingIndex >= 0 ? people[existingIndex].id : `MBR-${String(Date.now()).slice(-6)}`,
+      name: sourcePerson.name,
+      email: normalizedEmail,
+      role: existingIndex >= 0 ? people[existingIndex].role ?? "both" : "both",
+      unit: draft.unit.trim() || "미지정",
+      team: draft.unit.trim() || "미지정",
+      accessRole: draft.accessRole || "viewer",
+    };
+
+    const nextPeople =
+      existingIndex >= 0
+        ? people.map((person, index) => (index === existingIndex ? { ...person, ...nextEntry } : person))
+        : [nextEntry, ...people];
+
+    const previousPerson = existingIndex >= 0 ? people[existingIndex] : null;
+    const action =
+      !previousPerson
+        ? "MEMBER_JOINED"
+        : previousPerson.accessRole !== nextEntry.accessRole
+          ? "ROLE_CHANGED"
+          : "MEMBER_UPDATED";
+
+    writeAuditLog(
+      action,
+      nextEntry.email,
+      `${nextEntry.name} · 유닛:${previousPerson?.team ?? previousPerson?.unit ?? "-"} -> ${nextEntry.team}, 권한:${previousPerson?.accessRole ?? "-"} -> ${nextEntry.accessRole}`,
+      {
+        ...workspace,
+        people: nextPeople,
+      },
+    );
   }
 
   function handleRoleAssignmentSubmit(event) {
@@ -1939,7 +2351,7 @@ export default function App() {
       }
     }
 
-    updateWorkspace({
+    const nextWorkspace = {
       ...workspace,
       controls: controls.map((control) =>
         control.id === selectedControl.id
@@ -1958,7 +2370,11 @@ export default function App() {
             }
           : control,
       ),
-    });
+    };
+    const loggedWorkspace = writeAuditLog("EXECUTION_SAVED", selectedControl.id, `${selectedControl.title} 수행 내역 저장`, nextWorkspace);
+    if (reviewChecked === "검토 완료" && reviewer) {
+      writeAuditLog("REVIEW_COMPLETED", selectedControl.id, `${selectedControl.title} 검토 완료 · ${reviewer}`, loggedWorkspace);
+    }
   }
 
   function handleWorkflowSubmit(event) {
@@ -2624,18 +3040,19 @@ export default function App() {
               </div>
               <div className="control-browser-layout">
                 <div className="control-browser-list">
-                  <div className="registration-example-list">
+                  <div className="control-list">
                   {registrationPagedControls.map((control) => (
                     <button
                       type="button"
                       key={control.id}
                       className={
                         control.id === registrationSelectedControl?.id
-                          ? "registration-example-item registration-control-item active"
-                          : "registration-example-item registration-control-item"
+                          ? "registration-example-item registration-control-item control-operation-card active"
+                          : "registration-example-item registration-control-item control-operation-card"
                       }
                       onClick={() => {
                         setRegistrationSelectedControlId(control.id);
+                        writeAuditLog("CONTROL_VIEWED", control.id, `${control.title} 상세 조회`);
                       }}
                     >
                       <div className="registration-example-head">
@@ -2733,9 +3150,10 @@ export default function App() {
                             ? "registration-example-item registration-control-item control-operation-card active"
                             : "registration-example-item registration-control-item control-operation-card"
                         }
-                      onClick={() => {
-                        setSelectedControlId(control.id);
-                      }}
+                          onClick={() => {
+                            setSelectedControlId(control.id);
+                            writeAuditLog("EXECUTION_VIEWED", control.id, `${control.title} 운영 화면 조회`);
+                          }}
                     >
                         <div className="registration-example-head">
                           <strong>{control.id}</strong>
@@ -2943,18 +3361,20 @@ export default function App() {
                 <div className="section-heading">
                   <div>
                     <p className="eyebrow">Members</p>
-                    <h2>로그인 회원</h2>
+                    <h2>회원 관리</h2>
                   </div>
+                  {!canManageMembers ? <span className="detail-body-text">admin만 수정할 수 있습니다.</span> : null}
                 </div>
                 <div className="table-wrap">
-                  <table>
+                  <table className="member-table">
                     <thead>
                       <tr>
                         <th>ID</th>
                         <th>이름</th>
                         <th>이메일</th>
-                        <th>팀</th>
+                        <th>유닛</th>
                         <th>권한</th>
+                        <th>저장</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -2963,25 +3383,227 @@ export default function App() {
                           <td>{person.id}</td>
                           <td>{person.name}</td>
                           <td>{person.email || "-"}</td>
-                          <td>{person.team}</td>
                           <td>
-                            {person.locked ? (
-                              "admin"
-                            ) : (
-                              <select
-                                value={person.accessRole ?? "user"}
-                                onChange={(event) => handleMemberAccessRoleChange(person.id, event.target.value)}
-                              >
-                                <option value="user">user</option>
-                                <option value="admin">admin</option>
-                              </select>
-                            )}
+                            <input
+                              type="text"
+                              value={memberDrafts[person.id]?.unit ?? person.unit ?? person.team ?? "미지정"}
+                              onChange={(event) => handleMemberDraftChange(person.id, "unit", event.target.value)}
+                              placeholder="유닛 입력"
+                              disabled={!canManageMembers}
+                            />
+                          </td>
+                          <td>
+                            <select
+                              value={memberDrafts[person.id]?.accessRole ?? person.accessRole ?? "viewer"}
+                              onChange={(event) => handleMemberDraftChange(person.id, "accessRole", event.target.value)}
+                              disabled={!canManageMembers}
+                            >
+                              <option value="admin">admin</option>
+                              <option value="editor">editor</option>
+                              <option value="viewer">viewer</option>
+                            </select>
+                          </td>
+                          <td>
+                            <button
+                              className="secondary-button slim-button"
+                              type="button"
+                              onClick={() => handleMemberSave(person.id)}
+                              disabled={!canManageMembers}
+                            >
+                              저장
+                            </button>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
+              </article>
+            </section>
+          ) : null}
+
+          {currentView === "report" ? (
+            <section className="compact-stack">
+              <article className="panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Reports</p>
+                    <h2>수행 리포트</h2>
+                  </div>
+                </div>
+
+                <div className="report-toolbar">
+                  <label className="registration-filter-field">
+                    <span>주기</span>
+                    <select value={reportPeriod} onChange={(event) => setReportPeriod(event.target.value)}>
+                      <option value="monthly">월</option>
+                      <option value="quarterly">분기</option>
+                      <option value="semiannual">반기</option>
+                      <option value="annual">연</option>
+                    </select>
+                  </label>
+                  <label className="registration-filter-field">
+                    <span>출력 형식</span>
+                    <select value={reportFormat} onChange={(event) => setReportFormat(event.target.value)}>
+                      <option value="html">HTML</option>
+                      <option value="pdf">PDF</option>
+                    </select>
+                  </label>
+                  <div className="report-action">
+                    <button className="primary-button" type="button" onClick={handleReportExport}>
+                      {reportFormat === "pdf" ? "PDF 출력" : "HTML 출력"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="report-summary-grid">
+                  <article className="report-summary-card">
+                    <span>전체</span>
+                    <strong>{reportSummary.total}건</strong>
+                  </article>
+                  <article className="report-summary-card">
+                    <span>완료</span>
+                    <strong>{reportSummary.completed}건</strong>
+                  </article>
+                  <article className="report-summary-card">
+                    <span>진행 중</span>
+                    <strong>{reportSummary.inProgress}건</strong>
+                  </article>
+                  <article className="report-summary-card">
+                    <span>예정</span>
+                    <strong>{reportSummary.scheduled}건</strong>
+                  </article>
+                </div>
+
+                <div className="table-wrap">
+                  <table className="report-table">
+                    <thead>
+                      <tr>
+                        <th>ID</th>
+                        <th>통제명</th>
+                        <th>카테고리</th>
+                        <th>수행자</th>
+                        <th>검토자</th>
+                        <th>상태</th>
+                        <th>승인</th>
+                        <th>증적</th>
+                        <th>수행 내역</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reportControls.length > 0 ? (
+                        reportControls.map((item) => (
+                          <tr key={item.id}>
+                            <td>{item.id}</td>
+                            <td>{item.title}</td>
+                            <td>{item.process}</td>
+                            <td>{item.performer}</td>
+                            <td>{item.reviewer}</td>
+                            <td>{item.status}</td>
+                            <td>{item.reviewChecked}</td>
+                            <td>{item.evidenceCount}건</td>
+                            <td>{item.executionNote}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan="9">선택한 주기에 해당하는 수행 대상이 없습니다.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </article>
+              {reportPreviewOpen ? (
+                <div className="report-preview-overlay" role="dialog" aria-modal="true" aria-label="리포트 미리보기">
+                  <div className="report-preview-modal">
+                    <div className="report-preview-toolbar">
+                      <strong>리포트 미리보기</strong>
+                      <div className="report-preview-actions">
+                        <button className="secondary-button slim-button" type="button" onClick={() => setReportPreviewOpen(false)}>
+                          닫기
+                        </button>
+                        <button className="primary-button" type="button" onClick={handlePrintReportPreview}>
+                          {reportFormat === "pdf" ? "PDF 출력" : "HTML 출력"}
+                        </button>
+                      </div>
+                    </div>
+                    <iframe
+                      ref={reportPreviewFrameRef}
+                      className="report-preview-frame"
+                      title="리포트 미리보기"
+                      srcDoc={reportPreviewMarkup}
+                    />
+                  </div>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          {currentView === "audit" ? (
+            <section className="compact-stack">
+              <article className="panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Audit</p>
+                    <h2>감사 로그</h2>
+                  </div>
+                </div>
+                <div className="report-toolbar audit-toolbar">
+                  <input
+                    className="audit-search-input"
+                    type="text"
+                    value={auditLogQuery}
+                    onChange={(event) => setAuditLogQuery(event.target.value)}
+                    placeholder="사용자, 액션, 대상, 내용 검색"
+                  />
+                </div>
+                <div className="table-wrap">
+                  <table className="audit-table">
+                    <thead>
+                      <tr>
+                        <th>시각</th>
+                        <th>사용자</th>
+                        <th>액션</th>
+                        <th>IP</th>
+                        <th>대상</th>
+                        <th>내용</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pagedAuditLogs.length > 0 ? (
+                        pagedAuditLogs.map((log) => (
+                          <tr key={log.id}>
+                            <td>{String(log.createdAt ?? "-").slice(0, 16) || "-"}</td>
+                            <td>{log.actorName || log.actorEmail || "-"}</td>
+                            <td>{log.action ? `${log.action} · ${auditActionLabel(log.action)}` : "-"}</td>
+                            <td>{log.ip || "-"}</td>
+                            <td>{log.target || "-"}</td>
+                            <td>{log.detail || "-"}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan="6">로그가 없습니다.</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                {totalAuditLogPages > 1 ? (
+                  <div className="pagination registration-pagination">
+                    {Array.from({ length: totalAuditLogPages }, (_, index) => index + 1).map((page) => (
+                      <button
+                        key={page}
+                        type="button"
+                        className={page === currentAuditLogPage ? "page-button active" : "page-button"}
+                        onClick={() => setAuditLogPage(page)}
+                      >
+                        {page}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </article>
             </section>
           ) : null}
