@@ -1,25 +1,158 @@
-# ITGC 관리 시스템
+# IT 통제(ITGC) 관리 시스템
 
-React + Vite 기반 npm 프로젝트로 구성한 ITGC 통제 이행 관리 시스템입니다.
+React + Vite 기반의 ITGC 운영 관리 화면입니다.  
+Google OAuth 로그인, Google Sheets / Drive 연동, 감사 로그, 회원 관리, 수행 리포트 출력까지 포함합니다.
 
-## 포함 기능
+## 주요 기능
 
-- 통제 항목 중심 데이터 구조
-- 각 통제에 연결된 처리 프로세스 관리
-- 통제별 진행률, 수행자, 검토자, 통제 주기 표시
-- 평가 속성, 테스트 증빙, 테스트 절차 상세 조회
-- 프로세스 상태 전환과 우선순위 작업 확인
-- 상태/프로세스 필터링
-- 로컬 스토리지 기반 데이터 저장
+- Google OAuth 로그인
+  - `muhayu.com` 도메인 계정만 허용
+- 대시보드
+  - 주기별 / 통제별 / 카테고리별 진행 현황
+  - 수행 유닛, 지연 필터
+- 통제 목록
+  - 통제 상세 조회
+  - 관련 시스템, 테스트 방법, 증적, 모집단 확인
+- 통제 운영
+  - 수행 내역 등록
+  - 증적 파일 첨부 / 삭제 / 미리보기
+  - 검토 완료 처리
+- 통제 등록/수정
+  - 통제 신규 등록 및 기존 통제 수정
+- 회원 관리
+  - 로그인한 회원 목록 관리
+  - `admin / editor / viewer` 권한 관리
+- 감사 로그
+  - 로그인/로그아웃
+  - 회원 가입
+  - 권한 변경
+  - 통제 등록/수정
+  - 통제 운영 저장 / 검토 완료
+- 리포트
+  - 월 / 분기 / 반기 / 연 기준 출력
+  - HTML / PDF 미리보기 및 인쇄
 
-## 시작 방법
+## 기술 스택
+
+- React 19
+- Vite 7
+- Google Identity Services
+- Google Apps Script
+- Google Sheets
+- Google Drive
+
+## 로컬 실행
 
 ```bash
 npm install
 npm run dev
 ```
 
-브라우저에서 표시된 로컬 주소로 접속하면 됩니다.
+기본 개발 주소:
+
+- `http://127.0.0.1:5173`
+- `http://localhost:5173`
+
+## 환경 변수
+
+`.env.example` 기준으로 아래 값을 설정합니다.
+
+```env
+VITE_GOOGLE_CLIENT_ID=YOUR_GOOGLE_CLIENT_ID
+VITE_GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec
+```
+
+설명:
+
+- `VITE_GOOGLE_CLIENT_ID`
+  - Google Cloud OAuth 웹 클라이언트 ID
+- `VITE_GOOGLE_SCRIPT_URL`
+  - Apps Script 웹앱 `/exec` 주소
+
+## Google OAuth 설정
+
+현재 로그인 방식은 Google Identity Services JavaScript 버튼 방식입니다.
+
+`승인된 JavaScript 원본`에 아래 주소를 넣어야 합니다.
+
+- 로컬 개발
+  - `http://127.0.0.1:5173`
+  - `http://localhost:5173`
+- GitHub Pages
+  - `https://sanghakbae.github.io`
+- Amplify
+  - 예: `https://main.d3jgpbgqiei104.amplifyapp.com`
+- 운영 커스텀 도메인 사용 시
+  - 예: `https://itgc.muhayu.com`
+
+주의:
+
+- `승인된 리디렉션 URI`는 현재 방식에서는 보통 필요하지 않습니다.
+- origin만 등록해야 하므로 경로는 넣지 않습니다.
+
+## Apps Script 연동
+
+프런트 배포와 Apps Script 배포는 별개입니다.  
+프런트만 배포해도 스프레드시트 구조는 자동 갱신되지 않습니다.
+
+### Apps Script 반영 순서
+
+1. [google-apps-script/Code.gs](/Users/shbae-pc/Tools/ITGC/google-apps-script/Code.gs) 내용을 Apps Script 편집기에 붙여넣기
+2. 웹 앱으로 다시 배포
+3. 새 `/exec` URL을 `VITE_GOOGLE_SCRIPT_URL`에 반영
+
+### 사용 시트
+
+- `control_master`
+- `control_execution`
+- `evidence_files`
+- `audit_log`
+- `member_master`
+
+### Apps Script health check
+
+배포 후 아래 주소가 정상 JSON을 반환해야 합니다.
+
+- `VITE_GOOGLE_SCRIPT_URL?action=getWorkspace`
+- `VITE_GOOGLE_SCRIPT_URL?action=healthCheck`
+
+정상 예시:
+
+```json
+{"ok":true,"spreadsheet":true,"drive":true}
+```
+
+## 배포
+
+### GitHub Pages
+
+GitHub Actions 워크플로우:
+
+- [.github/workflows/deploy.yml](/Users/shbae-pc/Tools/ITGC/.github/workflows/deploy.yml)
+
+필요한 GitHub Actions Secrets:
+
+- `VITE_GOOGLE_CLIENT_ID`
+- `VITE_GOOGLE_SCRIPT_URL`
+
+`main` 브랜치에 푸시하면 자동 배포됩니다.
+
+### AWS Amplify
+
+Amplify에서는 `.env` 파일 업로드가 아니라 콘솔 환경 변수로 넣어야 합니다.
+
+등록 위치:
+
+1. Amplify Console
+2. `Hosting`
+3. `Environment variables`
+
+추가할 값:
+
+- `VITE_GOOGLE_CLIENT_ID`
+- `VITE_GOOGLE_SCRIPT_URL`
+
+값 저장 후 재배포가 필요합니다.
 
 ## 스크립트
 
@@ -27,17 +160,16 @@ npm run dev
 - `npm run build`: 프로덕션 빌드
 - `npm run preview`: 빌드 결과 미리보기
 
-## 파일 구성
+## 주요 파일
 
-- `index.html`: Vite 엔트리 HTML
-- `src/main.jsx`: React 엔트리
-- `src/App.jsx`: 메인 화면과 상태 관리
-- `src/styles.css`: 스타일 및 반응형 레이아웃
+- [src/App.jsx](/Users/shbae-pc/Tools/ITGC/src/App.jsx): 메인 UI 및 상태 관리
+- [src/styles.css](/Users/shbae-pc/Tools/ITGC/src/styles.css): 전역 스타일 및 반응형 레이아웃
+- [src/googleSheetApi.js](/Users/shbae-pc/Tools/ITGC/src/googleSheetApi.js): Apps Script 통신
+- [google-apps-script/Code.gs](/Users/shbae-pc/Tools/ITGC/google-apps-script/Code.gs): Google Sheets / Drive 연동 스크립트
+- [vite.config.js](/Users/shbae-pc/Tools/ITGC/vite.config.js): GitHub Pages base 경로 설정
 
-## 다음 확장 후보
+## 운영 메모
 
-- 사용자/권한별 로그인
-- 증적 파일 업로드와 결재 이력
-- 점검 일정 캘린더
-- 감사 지적사항 및 개선조치 관리
-- 백엔드 API 및 DB 연동
+- 로그인 회원과 감사 로그는 앱 상태뿐 아니라 스프레드시트에도 저장되도록 설계되어 있습니다.
+- 실제 IP는 현재 구조상 신뢰성 있게 수집되지 않아 감사 로그에는 기본값 `-`로 기록됩니다.
+- Apps Script를 최신으로 재배포하지 않으면 회원 정보 / 감사 로그 / 통제 변경 이력이 시트에 저장되지 않을 수 있습니다.
