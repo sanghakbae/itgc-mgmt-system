@@ -2855,21 +2855,24 @@ export default function App() {
                     className={dashboardView === "category" ? "tab-button active" : "tab-button"}
                     onClick={() => setDashboardView("category")}
                   >
-                    카테고리 기준
+                    <span className="tab-label-desktop">카테고리 기준</span>
+                    <span className="tab-label-mobile">카테고리</span>
                   </button>
                   <button
                     type="button"
                     className={dashboardView === "frequency" ? "tab-button active" : "tab-button"}
                     onClick={() => setDashboardView("frequency")}
                   >
-                    주기 기준
+                    <span className="tab-label-desktop">주기 기준</span>
+                    <span className="tab-label-mobile">주기</span>
                   </button>
                   <button
                     type="button"
                     className={dashboardView === "control" ? "tab-button active" : "tab-button"}
                     onClick={() => setDashboardView("control")}
                   >
-                    통제 기준
+                    <span className="tab-label-desktop">통제 기준</span>
+                    <span className="tab-label-mobile">통제</span>
                   </button>
                   <div className="dashboard-delay-buttons">
                     <button
@@ -2877,7 +2880,8 @@ export default function App() {
                       className={dashboardDelayFilter === "지연만" ? "tab-button delay-button active" : "tab-button delay-button"}
                       onClick={() => setDashboardDelayFilter((current) => (current === "지연만" ? "전체" : "지연만"))}
                     >
-                      지연 기준
+                      <span className="tab-label-desktop">지연</span>
+                      <span className="tab-label-mobile">지연</span>
                     </button>
                   </div>
                   <label className="filter-label dashboard-unit-filter dashboard-unit-filter-inline">
