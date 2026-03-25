@@ -6,14 +6,18 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "supabase:seed-sql": "node scripts/generate_supabase_seed_sql.mjs",
+    "supabase:seed-xlsx": "node scripts/generate_supabase_seed_from_xlsx.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.100.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^5.0.0",
-    "vite": "^7.1.0"
+    "vite": "^7.1.0",
+    "xlsx": "^0.18.5"
   }
 }

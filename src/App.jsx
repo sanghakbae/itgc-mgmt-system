@@ -1,11 +1,44 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fetchIntegrationStatus, fetchRemoteWorkspace, syncRemoteWorkspace, uploadEvidenceToDrive } from "./googleSheetApi";
+import {
+  fetchIntegrationStatus as fetchGoogleIntegrationStatus,
+  fetchRemoteWorkspace as fetchGoogleWorkspace,
+  syncRemoteWorkspace as syncGoogleWorkspace,
+  uploadEvidenceToDrive,
+} from "./googleSheetApi";
+import {
+  fetchSupabaseIntegrationStatus,
+  fetchSupabaseWorkspace,
+  syncSupabaseWorkspace,
+  uploadEvidenceToSupabase,
+} from "./supabaseApi";
 
 const STORAGE_KEY = "itgc-workspace-v6";
 const REGISTRATION_DRAFT_KEY = "itgc-registration-draft-v1";
 const AUTH_STORAGE_KEY = "itgc-google-auth-v1";
 const GOOGLE_SCRIPT_URL = import.meta.env.VITE_GOOGLE_SCRIPT_URL ?? "";
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL ?? "";
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
+const DATA_BACKEND_ENV = (import.meta.env.VITE_DATA_BACKEND ?? "").trim().toLowerCase();
+
+const DATA_BACKEND = (() => {
+  if (DATA_BACKEND_ENV === "supabase") {
+    return "supabase";
+  }
+  if (DATA_BACKEND_ENV === "google") {
+    return "google";
+  }
+  if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+    return "supabase";
+  }
+  if (GOOGLE_SCRIPT_URL) {
+    return "google";
+  }
+  return "local";
+})();
+
+const IS_SUPABASE_BACKEND = DATA_BACKEND === "supabase";
+const HAS_REMOTE_BACKEND = DATA_BACKEND !== "local";
 
 const defaultData = {
   controls: [
@@ -648,7 +681,7 @@ const initialRegistrationForm = {
   controlObjective: "",
   controlActivity: "",
   description: "",
-  frequency: "수시",
+  frequency: "Monthly",
   controlType: "예방",
   automationLevel: "수동",
   keyControl: false,
@@ -718,6 +751,11 @@ function isRegistrationFieldFilled(form, key) {
 function isImageEvidence(file) {
   const candidate = String(file?.mimeType || file?.name || file?.url || "").toLowerCase();
   return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(candidate) || candidate.startsWith("image/");
+}
+
+function isPdfEvidence(file) {
+  const candidate = String(file?.mimeType || file?.name || file?.url || "").toLowerCase();
+  return /\.pdf($|\?)/i.test(candidate) || candidate.includes("application/pdf");
 }
 
 function getEvidencePreviewUrl(file) {
@@ -821,20 +859,52 @@ async function uploadEvidenceFiles(controlId, files) {
     url: "",
   }));
 
-  if (!GOOGLE_SCRIPT_URL || files.length === 0) {
+  if (files.length === 0 || DATA_BACKEND === "local") {
     return {
       uploaded: false,
       files: localFiles,
     };
   }
 
-  const result = await uploadEvidenceToDrive(GOOGLE_SCRIPT_URL, controlId, files);
+  const result = IS_SUPABASE_BACKEND
+    ? await uploadEvidenceToSupabase(controlId, files)
+    : await uploadEvidenceToDrive(GOOGLE_SCRIPT_URL, controlId, files);
   return {
     uploaded: true,
     files: Array.isArray(result.files) && result.files.length > 0
       ? result.files
       : localFiles,
   };
+}
+
+async function fetchRemoteIntegrationStatusByBackend() {
+  if (IS_SUPABASE_BACKEND) {
+    return fetchSupabaseIntegrationStatus();
+  }
+  if (GOOGLE_SCRIPT_URL) {
+    return fetchGoogleIntegrationStatus(GOOGLE_SCRIPT_URL);
+  }
+  return { spreadsheet: false, drive: false };
+}
+
+async function fetchRemoteWorkspaceByBackend() {
+  if (IS_SUPABASE_BACKEND) {
+    return fetchSupabaseWorkspace();
+  }
+  if (GOOGLE_SCRIPT_URL) {
+    return fetchGoogleWorkspace(GOOGLE_SCRIPT_URL);
+  }
+  return null;
+}
+
+async function syncRemoteWorkspaceByBackend(workspace) {
+  if (IS_SUPABASE_BACKEND) {
+    return syncSupabaseWorkspace(workspace);
+  }
+  if (GOOGLE_SCRIPT_URL) {
+    return syncGoogleWorkspace(GOOGLE_SCRIPT_URL, workspace);
+  }
+  return { ok: true };
 }
 
 function createDefaultWorkflowSeeds(controls) {
@@ -1044,9 +1114,11 @@ function auditActionLabel(action) {
     CONTROL_VIEWED: "통제 상세 조회",
     CONTROL_EDIT_VIEWED: "통제 등록/수정 조회",
     EXECUTION_VIEWED: "통제 운영 조회",
+    REVIEW_VIEWED: "통제 운영 검토 조회",
     CONTROL_CREATED: "통제 등록",
     CONTROL_UPDATED: "통제 수정",
     EXECUTION_SAVED: "통제 운영 저장",
+    REVIEW_SAVED: "검토 저장",
     REVIEW_COMPLETED: "승인 완료",
     REPORT_VIEWED: "리포트 조회",
     REPORT_HTML_EXPORTED: "HTML 리포트 출력",
@@ -1301,7 +1373,8 @@ export default function App() {
   const [assignmentExecutionNote, setAssignmentExecutionNote] = useState("");
   const [assignmentReviewer, setAssignmentReviewer] = useState("");
   const [assignmentReviewChecked, setAssignmentReviewChecked] = useState("미검토");
-  const [dashboardView, setDashboardView] = useState("frequency");
+  const [assignmentReviewNote, setAssignmentReviewNote] = useState("");
+  const [dashboardView, setDashboardView] = useState("category");
   const [dashboardUnitFilter, setDashboardUnitFilter] = useState("전체");
   const [dashboardDelayFilter, setDashboardDelayFilter] = useState("전체");
   const [reportPeriod, setReportPeriod] = useState("monthly");
@@ -1309,12 +1382,13 @@ export default function App() {
   const [reportPreviewOpen, setReportPreviewOpen] = useState(false);
   const [reportPreviewMarkup, setReportPreviewMarkup] = useState("");
   const [evidencePreviewFile, setEvidencePreviewFile] = useState(null);
+  const [executionSavePopupOpen, setExecutionSavePopupOpen] = useState(false);
   const [memberDrafts, setMemberDrafts] = useState({});
   const [auditLogQuery, setAuditLogQuery] = useState("");
   const [auditLogPage, setAuditLogPage] = useState(1);
   const [integrationStatus, setIntegrationStatus] = useState(() => ({
-    spreadsheet: GOOGLE_SCRIPT_URL ? "미확인" : "미설정",
-    drive: GOOGLE_SCRIPT_URL ? "미확인" : "미설정",
+    spreadsheet: HAS_REMOTE_BACKEND ? "미확인" : "미설정",
+    drive: HAS_REMOTE_BACKEND ? "미확인" : "미설정",
   }));
   const googleLoginRef = useRef(null);
   const reportPreviewFrameRef = useRef(null);
@@ -1627,7 +1701,7 @@ export default function App() {
         { label: "전체", value: `${dashboardProcessSummary.length}개`, targetId: "dashboard-category-root" },
         { label: "완료", value: `${completedCategories}개`, targetId: dashboardAnchorTargets.completedCategory ? `dashboard-category-${toDashboardAnchor(dashboardAnchorTargets.completedCategory)}` : "dashboard-category-root" },
         { label: "관리 필요", value: `${pendingCategories}개`, targetId: dashboardAnchorTargets.pendingCategory ? `dashboard-category-${toDashboardAnchor(dashboardAnchorTargets.pendingCategory)}` : "dashboard-category-root" },
-        { label: "평균 진행률", value: `${averageProgress}%`, targetId: "dashboard-category-root" },
+        { label: "현재 현황 평균", value: `${averageProgress}%`, targetId: "dashboard-category-root" },
       ];
     }
 
@@ -1647,11 +1721,27 @@ export default function App() {
       workflowRate: workflows.length === 0 ? "0%" : `${Math.round((doneCount / workflows.length) * 100)}%`,
     };
   }, [controls, workflows]);
+  const reviewQueueControls = useMemo(
+    () => controls.filter((control) => String(control.executionNote ?? "").trim().length > 0),
+    [controls],
+  );
+  const reviewVisibleControls =
+    processFilter === "전체"
+      ? reviewQueueControls
+      : reviewQueueControls.filter((control) => control.process === processFilter);
+  const totalReviewPages = Math.max(1, Math.ceil(reviewVisibleControls.length / 10));
+  const currentReviewPage = Math.min(controlListPage, totalReviewPages);
+  const reviewPagedControls = reviewVisibleControls.slice((currentReviewPage - 1) * 10, currentReviewPage * 10);
+  const selectedReviewControl =
+    reviewVisibleControls.find((control) => control.id === selectedControlId)
+    ?? reviewPagedControls[0]
+    ?? null;
 
   const menuItems = [
     { key: "dashboard", label: "대시보드", icon: <DashboardIcon /> },
     { key: "control-list", label: "통제 목록", icon: <ControlIcon /> },
     { key: "controls", label: "통제 운영", icon: <ControlIcon /> },
+    { key: "control-review", label: "통제 운영 검토", icon: <ShieldCheckIcon /> },
     { key: "register", label: "통제 등록/수정", icon: <ControlIcon /> },
     { key: "report", label: "리포트", icon: <FileStackIcon /> },
     { key: "people", label: "회원 관리", icon: <PeopleIcon /> },
@@ -1664,8 +1754,16 @@ export default function App() {
       setControlListPage(1);
       setSelectedControlId(controls[0]?.id ?? "");
     }
+    if (nextView === "control-review") {
+      setProcessFilter("전체");
+      setControlListPage(1);
+      setSelectedControlId(reviewQueueControls[0]?.id ?? "");
+    }
     setCurrentView(nextView);
-    if (["control-list", "controls", "register", "report"].includes(nextView)) {
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
+    if (["control-list", "controls", "control-review", "register", "report"].includes(nextView)) {
       writeAuditLog("MENU_OPEN", nextView, `${nextView} 메뉴 열람`);
     }
     if (window.matchMedia("(max-width: 960px)").matches) {
@@ -1691,6 +1789,9 @@ export default function App() {
     setControlListPage(1);
     setSelectedControlId(controlId || targetControl?.id || controls[0]?.id || "");
     setCurrentView("controls");
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
     writeAuditLog("MENU_OPEN", "controls", `통제 운영 열람 · ${controlId || resolvedProcess}`);
     if (window.matchMedia("(max-width: 960px)").matches) {
       setIsSidebarOpen(false);
@@ -1832,11 +1933,11 @@ export default function App() {
   }, [selectedControlId, selectedControl?.executionNote, selectedControl?.reviewChecked, selectedControl?.reviewDept, selectedControl?.reviewer]);
 
   useEffect(() => {
-    if (!GOOGLE_SCRIPT_URL) {
+    if (!HAS_REMOTE_BACKEND) {
       return;
     }
 
-    fetchIntegrationStatus(GOOGLE_SCRIPT_URL)
+    fetchRemoteIntegrationStatusByBackend()
       .then((status) => {
         setIntegrationStatus({
           spreadsheet: status.spreadsheet ? "연결됨" : "오류",
@@ -1852,13 +1953,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!GOOGLE_SCRIPT_URL) {
+    if (!HAS_REMOTE_BACKEND) {
       return;
     }
 
     let active = true;
 
-    fetchRemoteWorkspace(GOOGLE_SCRIPT_URL)
+    fetchRemoteWorkspaceByBackend()
       .then((remoteWorkspace) => {
         if (!active || !remoteWorkspace || !Array.isArray(remoteWorkspace.controls)) {
           return;
@@ -1875,7 +1976,7 @@ export default function App() {
 
           setWorkspace(seededWorkspace);
           persistWorkspace(seededWorkspace);
-          syncRemoteWorkspace(GOOGLE_SCRIPT_URL, seededWorkspace).catch(() => {});
+          syncRemoteWorkspaceByBackend(seededWorkspace).catch(() => {});
           return;
         }
 
@@ -1910,8 +2011,8 @@ export default function App() {
   function updateWorkspace(nextWorkspace) {
     setWorkspace(nextWorkspace);
     persistWorkspace(nextWorkspace);
-    if (GOOGLE_SCRIPT_URL) {
-      syncRemoteWorkspace(GOOGLE_SCRIPT_URL, nextWorkspace)
+    if (HAS_REMOTE_BACKEND) {
+      syncRemoteWorkspaceByBackend(nextWorkspace)
         .then(() => {
           setIntegrationStatus((current) => ({
             ...current,
@@ -2058,6 +2159,23 @@ export default function App() {
     }
 
     setEvidencePreviewFile(file);
+  }
+
+  function handleDownloadEvidence(file) {
+    const href = String(file?.url ?? "").trim();
+    if (!href) {
+      window.alert("다운로드할 파일 URL이 없습니다.");
+      return;
+    }
+
+    const anchor = document.createElement("a");
+    anchor.href = href;
+    anchor.download = String(file?.name || "evidence");
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
   }
 
   function handleReportExport() {
@@ -2411,14 +2529,15 @@ export default function App() {
     const files = formData
       .getAll("evidenceFiles")
       .filter((value) => value instanceof File && value.size > 0);
-    const performer = formData.get("performer").toString().trim();
-    const reviewer = formData.get("reviewer").toString().trim();
     const executionNote = formData.get("executionNote").toString().trim();
-    const reviewChecked = executionNote ? formData.get("reviewChecked").toString() : "미검토";
-    const status = deriveAssignmentStatus(executionNote, reviewChecked);
-    const note = formData.get("note").toString().trim();
+    const status = executionNote ? "점검 중" : "점검 예정";
     let nextEvidenceFiles = selectedControl.evidenceFiles ?? [];
     let uploaded = false;
+
+    if (!executionNote && files.length === 0) {
+      window.alert("수행 내역 또는 증적 파일을 입력하세요.");
+      return;
+    }
 
     if (files.length > 0) {
       try {
@@ -2446,23 +2565,56 @@ export default function App() {
           ? {
               ...control,
               status,
-              performer,
-              reviewer,
-              performDept: performer,
-              reviewDept: reviewer,
               executionNote,
-              reviewChecked,
+              reviewChecked: "미검토",
               evidenceFiles: nextEvidenceFiles,
               evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
-              note,
             }
           : control,
       ),
     };
-    const loggedWorkspace = writeAuditLog("EXECUTION_SAVED", selectedControl.id, `${selectedControl.title} 수행 내역 저장`, nextWorkspace);
-    if (reviewChecked === "검토 완료" && reviewer) {
-      writeAuditLog("REVIEW_COMPLETED", selectedControl.id, `${selectedControl.title} 검토 완료 · ${reviewer}`, loggedWorkspace);
+    writeAuditLog("EXECUTION_SAVED", selectedControl.id, `${selectedControl.title} 수행 내역 저장`, nextWorkspace);
+    setExecutionSavePopupOpen(true);
+  }
+
+  function handleReviewSubmit(event) {
+    event.preventDefault();
+    if (!selectedReviewControl) return;
+
+    const formData = new FormData(event.currentTarget);
+    const reviewer = formData.get("reviewer").toString().trim();
+    const reviewDecision = formData.get("reviewDecision").toString();
+    const reviewNote = formData.get("reviewNote").toString().trim();
+    const reviewChecked = reviewDecision === "양호" ? "검토 완료" : "반려";
+
+    if (!reviewer) {
+      window.alert("검토자를 입력하세요.");
+      return;
     }
+
+    const status = reviewDecision === "양호" ? "점검 완료" : "개선 필요";
+    const nextWorkspace = {
+      ...workspace,
+      controls: controls.map((control) =>
+        control.id === selectedReviewControl.id
+          ? {
+              ...control,
+              reviewer,
+              reviewDept: reviewer,
+              reviewChecked,
+              status,
+              note: reviewNote,
+              reviewResult: reviewDecision,
+            }
+          : control,
+      ),
+    };
+
+    const loggedWorkspace = writeAuditLog("REVIEW_SAVED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 저장`, nextWorkspace);
+    if (reviewDecision === "양호") {
+      writeAuditLog("REVIEW_COMPLETED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 완료 · ${reviewer}`, loggedWorkspace);
+    }
+    window.alert("검토 결과가 저장되었습니다.");
   }
 
   function handleWorkflowSubmit(event) {
@@ -2648,32 +2800,6 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-footer">
-          <div className="sidebar-user-card">
-            <strong>{authUser.name}</strong>
-            <span>{authUser.email}</span>
-            <button className="secondary-button sidebar-logout" type="button" onClick={handleLogout}>
-              로그아웃
-            </button>
-          </div>
-          <div className="integration-panel">
-            <p className="eyebrow">Integration</p>
-            <div className="integration-list">
-              <div className="integration-item">
-                <strong>스프레드시트</strong>
-                <span className={`status-badge ${integrationClass(integrationStatus.spreadsheet)}`}>
-                  {integrationStatus.spreadsheet}
-                </span>
-              </div>
-              <div className="integration-item">
-                <strong>구글드라이브</strong>
-                <span className={`status-badge ${integrationClass(integrationStatus.drive)}`}>
-                  {integrationStatus.drive}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
       </aside>
 
       <nav className="mobile-bottom-nav" aria-label="모바일 메뉴">
@@ -2692,14 +2818,22 @@ export default function App() {
       </nav>
 
       <div className="page-shell">
+        <div className="app-user-topbar">
+          <div className="app-user-chip">
+            <strong>{authUser.name}</strong>
+            <span>{authUser.email}</span>
+          </div>
+          <button className="secondary-button app-user-logout" type="button" onClick={handleLogout}>
+            로그아웃
+          </button>
+        </div>
         <main className="layout">
           {currentView === "dashboard" ? (
             <>
               <section className={`dashboard-card control-progress-section dashboard-view-${dashboardView}`}>
                 <div className="section-heading">
                   <div>
-                    <p className="eyebrow">Control Progress</p>
-                    <h2>통제 항목별 진행 현황</h2>
+                    <h2>대시보드</h2>
                   </div>
                 </div>
                 <div className="control-progress-summary-grid">
@@ -2718,32 +2852,34 @@ export default function App() {
                 <div className="detail-tabs dashboard-tabs">
                   <button
                     type="button"
+                    className={dashboardView === "category" ? "tab-button active" : "tab-button"}
+                    onClick={() => setDashboardView("category")}
+                  >
+                    카테고리 기준
+                  </button>
+                  <button
+                    type="button"
                     className={dashboardView === "frequency" ? "tab-button active" : "tab-button"}
                     onClick={() => setDashboardView("frequency")}
                   >
-                    주기별
+                    주기 기준
                   </button>
                   <button
                     type="button"
                     className={dashboardView === "control" ? "tab-button active" : "tab-button"}
                     onClick={() => setDashboardView("control")}
                   >
-                    통제별
+                    통제 기준
                   </button>
-                  <button
-                    type="button"
-                    className={dashboardView === "category" ? "tab-button active" : "tab-button"}
-                    onClick={() => setDashboardView("category")}
-                  >
-                    카테고리별
-                  </button>
-                  <label className="filter-label dashboard-unit-filter dashboard-unit-filter-inline dashboard-delay-filter-inline">
-                    <span>지연</span>
-                    <select value={dashboardDelayFilter} onChange={(event) => setDashboardDelayFilter(event.target.value)}>
-                      <option value="전체">전체</option>
-                      <option value="지연만">지연만</option>
-                    </select>
-                  </label>
+                  <div className="dashboard-delay-buttons">
+                    <button
+                      type="button"
+                      className={dashboardDelayFilter === "지연만" ? "tab-button delay-button active" : "tab-button delay-button"}
+                      onClick={() => setDashboardDelayFilter((current) => (current === "지연만" ? "전체" : "지연만"))}
+                    >
+                      지연 기준
+                    </button>
+                  </div>
                   <label className="filter-label dashboard-unit-filter dashboard-unit-filter-inline">
                     <span>수행 유닛</span>
                     <select value={dashboardUnitFilter} onChange={(event) => setDashboardUnitFilter(event.target.value)}>
@@ -2782,7 +2918,7 @@ export default function App() {
                                 <span style={{ width: `${item.progress}%` }} />
                               </div>
                               <div className="progress-caption">
-                                <span>진행률</span>
+                                <span>현재 현황</span>
                                 <strong>{item.progress}%</strong>
                               </div>
                             </button>
@@ -2818,7 +2954,7 @@ export default function App() {
                                 <span style={{ width: `${item.progress}%` }} />
                               </div>
                               <div className="progress-caption">
-                                <span>진행률</span>
+                                <span>현재 현황</span>
                                 <strong>{item.progress}%</strong>
                               </div>
                             </button>
@@ -2845,12 +2981,12 @@ export default function App() {
                           <strong>{item.process}</strong>
                           <span>{item.controls}건</span>
                         </div>
-                        <small>완료 {item.done} · 관리 필요 {item.pending}</small>
+                        <small>현재 현황 · 완료 {item.done} · 관리 필요 {item.pending}</small>
                         <div className="progress-track" aria-hidden="true">
                           <span style={{ width: `${item.progressRate}%` }} />
                         </div>
                         <div className="progress-caption">
-                          <span>진행률</span>
+                          <span>현재 현황</span>
                           <strong>{item.progressRate}%</strong>
                         </div>
                       </button>
@@ -2862,11 +2998,10 @@ export default function App() {
           ) : null}
 
           {currentView === "register" ? (
-            <section className="control-browser-layout registration-management-layout">
+            <section className="control-browser-layout registration-management-layout align-unified">
               <article className="panel control-list-panel">
                 <div className="section-heading">
                   <div>
-                    <p className="eyebrow">Controls</p>
                     <h2>통제 목록</h2>
                   </div>
                   <button className="secondary-button slim-button" type="button" onClick={startNewRegistration}>
@@ -3048,14 +3183,14 @@ export default function App() {
                     <label className="registration-field">
                       <span>Frequency <em>필수</em></span>
                       <select value={registrationForm.frequency} onChange={(event) => updateRegistrationField("frequency", event.target.value)}>
-                        <option value="수시">수시</option>
-                        <option value="일별">일별</option>
-                        <option value="주별">주별</option>
-                        <option value="월별">월별</option>
-                        <option value="분기별">분기별</option>
-                        <option value="반기별">반기별</option>
-                        <option value="연 1회 + 변경 시">연 1회 + 변경 시</option>
-                        <option value="이벤트 발생 시">이벤트 발생 시</option>
+                        <option value="Daily">Daily</option>
+                        <option value="Weekly">Weekly</option>
+                        <option value="Monthly">Monthly</option>
+                        <option value="Quarterly">Quarterly</option>
+                        <option value="Half-Bi-annual">Half-Bi-annual</option>
+                        <option value="Annual">Annual</option>
+                        <option value="Event Driven">Event Driven</option>
+                        <option value="Other">Other</option>
                       </select>
                     </label>
                     <label className="registration-field">
@@ -3133,11 +3268,10 @@ export default function App() {
           ) : null}
 
           {currentView === "control-list" ? (
-            <section className="control-browser-layout">
+            <section className="control-browser-layout align-unified align-list-with-identity">
               <article className="panel control-list-panel">
                 <div className="section-heading">
                   <div>
-                    <p className="eyebrow">Control List</p>
                     <h2>통제 목록</h2>
                   </div>
                   <label className="filter-label">
@@ -3238,11 +3372,10 @@ export default function App() {
           ) : null}
 
           {currentView === "controls" ? (
-            <section className="controls-layout">
+            <section className="controls-layout align-unified">
               <article className="panel control-list-panel">
                 <div className="section-heading">
                   <div>
-                    <p className="eyebrow">Controls</p>
                     <h2>통제 항목 목록</h2>
                   </div>
                   <label className="filter-label">
@@ -3297,10 +3430,9 @@ export default function App() {
               <div className="control-main control-execution-panel">
                 {selectedControl ? (
                   <>
-                    <article className="panel detail-hero">
+                    <article className="panel detail-hero execution-detail-panel">
                       <div className="detail-title-row">
                         <div className="detail-inline-heading">
-                          <span className="detail-inline-eyebrow">Execution</span>
                           <h2>통제 활동 수행 등록</h2>
                         </div>
                         <div className="badge-row">
@@ -3336,7 +3468,7 @@ export default function App() {
                           수행 내역
                           <textarea
                             name="executionNote"
-                            rows="7"
+                            rows="10"
                             value={assignmentExecutionNote}
                             onChange={(event) => {
                               const nextValue = event.target.value;
@@ -3405,67 +3537,11 @@ export default function App() {
                             <span className="empty-text">첨부된 증적 없음</span>
                           )}
                         </div>
-                        {!GOOGLE_SCRIPT_URL ? (
+                        {DATA_BACKEND === "local" ? (
                           <p className="field-help">현재는 업로드 URL 미설정 상태라 파일명이 먼저 저장됩니다.</p>
                         ) : null}
                         <div className="execution-form-item execution-form-action">
                           <button className="primary-button" type="submit">수행 내역 저장</button>
-                        </div>
-                        <label className="execution-form-item">
-                          메모
-                          <textarea
-                            name="note"
-                            rows="3"
-                            defaultValue={selectedControl.note ?? ""}
-                            placeholder="검토 코멘트, 이슈, 추가 요청사항"
-                          />
-                        </label>
-                        <div className="compact-form-grid execution-footer-grid execution-form-item">
-                          <label>
-                            통제 상태
-                            <input name="status" type="text" value={assignmentStatus} readOnly />
-                          </label>
-                          <label>
-                            수행자
-                            <input
-                              name="performer"
-                              type="text"
-                              defaultValue={selectedControl.performer ?? selectedControl.performDept ?? ""}
-                              placeholder="수행자 입력"
-                            />
-                          </label>
-                          <label>
-                            검토자
-                            <div className="reviewer-input-row">
-                              <input
-                                name="reviewer"
-                                type="text"
-                                value={assignmentReviewer}
-                                onChange={(event) => {
-                                  const nextReviewer = event.target.value;
-                                  setAssignmentReviewer(nextReviewer);
-                                  if (!nextReviewer.trim()) {
-                                    setAssignmentReviewChecked("미검토");
-                                  }
-                                }}
-                                placeholder="검토자 입력"
-                              />
-                              <button
-                                className={assignmentReviewChecked === "검토 완료" ? "secondary-button review-complete-button active" : "secondary-button review-complete-button"}
-                                type="button"
-                                onClick={() => {
-                                  if (!assignmentReviewer.trim()) {
-                                    window.alert("검토자를 먼저 입력하세요.");
-                                    return;
-                                  }
-                                  setAssignmentReviewChecked("검토 완료");
-                                }}
-                              >
-                                검토 완료
-                              </button>
-                            </div>
-                            <input name="reviewChecked" type="hidden" value={assignmentReviewChecked} />
-                          </label>
                         </div>
                       </form>
                     </article>
@@ -3482,17 +3558,178 @@ export default function App() {
             </section>
           ) : null}
 
+          {currentView === "control-review" ? (
+            <section className="controls-layout align-unified">
+              <article className="panel control-list-panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>등록 통제 내역</h2>
+                  </div>
+                  {reviewPagedControls.length === 0 ? (
+                    <span className="detail-body-text review-empty-inline">검토 대기 건이 없습니다.</span>
+                  ) : (
+                    <label className="filter-label">
+                      <select value={processFilter} onChange={(event) => { setProcessFilter(event.target.value); setControlListPage(1); }}>
+                        {processOptions.map((option) => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                </div>
+                <div className="control-list">
+                  {reviewPagedControls.map((control) => (
+                    <button
+                      type="button"
+                      key={control.id}
+                      className={
+                        control.id === selectedReviewControl?.id
+                          ? "registration-example-item registration-control-item control-operation-card active"
+                          : "registration-example-item registration-control-item control-operation-card"
+                      }
+                      onClick={() => {
+                        setSelectedControlId(control.id);
+                        writeAuditLog("REVIEW_VIEWED", control.id, `${control.title} 검토 화면 조회`);
+                      }}
+                    >
+                      <div className="registration-example-head">
+                        <strong>{control.id}</strong>
+                        <span className={`status-badge ${statusClass(control.status)}`}>{control.status}</span>
+                      </div>
+                      <p>{control.title}</p>
+                    </button>
+                  ))}
+                </div>
+                {totalReviewPages > 1 ? (
+                  <div className="pagination">
+                    {Array.from({ length: totalReviewPages }, (_, index) => index + 1).map((page) => (
+                      <button
+                        key={page}
+                        type="button"
+                        className={page === currentReviewPage ? "page-button active" : "page-button"}
+                        onClick={() => setControlListPage(page)}
+                      >
+                        {page}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </article>
+
+              <div className="control-main control-execution-panel">
+              <article className="panel detail-hero control-review-panel">
+                {selectedReviewControl ? (
+                  <>
+                    <div className="section-heading">
+                      <div>
+                        <h2>통제 운영 검토</h2>
+                      </div>
+                      <div className="badge-row">
+                        <span className={`status-badge ${statusClass(selectedReviewControl.status)}`}>{selectedReviewControl.status}</span>
+                        <span className={`status-badge ${evidenceClass(selectedReviewControl.evidenceStatus)}`}>{selectedReviewControl.evidenceStatus}</span>
+                      </div>
+                    </div>
+                    <p className="detail-purpose">{selectedReviewControl.id} · {selectedReviewControl.title}</p>
+                    <div className="detail-meta-grid execution-meta-grid review-detail-grid">
+                      <div className="execution-meta-item">
+                        <span>테스트 방법</span>
+                        <span className="detail-body-text">
+                          {preserveDisplayLineBreaks(selectedReviewControl.testMethod || (selectedReviewControl.procedures ?? []).join("\n")) || "-"}
+                        </span>
+                      </div>
+                      <div className="execution-meta-item">
+                        <span>모집단</span>
+                        <span className="detail-body-text">{preserveDisplayLineBreaks(selectedReviewControl.population) || "-"}</span>
+                      </div>
+                      <div className="execution-meta-item review-row-full">
+                        <span>수행 내역</span>
+                        <span className="detail-body-text">{preserveDisplayLineBreaks(selectedReviewControl.executionNote) || "-"}</span>
+                      </div>
+                      <div className="execution-meta-item review-row-full">
+                        <span>증적 파일</span>
+                        <div className="evidence-file-list">
+                          {(selectedReviewControl.evidenceFiles ?? []).length > 0 ? (
+                            (selectedReviewControl.evidenceFiles ?? []).map((file, index) => (
+                              <span className="evidence-file-chip-wrap" key={`${file.name}-${index}`}>
+                                <button
+                                  className="system-chip evidence-file-chip"
+                                  type="button"
+                                  onClick={() => {
+                                    if (isImageEvidence(file) || isPdfEvidence(file)) {
+                                      handleOpenEvidencePreview(file);
+                                      return;
+                                    }
+                                    handleDownloadEvidence(file);
+                                  }}
+                                >
+                                  {file.url ? file.name : `${file.name} (대기)`}
+                                </button>
+                              </span>
+                            ))
+                          ) : (
+                            <span className="empty-text">첨부된 증적 없음</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <form className="stack-form execution-form" onSubmit={handleReviewSubmit}>
+                      <label className="execution-form-item">
+                        검토 의견
+                        <textarea
+                          name="reviewNote"
+                          rows="4"
+                          defaultValue={selectedReviewControl.note ?? ""}
+                          placeholder="개선 필요 사유 또는 검토 코멘트"
+                        />
+                      </label>
+                      <div className="compact-form-grid review-decision-row execution-form-item">
+                        <label>
+                          검토 결과
+                          <select name="reviewDecision" defaultValue={selectedReviewControl.reviewResult ?? "양호"}>
+                            <option value="양호">양호</option>
+                            <option value="개선조치">개선조치</option>
+                          </select>
+                        </label>
+                        <label>
+                          검토자
+                          <input
+                            name="reviewer"
+                            type="text"
+                            defaultValue={selectedReviewControl.reviewer ?? selectedReviewControl.reviewDept ?? ""}
+                            placeholder="검토자 입력"
+                          />
+                        </label>
+                      </div>
+                      <div className="execution-form-item execution-form-action">
+                        <button className="primary-button" type="submit">검토 저장</button>
+                      </div>
+                    </form>
+                  </>
+                ) : (
+                  <div className="empty-selection-panel">
+                    <div className="section-heading control-review-empty-heading">
+                      <div>
+                        <h2>검토 대기 건이 없습니다.</h2>
+                      </div>
+                    </div>
+                    <p className="detail-purpose">통제 운영에서 수행 내역을 먼저 저장하면 여기에 표시됩니다.</p>
+                  </div>
+                )}
+              </article>
+              </div>
+            </section>
+          ) : null}
+
           {currentView === "people" ? (
             <section className="compact-stack">
               <article className="panel">
                 <div className="section-heading">
                   <div>
-                    <p className="eyebrow">Members</p>
                     <h2>회원 관리</h2>
                   </div>
                   {!canManageMembers ? <span className="detail-body-text">admin만 수정할 수 있습니다.</span> : null}
                 </div>
-                <div className="table-wrap">
+                <div className="table-wrap member-table-wrap">
                   <table className="member-table">
                     <thead>
                       <tr>
@@ -3554,7 +3791,6 @@ export default function App() {
               <article className="panel">
                 <div className="section-heading">
                   <div>
-                    <p className="eyebrow">Reports</p>
                     <h2>수행 리포트</h2>
                   </div>
                 </div>
@@ -3699,12 +3935,22 @@ export default function App() {
             </div>
           ) : null}
 
+          {executionSavePopupOpen ? (
+            <div className="center-alert-overlay" role="dialog" aria-modal="true" aria-label="수행 내역 저장 안내">
+              <div className="center-alert-modal">
+                <p>수행 내역이 저장되었습니다.</p>
+                <button className="primary-button" type="button" onClick={() => setExecutionSavePopupOpen(false)}>
+                  확인
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {currentView === "audit" ? (
             <section className="compact-stack">
               <article className="panel">
                 <div className="section-heading">
                   <div>
-                    <p className="eyebrow">Audit</p>
                     <h2>감사 로그</h2>
                   </div>
                 </div>

@@ -60,6 +60,11 @@ npm run dev
 ```env
 VITE_GOOGLE_CLIENT_ID=YOUR_GOOGLE_CLIENT_ID
 VITE_GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec
+
+# optional: supabase backend
+VITE_DATA_BACKEND=supabase
+VITE_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
 ```
 
 설명:
@@ -68,6 +73,53 @@ VITE_GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exe
   - Google Cloud OAuth 웹 클라이언트 ID
 - `VITE_GOOGLE_SCRIPT_URL`
   - Apps Script 웹앱 `/exec` 주소
+- `VITE_DATA_BACKEND`
+  - `supabase` 또는 `google` (미설정 시 자동 선택)
+- `VITE_SUPABASE_URL`
+  - Supabase 프로젝트 URL
+- `VITE_SUPABASE_ANON_KEY`
+  - Supabase anon public key
+
+## Supabase 마이그레이션
+
+Supabase 리소스는 모두 `itgc_` 접두사로 생성합니다.
+
+### 1. 테이블 생성
+
+`Supabase SQL Editor`에서 아래 파일 순서대로 실행합니다.
+
+- [supabase/itgc_schema.sql](/Users/shbae-pc/Tools/ITGC/supabase/itgc_schema.sql)
+- [supabase/itgc_storage.sql](/Users/shbae-pc/Tools/ITGC/supabase/itgc_storage.sql)
+
+주요 리소스:
+
+- 테이블: `itgc_control_master`, `itgc_control_execution`, `itgc_evidence_files`, `itgc_member_master`, `itgc_audit_log`, `itgc_workspace_state`
+- Storage bucket: `itgc_evidence_files`
+
+### 2. 기존 스프레드시트 CSV를 SQL로 변환
+
+기존 Google 스프레드시트에서 아래 탭을 CSV로 내보내 `templates/` 파일을 덮어쓴 뒤 실행합니다.
+
+- `control_master` -> `templates/control_master.csv`
+- `control_execution` -> `templates/control_execution.csv`
+- `evidence_files` -> `templates/evidence_files.csv`
+
+그다음 시드 SQL을 생성합니다.
+
+```bash
+npm run supabase:seed-sql
+```
+
+생성 파일:
+
+- [supabase/itgc_seed_from_csv.sql](/Users/shbae-pc/Tools/ITGC/supabase/itgc_seed_from_csv.sql)
+
+이 파일을 `Supabase SQL Editor`에서 실행하면 기존 CSV 데이터가 `itgc_` 테이블로 적재됩니다.
+
+참고:
+
+- `npm run supabase:seed-xlsx`는 로컬 `ITGC_3 ver.xlsx`를 읽어 SQL 생성 시도를 합니다.
+- 해당 엑셀에 `control_master/control_execution/evidence_files` 시트가 없으면 자동 스킵됩니다.
 
 ## Google OAuth 설정
 
