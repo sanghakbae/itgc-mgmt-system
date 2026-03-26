@@ -546,22 +546,32 @@ function isPdfEvidence(file) {
   return /\.pdf($|\?)/i.test(candidate) || candidate.includes("application/pdf");
 }
 
-function getEvidencePreviewUrl(file) {
+function extractDriveFileId(file) {
   const rawUrl = String(file?.url ?? "").trim();
   const driveFileId = String(file?.driveFileId ?? "").trim();
-
   if (driveFileId) {
-    return `https://drive.google.com/uc?export=view&id=${driveFileId}`;
+    return driveFileId;
   }
 
   const byIdMatch = rawUrl.match(/[?&]id=([^&]+)/i);
   if (byIdMatch?.[1]) {
-    return `https://drive.google.com/uc?export=view&id=${byIdMatch[1]}`;
+    return byIdMatch[1];
   }
 
   const byPathMatch = rawUrl.match(/\/d\/([^/]+)/i);
   if (byPathMatch?.[1]) {
-    return `https://drive.google.com/uc?export=view&id=${byPathMatch[1]}`;
+    return byPathMatch[1];
+  }
+
+  return "";
+}
+
+function getEvidencePreviewUrl(file) {
+  const rawUrl = String(file?.url ?? "").trim();
+  const driveFileId = extractDriveFileId(file);
+
+  if (driveFileId) {
+    return `https://drive.google.com/uc?export=view&id=${driveFileId}`;
   }
 
   return rawUrl;
@@ -569,23 +579,25 @@ function getEvidencePreviewUrl(file) {
 
 function getEvidenceEmbedUrl(file) {
   const rawUrl = String(file?.url ?? "").trim();
-  const driveFileId = String(file?.driveFileId ?? "").trim();
+  const driveFileId = extractDriveFileId(file);
 
   if (driveFileId) {
     return `https://drive.google.com/file/d/${driveFileId}/preview`;
   }
 
-  const byIdMatch = rawUrl.match(/[?&]id=([^&]+)/i);
-  if (byIdMatch?.[1]) {
-    return `https://drive.google.com/file/d/${byIdMatch[1]}/preview`;
-  }
-
-  const byPathMatch = rawUrl.match(/\/d\/([^/]+)/i);
-  if (byPathMatch?.[1]) {
-    return `https://drive.google.com/file/d/${byPathMatch[1]}/preview`;
-  }
-
   return rawUrl;
+}
+
+function getEvidenceReportImageUrl(file) {
+  const driveFileId = extractDriveFileId(file);
+  if (driveFileId) {
+    return `https://drive.google.com/thumbnail?id=${driveFileId}&sz=w2000`;
+  }
+  return getEvidencePreviewUrl(file);
+}
+
+function getEvidenceReportImageFallbackUrl(file) {
+  return getEvidencePreviewUrl(file) || getEvidenceEmbedUrl(file);
 }
 
 function isDriveEvidence(file) {
@@ -2459,8 +2471,12 @@ export default function App() {
           <div class="execution-note">${toMultilineHtml(item.executionNote)}</div>
           <div class="execution-image-list">
             ${item.evidenceFiles
-              .filter((file) => isImageEvidence(file) && Boolean(getEvidencePreviewUrl(file)))
-              .map((file) => `<img src="${escapeHtml(getEvidencePreviewUrl(file))}" alt="${escapeHtml(file.name || "증적 이미지")}" class="execution-image" />`)
+              .filter((file) => isImageEvidence(file) && Boolean(getEvidenceReportImageUrl(file)))
+              .map((file) => {
+                const primaryUrl = escapeHtml(getEvidenceReportImageUrl(file));
+                const fallbackUrl = escapeHtml(getEvidenceReportImageFallbackUrl(file));
+                return `<img src="${primaryUrl}" alt="${escapeHtml(file.name || "증적 이미지")}" class="execution-image" onerror="if(this.dataset.fallback && this.src!==this.dataset.fallback){this.src=this.dataset.fallback;return;}this.onerror=null;" data-fallback="${fallbackUrl}" />`;
+              })
               .join("")}
           </div>
         </td>
@@ -4566,13 +4582,22 @@ export default function App() {
                               <div className="report-execution-note">{preserveDisplayLineBreaks(item.executionNote) || "-"}</div>
                               <div className="report-execution-image-list">
                                 {(item.evidenceFiles ?? [])
-                                  .filter((file) => isImageEvidence(file) && Boolean(getEvidencePreviewUrl(file)))
+                                  .filter((file) => isImageEvidence(file) && Boolean(getEvidenceReportImageUrl(file)))
                                   .map((file, index) => (
                                     <img
                                       key={`${item.id}-report-evidence-${index}`}
-                                      src={getEvidencePreviewUrl(file)}
+                                      src={getEvidenceReportImageUrl(file)}
                                       alt={file.name || "증적 이미지"}
                                       className="report-execution-image"
+                                      data-fallback-src={getEvidenceReportImageFallbackUrl(file)}
+                                      onError={(event) => {
+                                        const fallback = event.currentTarget.dataset.fallbackSrc;
+                                        if (fallback && event.currentTarget.src !== fallback) {
+                                          event.currentTarget.src = fallback;
+                                          return;
+                                        }
+                                        event.currentTarget.onerror = null;
+                                      }}
                                       loading="lazy"
                                     />
                                   ))}
