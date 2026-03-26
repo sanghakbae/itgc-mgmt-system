@@ -14,6 +14,7 @@ const LOGIN_DOMAIN_STORAGE_KEY = "itgc-login-domain-v1";
 const DELETED_MEMBER_EMAILS_STORAGE_KEY = "itgc-deleted-member-emails-v1";
 const CURRENT_VIEW_STORAGE_KEY = "itgc-current-view-v1";
 const WORKBENCH_TAB_STORAGE_KEY = "itgc-workbench-tab-v1";
+const UI_THEME_STORAGE_KEY = "itgc-ui-theme-v1";
 const AUDIT_LOG_MAX_ITEMS = 3000;
 const AUDIT_LOG_PAGE_SIZE = 30;
 const LOGIN_DOMAIN_ERROR_MESSAGE = "허용된 도메인만 로그인할 수 있습니다.";
@@ -50,6 +51,19 @@ const DATA_BACKEND = (() => {
 const HAS_REMOTE_BACKEND = DATA_BACKEND !== "local";
 const VIEW_KEYS = ["dashboard", "control-list", "control-workbench", "report", "people", "audit", "register", "controls", "control-review", "roles"];
 const WORKBENCH_TAB_KEYS = ["register", "controls", "control-review"];
+const UI_THEME_OPTIONS = [
+  { value: "classic", label: "Classic" },
+  { value: "editorial", label: "Editorial White" },
+  { value: "navy", label: "Navy Pro" },
+  { value: "glass", label: "Soft Glass" },
+  { value: "forest", label: "Forest" },
+  { value: "sunset", label: "Sunset" },
+  { value: "mono", label: "Monochrome" },
+  { value: "mint", label: "Mint" },
+  { value: "coral", label: "Coral" },
+  { value: "midnight", label: "Midnight" },
+];
+const UI_THEME_VALUES = new Set(UI_THEME_OPTIONS.map((option) => option.value));
 
 const defaultData = {
   controls: defaultControls30,
@@ -1680,6 +1694,16 @@ function loadPersistedWorkbenchTab() {
   return "register";
 }
 
+function loadPersistedUiTheme() {
+  try {
+    const saved = window.localStorage.getItem(UI_THEME_STORAGE_KEY);
+    if (saved && UI_THEME_VALUES.has(saved)) {
+      return saved;
+    }
+  } catch {}
+  return "classic";
+}
+
 export default function App() {
   const [authUser, setAuthUser] = useState(() => loadAuthSession());
   const [authError, setAuthError] = useState("");
@@ -1716,6 +1740,7 @@ export default function App() {
   const [dashboardUnitFilter, setDashboardUnitFilter] = useState("전체");
   const [dashboardDelayFilter, setDashboardDelayFilter] = useState("전체");
   const [workbenchTab, setWorkbenchTab] = useState(() => loadPersistedWorkbenchTab());
+  const [uiTheme, setUiTheme] = useState(() => loadPersistedUiTheme());
   const [dashboardCalendarMonth, setDashboardCalendarMonth] = useState(() => {
     const month = new Date().getMonth() + 1;
     return Number.isInteger(month) && month >= 1 && month <= 12 ? month : 1;
@@ -1857,6 +1882,15 @@ export default function App() {
       window.localStorage.setItem(WORKBENCH_TAB_STORAGE_KEY, workbenchTab);
     } catch {}
   }, [workbenchTab]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(UI_THEME_STORAGE_KEY, uiTheme);
+    } catch {}
+    if (typeof document !== "undefined") {
+      document.body.setAttribute("data-ui-theme", uiTheme);
+    }
+  }, [uiTheme]);
 
   useEffect(() => {
     const workspaceDomains = parseDomainList(workspace.loginDomains);
@@ -3410,6 +3444,20 @@ export default function App() {
     });
   }
 
+  function handleUiThemeChange(nextTheme) {
+    if (!canManageMembers) {
+      return;
+    }
+    if (!UI_THEME_VALUES.has(nextTheme)) {
+      return;
+    }
+    if (nextTheme === uiTheme) {
+      return;
+    }
+    setUiTheme(nextTheme);
+    writeAuditLog("MEMBER_UPDATED", "ui-theme", `UI 테마 변경: ${uiTheme} -> ${nextTheme}`);
+  }
+
   async function handleAssignmentSubmit(event) {
     event.preventDefault();
     if (!canOperateControl) {
@@ -3674,7 +3722,7 @@ export default function App() {
   }
 
   return (
-    <div className={isSidebarOpen ? "app-shell" : "app-shell sidebar-collapsed"}>
+    <div className={isSidebarOpen ? `app-shell theme-${uiTheme}` : `app-shell sidebar-collapsed theme-${uiTheme}`}>
       <button
         type="button"
         className={isSidebarOpen ? "sidebar-overlay visible" : "sidebar-overlay"}
@@ -4810,6 +4858,18 @@ export default function App() {
                 </div>
                 <div className="report-toolbar login-domain-toolbar">
                   <div className="login-domain-inline">
+                    <label className="filter-label" style={{ minWidth: "220px" }}>
+                      <span>UI 테마 (10종)</span>
+                      <select
+                        value={uiTheme}
+                        onChange={(event) => handleUiThemeChange(event.target.value)}
+                        disabled={!canManageMembers}
+                      >
+                        {UI_THEME_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                    </label>
                     <label className="filter-label" style={{ minWidth: "320px" }}>
                       <span>로그인 허용 도메인 (콤마 구분)</span>
                       <input

@@ -4199,6 +4199,335 @@ th {
   }
 }
 
+/* Theme Presets (회원 관리 > UI 테마) */
+body[data-ui-theme="classic"] {
+  background:
+    radial-gradient(circle at top left, rgba(24, 49, 83, 0.12), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(39, 103, 73, 0.16), transparent 30%),
+    linear-gradient(135deg, #f3efe5, #f8f6f1 45%, #d9e7df);
+}
+
+body[data-ui-theme="editorial"] {
+  background:
+    radial-gradient(circle at 12% 8%, rgba(17, 24, 39, 0.05), transparent 24%),
+    radial-gradient(circle at 88% 88%, rgba(120, 113, 108, 0.06), transparent 30%),
+    linear-gradient(160deg, #f9f7f3 0%, #f4f1ea 54%, #ece8df 100%);
+}
+
+body[data-ui-theme="navy"] {
+  background:
+    radial-gradient(circle at 14% 12%, rgba(56, 189, 248, 0.18), transparent 28%),
+    radial-gradient(circle at 84% 82%, rgba(96, 165, 250, 0.16), transparent 30%),
+    linear-gradient(145deg, #070d18 0%, #0c1424 52%, #111b31 100%);
+}
+
+body[data-ui-theme="glass"] {
+  background:
+    radial-gradient(circle at 10% 10%, rgba(125, 211, 252, 0.2), transparent 34%),
+    radial-gradient(circle at 90% 85%, rgba(167, 139, 250, 0.16), transparent 34%),
+    linear-gradient(140deg, #edf3f9 0%, #dfe9f2 52%, #d5e1ed 100%);
+}
+
+body[data-ui-theme="forest"] { background: linear-gradient(140deg, #0b1f16 0%, #123324 55%, #174230 100%); }
+body[data-ui-theme="sunset"] { background: linear-gradient(140deg, #3b1b1f 0%, #5a2a2f 40%, #7a3e33 100%); }
+body[data-ui-theme="mono"] { background: linear-gradient(140deg, #111111 0%, #1f1f1f 55%, #2a2a2a 100%); }
+body[data-ui-theme="mint"] { background: linear-gradient(140deg, #0f2a2a 0%, #194341 50%, #1f5b56 100%); }
+body[data-ui-theme="coral"] { background: linear-gradient(140deg, #2f1620 0%, #532333 55%, #7a3643 100%); }
+body[data-ui-theme="midnight"] { background: linear-gradient(140deg, #060912 0%, #0a1020 52%, #111a31 100%); }
+
+.app-shell.theme-navy,
+.app-shell.theme-forest,
+.app-shell.theme-sunset,
+.app-shell.theme-mono,
+.app-shell.theme-mint,
+.app-shell.theme-coral,
+.app-shell.theme-midnight {
+  --text: #e6edf7;
+  --muted: #a7b3c9;
+  --line: rgba(148, 163, 184, 0.24);
+}
+
+.app-shell.theme-editorial {
+  --text: #171717;
+  --muted: #6b7280;
+  --line: rgba(17, 24, 39, 0.12);
+}
+
+.app-shell.theme-glass {
+  --text: #0f172a;
+  --muted: #475569;
+  --line: rgba(44, 62, 80, 0.18);
+}
+
+.app-shell.theme-editorial .sidebar,
+.app-shell.theme-glass .sidebar {
+  background: rgba(255, 255, 255, 0.68);
+  color: #0f172a;
+  border-right-color: rgba(30, 41, 59, 0.14);
+}
+
+.app-shell.theme-editorial .sidebar-brand h1,
+.app-shell.theme-editorial .sidebar-brand .eyebrow,
+.app-shell.theme-glass .sidebar-brand h1,
+.app-shell.theme-glass .sidebar-brand .eyebrow {
+  color: #0f172a;
+}
+
+.app-shell.theme-editorial .nav-button,
+.app-shell.theme-glass .nav-button {
+  color: #475569;
+}
+
+.app-shell.theme-editorial .nav-button.active,
+.app-shell.theme-glass .nav-button.active {
+  background: rgba(255, 255, 255, 0.9);
+  color: #111827;
+  border: 1px solid rgba(15, 23, 42, 0.16);
+}
+
+.app-shell.theme-navy .sidebar,
+.app-shell.theme-forest .sidebar,
+.app-shell.theme-sunset .sidebar,
+.app-shell.theme-mono .sidebar,
+.app-shell.theme-mint .sidebar,
+.app-shell.theme-coral .sidebar,
+.app-shell.theme-midnight .sidebar {
+  background: linear-gradient(180deg, rgba(8, 14, 28, 0.96), rgba(12, 20, 36, 0.96));
+  color: #dbeafe;
+  border-right-color: rgba(148, 163, 184, 0.24);
+}
+
+.app-shell.theme-navy .nav-button,
+.app-shell.theme-forest .nav-button,
+.app-shell.theme-sunset .nav-button,
+.app-shell.theme-mono .nav-button,
+.app-shell.theme-mint .nav-button,
+.app-shell.theme-coral .nav-button,
+.app-shell.theme-midnight .nav-button {
+  color: #bfdbfe;
+}
+
+.app-shell.theme-navy .nav-button.active,
+.app-shell.theme-forest .nav-button.active,
+.app-shell.theme-sunset .nav-button.active,
+.app-shell.theme-mono .nav-button.active,
+.app-shell.theme-mint .nav-button.active,
+.app-shell.theme-coral .nav-button.active,
+.app-shell.theme-midnight .nav-button.active {
+  background: rgba(37, 99, 235, 0.3);
+  color: #f8fbff;
+  border: 1px solid rgba(147, 197, 253, 0.48);
+}
+
+.app-shell.theme-navy .panel,
+.app-shell.theme-navy .dashboard-card,
+.app-shell.theme-forest .panel,
+.app-shell.theme-forest .dashboard-card,
+.app-shell.theme-sunset .panel,
+.app-shell.theme-sunset .dashboard-card,
+.app-shell.theme-mono .panel,
+.app-shell.theme-mono .dashboard-card,
+.app-shell.theme-mint .panel,
+.app-shell.theme-mint .dashboard-card,
+.app-shell.theme-coral .panel,
+.app-shell.theme-coral .dashboard-card,
+.app-shell.theme-midnight .panel,
+.app-shell.theme-midnight .dashboard-card {
+  background: rgba(15, 25, 45, 0.78);
+  border-color: rgba(148, 163, 184, 0.24);
+}
+
+.app-shell.theme-navy .primary-button,
+.app-shell.theme-forest .primary-button,
+.app-shell.theme-sunset .primary-button,
+.app-shell.theme-mono .primary-button,
+.app-shell.theme-mint .primary-button,
+.app-shell.theme-coral .primary-button,
+.app-shell.theme-midnight .primary-button {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+}
+
+.app-shell.theme-editorial .primary-button { background: linear-gradient(135deg, #111827, #1f2937); }
+.app-shell.theme-glass .primary-button { background: linear-gradient(135deg, #0f172a, #1e3a8a); }
+
+/* Theme contrast guardrails */
+.app-shell[class*="theme-"] {
+  color: var(--text);
+}
+
+.app-shell.theme-editorial .sidebar-toggle,
+.app-shell.theme-glass .sidebar-toggle,
+.app-shell.theme-editorial .sidebar-user-card span,
+.app-shell.theme-glass .sidebar-user-card span,
+.app-shell.theme-editorial .sidebar-logout.secondary-button,
+.app-shell.theme-glass .sidebar-logout.secondary-button,
+.app-shell.theme-editorial .sidebar-reset,
+.app-shell.theme-glass .sidebar-reset {
+  color: #1f2937;
+  border-color: rgba(30, 41, 59, 0.24);
+}
+
+.app-shell.theme-editorial .sidebar-user-card,
+.app-shell.theme-glass .sidebar-user-card,
+.app-shell.theme-editorial .integration-panel,
+.app-shell.theme-glass .integration-panel {
+  background: rgba(255, 255, 255, 0.78);
+  border-color: rgba(30, 41, 59, 0.2);
+}
+
+.app-shell.theme-navy input,
+.app-shell.theme-navy select,
+.app-shell.theme-navy textarea,
+.app-shell.theme-forest input,
+.app-shell.theme-forest select,
+.app-shell.theme-forest textarea,
+.app-shell.theme-sunset input,
+.app-shell.theme-sunset select,
+.app-shell.theme-sunset textarea,
+.app-shell.theme-mono input,
+.app-shell.theme-mono select,
+.app-shell.theme-mono textarea,
+.app-shell.theme-mint input,
+.app-shell.theme-mint select,
+.app-shell.theme-mint textarea,
+.app-shell.theme-coral input,
+.app-shell.theme-coral select,
+.app-shell.theme-coral textarea,
+.app-shell.theme-midnight input,
+.app-shell.theme-midnight select,
+.app-shell.theme-midnight textarea {
+  background: rgba(15, 23, 42, 0.72);
+  color: #e6edf7;
+  border-color: rgba(148, 163, 184, 0.32);
+}
+
+.app-shell.theme-navy input::placeholder,
+.app-shell.theme-navy textarea::placeholder,
+.app-shell.theme-forest input::placeholder,
+.app-shell.theme-forest textarea::placeholder,
+.app-shell.theme-sunset input::placeholder,
+.app-shell.theme-sunset textarea::placeholder,
+.app-shell.theme-mono input::placeholder,
+.app-shell.theme-mono textarea::placeholder,
+.app-shell.theme-mint input::placeholder,
+.app-shell.theme-mint textarea::placeholder,
+.app-shell.theme-coral input::placeholder,
+.app-shell.theme-coral textarea::placeholder,
+.app-shell.theme-midnight input::placeholder,
+.app-shell.theme-midnight textarea::placeholder {
+  color: #a7b3c9;
+}
+
+.app-shell.theme-navy th,
+.app-shell.theme-navy td,
+.app-shell.theme-forest th,
+.app-shell.theme-forest td,
+.app-shell.theme-sunset th,
+.app-shell.theme-sunset td,
+.app-shell.theme-mono th,
+.app-shell.theme-mono td,
+.app-shell.theme-mint th,
+.app-shell.theme-mint td,
+.app-shell.theme-coral th,
+.app-shell.theme-coral td,
+.app-shell.theme-midnight th,
+.app-shell.theme-midnight td {
+  border-bottom-color: rgba(148, 163, 184, 0.24);
+}
+
+.app-shell.theme-navy td,
+.app-shell.theme-forest td,
+.app-shell.theme-sunset td,
+.app-shell.theme-mono td,
+.app-shell.theme-mint td,
+.app-shell.theme-coral td,
+.app-shell.theme-midnight td {
+  color: #e6edf7;
+}
+
+.app-shell.theme-navy th,
+.app-shell.theme-forest th,
+.app-shell.theme-sunset th,
+.app-shell.theme-mono th,
+.app-shell.theme-mint th,
+.app-shell.theme-coral th,
+.app-shell.theme-midnight th {
+  color: #a7b3c9;
+}
+
+.app-shell.theme-navy .report-table,
+.app-shell.theme-forest .report-table,
+.app-shell.theme-sunset .report-table,
+.app-shell.theme-mono .report-table,
+.app-shell.theme-mint .report-table,
+.app-shell.theme-coral .report-table,
+.app-shell.theme-midnight .report-table {
+  background: rgba(15, 23, 42, 0.72);
+  border-color: rgba(148, 163, 184, 0.28);
+}
+
+.app-shell.theme-navy .report-table th,
+.app-shell.theme-forest .report-table th,
+.app-shell.theme-sunset .report-table th,
+.app-shell.theme-mono .report-table th,
+.app-shell.theme-mint .report-table th,
+.app-shell.theme-coral .report-table th,
+.app-shell.theme-midnight .report-table th {
+  color: #e6edf7;
+  background: rgba(30, 41, 59, 0.9);
+  border-color: rgba(148, 163, 184, 0.32);
+}
+
+.app-shell.theme-navy .report-table td,
+.app-shell.theme-forest .report-table td,
+.app-shell.theme-sunset .report-table td,
+.app-shell.theme-mono .report-table td,
+.app-shell.theme-mint .report-table td,
+.app-shell.theme-coral .report-table td,
+.app-shell.theme-midnight .report-table td {
+  color: #e6edf7;
+  border-color: rgba(148, 163, 184, 0.22);
+}
+
+.app-shell.theme-navy .dashboard-month-calendar,
+.app-shell.theme-forest .dashboard-month-calendar,
+.app-shell.theme-sunset .dashboard-month-calendar,
+.app-shell.theme-mono .dashboard-month-calendar,
+.app-shell.theme-mint .dashboard-month-calendar,
+.app-shell.theme-coral .dashboard-month-calendar,
+.app-shell.theme-midnight .dashboard-month-calendar {
+  border-color: rgba(148, 163, 184, 0.24);
+  background:
+    linear-gradient(145deg, rgba(15, 23, 42, 0.84), rgba(30, 41, 59, 0.78)),
+    radial-gradient(circle at 10% 0%, rgba(111, 163, 255, 0.18), transparent 42%);
+}
+
+.app-shell.theme-navy .dashboard-month-button,
+.app-shell.theme-forest .dashboard-month-button,
+.app-shell.theme-sunset .dashboard-month-button,
+.app-shell.theme-mono .dashboard-month-button,
+.app-shell.theme-mint .dashboard-month-button,
+.app-shell.theme-coral .dashboard-month-button,
+.app-shell.theme-midnight .dashboard-month-button {
+  background: rgba(15, 23, 42, 0.8);
+  border-color: rgba(148, 163, 184, 0.26);
+}
+
+.app-shell.theme-navy .dashboard-month-button span,
+.app-shell.theme-forest .dashboard-month-button span,
+.app-shell.theme-sunset .dashboard-month-button span,
+.app-shell.theme-mono .dashboard-month-button span,
+.app-shell.theme-mint .dashboard-month-button span,
+.app-shell.theme-coral .dashboard-month-button span,
+.app-shell.theme-midnight .dashboard-month-button span {
+  color: #dbeafe;
+}
+
+.theme-selector-note {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 @media (max-width: 640px) {
   .page-shell {
     padding: 12px 10px 24px;
