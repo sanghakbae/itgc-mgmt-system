@@ -22,8 +22,8 @@ const LOGIN_DOMAIN_ERROR_MESSAGE = "허용된 도메인만 로그인할 수 있�
 const GOOGLE_SCRIPT_URL = import.meta.env.VITE_GOOGLE_SCRIPT_URL ?? "";
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
 const ALLOWED_DOMAIN_ENV = (import.meta.env.VITE_ALLOWED_DOMAIN ?? "").trim() || "muhayu.com";
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL ?? "";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
+const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL ?? "").trim() || "https://gfybyxbrmkwbzuyhyqiv.supabase.co";
+const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY ?? "").trim() || "sb_publishable_Cd-7SADAjF_J5vEo9QkmAA_Jz2_diWz";
 const DATA_BACKEND_ENV = (import.meta.env.VITE_DATA_BACKEND ?? "").trim().toLowerCase();
 const ALLOWED_EMAIL_DOMAINS = ALLOWED_DOMAIN_ENV
   .split(",")
