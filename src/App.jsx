@@ -1162,6 +1162,79 @@ function isAllowedEmail(email) {
   return ALLOWED_EMAIL_DOMAIN_SET.has(domain);
 }
 
+function createMemberId() {
+  return `MBR-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function mergePeopleByIdOrEmail(primary = [], secondary = []) {
+  const byId = new Map();
+  const byEmail = new Map();
+  const merged = [];
+
+  [...primary, ...secondary].forEach((person) => {
+    if (!person) {
+      return;
+    }
+    const id = String(person.id ?? "").trim();
+    const email = String(person.email ?? "").trim().toLowerCase();
+
+    let target = null;
+    if (id && byId.has(id)) {
+      target = byId.get(id);
+    } else if (email && byEmail.has(email)) {
+      target = byEmail.get(email);
+    }
+
+    if (!target) {
+      const next = {
+        ...person,
+        id: id || createMemberId(),
+        email,
+      };
+      merged.push(next);
+      byId.set(next.id, next);
+      if (email) {
+        byEmail.set(email, next);
+      }
+      return;
+    }
+
+    Object.assign(target, {
+      ...target,
+      ...person,
+      id: target.id || id || createMemberId(),
+      email: target.email || email,
+    });
+
+    if (target.id) {
+      byId.set(target.id, target);
+    }
+    if (target.email) {
+      byEmail.set(target.email, target);
+    }
+  });
+
+  return merged;
+}
+
+function mergeAuditLogs(primary = [], secondary = [], maxItems = AUDIT_LOG_MAX_ITEMS) {
+  const merged = [...primary, ...secondary];
+  const seen = new Set();
+  const unique = [];
+
+  merged.forEach((log) => {
+    const id = String(log?.id ?? "").trim();
+    if (!id || seen.has(id)) {
+      return;
+    }
+    seen.add(id);
+    unique.push(log);
+  });
+
+  unique.sort((a, b) => String(b?.createdAtTs ?? "").localeCompare(String(a?.createdAtTs ?? "")));
+  return unique.slice(0, maxItems);
+}
+
 function loadAuthSession() {
   try {
     const saved = window.localStorage.getItem(AUTH_STORAGE_KEY);
@@ -1410,7 +1483,7 @@ export default function App() {
         ...workspace,
         people: [
           {
-            id: `MBR-${String(Date.now()).slice(-6)}`,
+            id: createMemberId(),
             name: authUser.name ?? normalizedEmail,
             email: normalizedEmail,
             role: "both",
@@ -1781,7 +1854,7 @@ export default function App() {
         )
       : [
           {
-            id: `MBR-${String(Date.now()).slice(-6)}`,
+            id: createMemberId(),
             name: nextUser.name,
             email,
             role: "both",
@@ -1802,6 +1875,10 @@ export default function App() {
       {
         ...workspace,
         people: nextPeople,
+      },
+      {
+        actorName: nextUser.name,
+        actorEmail: nextUser.email,
       },
     );
   }
@@ -1930,13 +2007,14 @@ export default function App() {
           return;
         }
 
+        const currentWorkspace = workspaceRef.current;
+        const remotePeople = Array.isArray(remoteWorkspace.people) ? remoteWorkspace.people : [];
+        const remoteAuditLogs = Array.isArray(remoteWorkspace.auditLogs) ? remoteWorkspace.auditLogs : [];
         const nextWorkspace = {
           controls: remoteControls,
           workflows: mergeMissingWorkflows(remoteControls, Array.isArray(remoteWorkspace.workflows) ? remoteWorkspace.workflows : []),
-          people: Array.isArray(remoteWorkspace.people) && remoteWorkspace.people.length > 0
-            ? remoteWorkspace.people
-            : structuredClone(defaultPeople),
-          auditLogs: Array.isArray(remoteWorkspace.auditLogs) ? remoteWorkspace.auditLogs : [],
+          people: mergePeopleByIdOrEmail(remotePeople, currentWorkspace.people ?? []),
+          auditLogs: mergeAuditLogs(remoteAuditLogs, currentWorkspace.auditLogs ?? []),
         };
 
         setIntegrationStatus((current) => ({
@@ -1983,24 +2061,28 @@ export default function App() {
     }
   }
 
-  function writeAuditLog(action, target, detail, baseWorkspace = null) {
+  function writeAuditLog(action, target, detail, baseWorkspace = null, actorOverride = null) {
     const currentWorkspace = baseWorkspace ?? workspaceRef.current;
+    const actorName = actorOverride?.actorName ?? authUser?.name ?? "";
+    const actorEmail = actorOverride?.actorEmail ?? authUser?.email ?? "";
     const nextWorkspace = {
       ...currentWorkspace,
-      auditLogs: [
-        {
-          id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          action,
-          target,
-          detail,
-          actorName: authUser?.name ?? "",
-          actorEmail: authUser?.email ?? "",
-          ip: "-",
-          createdAt: formatSeoulDateTime(new Date()),
-          createdAtTs: new Date().toISOString(),
-        },
-        ...(currentWorkspace.auditLogs ?? []),
-      ].slice(0, AUDIT_LOG_MAX_ITEMS),
+      auditLogs: mergeAuditLogs(
+        [
+          {
+            id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            action,
+            target,
+            detail,
+            actorName,
+            actorEmail,
+            ip: "-",
+            createdAt: formatSeoulDateTime(new Date()),
+            createdAtTs: new Date().toISOString(),
+          },
+        ],
+        currentWorkspace.auditLogs ?? [],
+      ),
     };
 
     updateWorkspace(nextWorkspace);
@@ -2436,7 +2518,7 @@ export default function App() {
       id: existingIndex >= 0
         ? people[existingIndex].id
         : personId.startsWith("AUTH-")
-          ? `MBR-${String(Date.now()).slice(-6)}`
+          ? createMemberId()
           : personId,
       name: sourcePerson.name,
       email: normalizedEmail,

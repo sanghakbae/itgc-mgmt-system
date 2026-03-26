@@ -175,7 +175,8 @@ function mapAuditToRow(log, nowIso) {
   };
 }
 
-async function upsertRows(table, rows, pk) {
+async function upsertRows(table, rows, pk, options = {}) {
+  const { prune = true } = options;
   if (!rows.length) {
     return;
   }
@@ -186,6 +187,10 @@ async function upsertRows(table, rows, pk) {
 
   if (upsertError) {
     throw new Error(`${table}_upsert_failed:${upsertError.message}`);
+  }
+
+  if (!prune) {
+    return;
   }
 
   const { data: existingRows, error: selectError } = await supabase
@@ -418,8 +423,8 @@ export async function syncSupabaseWorkspace(workspace) {
   await upsertRows(ITGC_CONTROL_EXECUTION_TABLE, executionRows, "execution_id");
   await upsertRows(ITGC_EVIDENCE_TABLE, evidenceRows, "evidence_id");
   await upsertRows(ITGC_WORKFLOWS_TABLE, workflowRows, "workflow_id");
-  await upsertRows(ITGC_MEMBER_TABLE, memberRows, "member_id");
-  await upsertRows(ITGC_AUDIT_TABLE, auditRows, "log_id");
+  await upsertRows(ITGC_MEMBER_TABLE, memberRows, "member_id", { prune: false });
+  await upsertRows(ITGC_AUDIT_TABLE, auditRows, "log_id", { prune: false });
 
   return { ok: true };
 }

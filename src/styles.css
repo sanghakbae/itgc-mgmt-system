@@ -360,13 +360,14 @@ textarea {
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 4px;
+  margin-bottom: 6px;
 }
 
 .app-user-chip {
   min-width: 180px;
-  padding: 4px 8px;
+  min-height: 28px;
+  padding: 0 8px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--panel);
@@ -399,7 +400,7 @@ textarea {
   min-width: 0;
   width: fit-content;
   max-width: none;
-  padding: 0 4px;
+  padding: 0 8px;
   font-size: 0.68rem;
   white-space: nowrap;
   display: inline-flex;
@@ -3581,7 +3582,7 @@ th {
 
   .app-user-topbar {
     justify-content: space-between;
-    gap: 8px;
+    gap: 4px;
   }
 
   .app-user-chip {
@@ -4182,7 +4183,7 @@ textarea,
   min-width: 0 !important;
   max-width: none !important;
   min-height: 28px !important;
-  padding-inline: 3px !important;
+  padding-inline: 8px !important;
   padding-block: 0 !important;
   font-size: 0.68rem !important;
   white-space: nowrap !important;
