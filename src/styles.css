@@ -666,6 +666,12 @@ textarea {
   margin-top: 0;
 }
 
+.workbench-tabs-panel .tab-button {
+  font-size: 0.9rem;
+  font-weight: 700;
+  min-height: 38px;
+}
+
 .tab-button {
   min-height: 34px;
   padding: 0 8px;
@@ -3600,6 +3606,16 @@ th {
     overflow-x: hidden;
   }
 
+  .member-table-wrap {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .member-table {
+    min-width: 760px;
+    width: max-content;
+  }
+
   table {
     table-layout: auto;
   }
@@ -4188,4 +4204,69 @@ textarea,
   font-size: 0.68rem !important;
   white-space: nowrap !important;
   flex: 0 0 auto !important;
+}
+
+@media (max-width: 960px) {
+  .table-wrap.member-table-wrap {
+    overflow: visible !important;
+  }
+
+  .table-wrap.member-table-wrap .member-table {
+    width: 100% !important;
+    min-width: 0 !important;
+    table-layout: auto !important;
+    border-collapse: separate;
+    border-spacing: 0 10px;
+  }
+
+  .table-wrap.member-table-wrap .member-table thead {
+    display: none;
+  }
+
+  .table-wrap.member-table-wrap .member-table tbody,
+  .table-wrap.member-table-wrap .member-table tr,
+  .table-wrap.member-table-wrap .member-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .table-wrap.member-table-wrap .member-table tr {
+    background: #fffdf9;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+
+  .table-wrap.member-table-wrap .member-table td {
+    border: 0;
+    padding: 4px 0;
+    text-align: left;
+  }
+
+  .table-wrap.member-table-wrap .member-table td::before {
+    display: inline-block;
+    width: 60px;
+    margin-right: 8px;
+    color: var(--muted);
+    font-weight: 700;
+    font-size: 0.72rem;
+    vertical-align: middle;
+    content: "";
+  }
+
+  .table-wrap.member-table-wrap .member-table td:nth-child(1)::before { content: "ID"; }
+  .table-wrap.member-table-wrap .member-table td:nth-child(2)::before { content: "이름"; }
+  .table-wrap.member-table-wrap .member-table td:nth-child(3)::before { content: "이메일"; }
+  .table-wrap.member-table-wrap .member-table td:nth-child(4)::before { content: "유닛"; }
+  .table-wrap.member-table-wrap .member-table td:nth-child(5)::before { content: "권한"; }
+  .table-wrap.member-table-wrap .member-table td:nth-child(6)::before { content: "저장"; }
+  .table-wrap.member-table-wrap .member-table td:nth-child(7)::before { content: "삭제"; }
+
+  .table-wrap.member-table-wrap .member-table input,
+  .table-wrap.member-table-wrap .member-table select,
+  .table-wrap.member-table-wrap .member-table .slim-button {
+    width: 100%;
+    max-width: none;
+    margin-top: 4px;
+  }
 }

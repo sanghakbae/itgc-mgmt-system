@@ -1839,9 +1839,11 @@ export default function App() {
       picture: payload.picture ?? "",
     };
 
-    const existingMember = people.find((person) => String(person.email ?? "").toLowerCase() === email);
+    const currentWorkspace = workspaceRef.current;
+    const currentPeople = Array.isArray(currentWorkspace.people) ? currentWorkspace.people : [];
+    const existingMember = currentPeople.find((person) => String(person.email ?? "").toLowerCase() === email);
     const nextPeople = existingMember
-      ? people.map((person) =>
+      ? currentPeople.map((person) =>
           String(person.email ?? "").toLowerCase() === email
             ? {
                 ...person,
@@ -1862,7 +1864,7 @@ export default function App() {
             team: "미지정",
             accessRole: "admin",
           },
-          ...people,
+          ...currentPeople,
         ];
 
     window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextUser));
@@ -1873,7 +1875,7 @@ export default function App() {
       email,
       existingMember ? `${nextUser.name} 로그인` : `${nextUser.name} 최초 로그인 및 회원 등록`,
       {
-        ...workspace,
+        ...currentWorkspace,
         people: nextPeople,
       },
       {
@@ -3623,6 +3625,16 @@ export default function App() {
               <div className="control-main control-execution-panel">
                 {selectedControl ? (
                   <>
+                    <article className="panel registration-section-card">
+                      <div className="registration-section-head">
+                        <h2>통제 등록 작성 가이드</h2>
+                      </div>
+                      <ul className="registration-guide-list">
+                        {registrationWritingGuide.map((item) => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    </article>
                     <article className="panel detail-hero execution-detail-panel">
                       <div className="detail-title-row">
                         <div className="detail-inline-heading">
@@ -3738,17 +3750,6 @@ export default function App() {
                         </div>
                       </form>
                     </article>
-                    <article className="panel registration-section-card">
-                      <div className="registration-section-head">
-                        <h2>통제 등록 작성 가이드</h2>
-                      </div>
-                      <ul className="registration-guide-list">
-                        {registrationWritingGuide.map((item) => (
-                          <li key={item}>{item}</li>
-                        ))}
-                      </ul>
-                    </article>
-
                   </>
                 ) : (
                   <article className="panel detail-hero empty-selection-panel">
@@ -3822,6 +3823,16 @@ export default function App() {
               </article>
 
               <div className="control-main control-execution-panel">
+              <article className="panel registration-section-card">
+                <div className="registration-section-head">
+                  <h2>감사 관점의 등록 품질 체크</h2>
+                </div>
+                <ul className="registration-guide-list">
+                  {registrationQualityGuide.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </article>
               <article className="panel detail-hero control-review-panel">
                 {selectedReviewControl ? (
                   <>
@@ -3920,16 +3931,6 @@ export default function App() {
                     <p className="detail-purpose">통제 운영에서 수행 내역을 먼저 저장하면 여기에 표시됩니다.</p>
                   </div>
                 )}
-              </article>
-              <article className="panel registration-section-card">
-                <div className="registration-section-head">
-                  <h2>감사 관점의 등록 품질 체크</h2>
-                </div>
-                <ul className="registration-guide-list">
-                  {registrationQualityGuide.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
               </article>
               </div>
             </section>
