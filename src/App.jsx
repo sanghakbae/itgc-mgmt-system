@@ -440,6 +440,7 @@ const initialRegistrationForm = {
   automationLevel: "수동",
   keyControl: false,
   ownerDept: "",
+  reviewDept: "",
   evidence: "",
   testMethod: "",
   population: "",
@@ -1083,21 +1084,18 @@ function auditActionLabel(action) {
   return labels[action] ?? "기타";
 }
 
-const DEFAULT_CONTROL_CHANGE_ALERT_ACTIONS = [
+const REQUIRED_CONTROL_CHANGE_ALERT_ACTIONS = [
   "EXECUTION_SAVED",
   "REVIEW_COMPLETED",
 ];
 
-const CONTROL_CHANGE_ALERT_ACTIONS = new Set(
-  GOOGLE_CHAT_ALERT_ACTIONS_ENV
+const CONTROL_CHANGE_ALERT_ACTIONS = new Set([
+  ...REQUIRED_CONTROL_CHANGE_ALERT_ACTIONS,
+  ...GOOGLE_CHAT_ALERT_ACTIONS_ENV
     .split(/[,\n;\s]+/)
     .map((token) => token.trim().toUpperCase())
     .filter(Boolean),
-);
-
-if (CONTROL_CHANGE_ALERT_ACTIONS.size === 0) {
-  DEFAULT_CONTROL_CHANGE_ALERT_ACTIONS.forEach((action) => CONTROL_CHANGE_ALERT_ACTIONS.add(action));
-}
+]);
 
 const CONTROL_CHANGE_ALERT_ACTIONS_ALL = new Set([
   "CONTROL_CREATED",
@@ -2767,6 +2765,7 @@ export default function App() {
       automationLevel: control.automationLevel ?? "수동",
       keyControl: isKeyControl(control.keyControl),
       ownerDept: control.performDept ?? control.performer ?? "",
+      reviewDept: control.reviewDept ?? control.reviewer ?? "",
       evidence: resolveControlEvidenceText(control),
       testMethod: resolveControlTestMethod(control),
       population: control.population ?? "",
@@ -2794,6 +2793,7 @@ export default function App() {
     const editingControl = controls.find((control) => control.id === registrationSelectedControlId) ?? null;
     const preservedReviewer = editingControl?.reviewer ?? editingControl?.reviewDept ?? "";
     const preservedOwnerPerson = editingControl?.ownerPerson ?? "";
+    const resolvedReviewDept = registrationForm.reviewDept.trim() || preservedReviewer;
 
     const nextControl = normalizeControl({
       id: registrationForm.controlId.trim(),
@@ -2814,9 +2814,9 @@ export default function App() {
       evidenceStatus: "미수집",
       ownerDept: registrationForm.ownerDept.trim(),
       performer: registrationForm.ownerDept.trim(),
-      reviewer: preservedReviewer,
+      reviewer: resolvedReviewDept,
       performDept: registrationForm.ownerDept.trim(),
-      reviewDept: preservedReviewer,
+      reviewDept: resolvedReviewDept,
       ownerPerson: preservedOwnerPerson,
       targetSystems: registrationForm.targetSystems ?? [],
       note: "",
@@ -3967,6 +3967,10 @@ export default function App() {
                     <label className="registration-field">
                       <span>담당 부서 <em>필수</em></span>
                       <input value={registrationForm.ownerDept} onChange={(event) => updateRegistrationField("ownerDept", event.target.value)} />
+                    </label>
+                    <label className="registration-field">
+                      <span>검토 부서</span>
+                      <input value={registrationForm.reviewDept} onChange={(event) => updateRegistrationField("reviewDept", event.target.value)} />
                     </label>
                     <label className="registration-field registration-field-row-start">
                       <span>Evidence <em>필수</em></span>
