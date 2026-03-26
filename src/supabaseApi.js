@@ -8,6 +8,7 @@ export const ITGC_MEMBER_TABLE = "itgc_member_master";
 export const ITGC_AUDIT_TABLE = "itgc_audit_log";
 export const ITGC_EVIDENCE_BUCKET = "itgc_evidence_files";
 const AUDIT_LOG_MAX_ITEMS = 3000;
+const LOGIN_DOMAIN_CONFIG_MEMBER_ID = "CFG-LOGIN-DOMAINS";
 
 function assertSupabaseConfigured() {
   if (!supabaseConfigured || !supabase) {
@@ -49,6 +50,19 @@ function normalizeDate(dateLike) {
     return null;
   }
   return value.slice(0, 10);
+}
+
+function normalizeDomainList(raw) {
+  const source = Array.isArray(raw) ? raw.join(",") : String(raw ?? "");
+  return source
+    .split(/[,\n;\s]+/)
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean)
+    .map((token) => {
+      const normalized = token.includes("@") ? token.split("@").pop() ?? "" : token;
+      return normalized.replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^\./, "");
+    })
+    .filter(Boolean);
 }
 
 function mapControlToMasterRow(control, index, nowIso) {
@@ -156,6 +170,26 @@ function mapMemberToRow(member, nowIso) {
     access_role: member.accessRole ?? "viewer",
     active_yn: "Y",
     member_payload: member,
+    updated_at: nowIso,
+  };
+}
+
+function mapLoginDomainConfigRow(loginDomains, nowIso) {
+  const normalizedDomains = normalizeDomainList(loginDomains);
+  const payload = {
+    type: "login-domain-config",
+    loginDomains: normalizedDomains,
+  };
+  return {
+    member_id: LOGIN_DOMAIN_CONFIG_MEMBER_ID,
+    member_name: "로그인 허용 도메인 설정",
+    email: null,
+    role: "config",
+    team: null,
+    unit: null,
+    access_role: null,
+    active_yn: "Y",
+    member_payload: payload,
     updated_at: nowIso,
   };
 }
@@ -362,7 +396,16 @@ export async function fetchSupabaseWorkspace() {
     };
   });
 
-  const people = (memberRows ?? []).map((row) => {
+  const loginDomainConfigRow = (memberRows ?? []).find((row) => row.member_id === LOGIN_DOMAIN_CONFIG_MEMBER_ID);
+  const loginDomains = normalizeDomainList(
+    loginDomainConfigRow?.member_payload?.loginDomains
+      ?? loginDomainConfigRow?.member_payload?.domains
+      ?? "",
+  );
+
+  const people = (memberRows ?? [])
+    .filter((row) => row.member_id !== LOGIN_DOMAIN_CONFIG_MEMBER_ID)
+    .map((row) => {
     const payload = typeof row.member_payload === "object" && row.member_payload ? row.member_payload : {};
 
     return {
@@ -399,6 +442,7 @@ export async function fetchSupabaseWorkspace() {
     workflows,
     people,
     auditLogs,
+    loginDomains,
   };
 }
 
@@ -410,13 +454,17 @@ export async function syncSupabaseWorkspace(workspace) {
   const workflows = Array.isArray(workspace.workflows) ? workspace.workflows : [];
   const people = (Array.isArray(workspace.people) ? workspace.people : [])
     .filter((member) => String(member?.id ?? "").startsWith("MBR-"));
+  const loginDomains = normalizeDomainList(workspace.loginDomains);
   const auditLogs = Array.isArray(workspace.auditLogs) ? workspace.auditLogs.slice(0, AUDIT_LOG_MAX_ITEMS) : [];
 
   const controlRows = controls.map((control, index) => mapControlToMasterRow(control, index, nowIso));
   const executionRows = controls.map((control) => mapControlToExecutionRow(control, nowIso));
   const evidenceRows = controls.flatMap((control) => mapControlToEvidenceRows(control, nowIso));
   const workflowRows = workflows.map((workflow) => mapWorkflowToRow(workflow, nowIso));
-  const memberRows = people.map((member) => mapMemberToRow(member, nowIso));
+  const memberRows = [
+    ...people.map((member) => mapMemberToRow(member, nowIso)),
+    mapLoginDomainConfigRow(loginDomains, nowIso),
+  ];
   const auditRows = auditLogs.map((log) => mapAuditToRow(log, nowIso));
 
   await upsertRows(ITGC_CONTROL_MASTER_TABLE, controlRows, "control_id");
