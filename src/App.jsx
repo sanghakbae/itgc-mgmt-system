@@ -619,6 +619,55 @@ function isDriveEvidence(file) {
   );
 }
 
+function normalizeCompactText(value) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function convertLeadingNumberBulletsToCircled(value) {
+  const circled = ["", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"];
+  const text = String(value ?? "");
+  if (!text) {
+    return "";
+  }
+
+  return text.replace(/(^|\n)\s*(\d{1,2})[.)]\s+/g, (match, prefix, numeric) => {
+    const n = Number(numeric);
+    if (!Number.isInteger(n) || n < 1 || n >= circled.length) {
+      return match;
+    }
+    return `${prefix}${circled[n]} `;
+  });
+}
+
+function buildActivityFromControl(control) {
+  const normalizedTitle = normalizeCompactText(control?.title).replace(/[.。]+$/, "");
+  if (!normalizedTitle) {
+    return "";
+  }
+  const frequencyLabelMap = {
+    Daily: "일별",
+    Weekly: "주별",
+    Monthly: "월별",
+    Quarterly: "분기별",
+    "Half-Bi-annual": "반기별",
+    Annual: "연 1회",
+    "Event Driven": "이벤트 발생 시",
+    Other: "필요 시",
+  };
+  const performDept = normalizeCompactText(control?.performDept ?? control?.performer ?? control?.ownerDept) || "수행 부서";
+  const reviewDept = normalizeCompactText(control?.reviewDept ?? control?.reviewer) || "검토 부서";
+  const frequency = (frequencyLabelMap[control?.frequency] ?? normalizeCompactText(control?.frequency)) || "정기";
+  const objective = normalizeCompactText(control?.controlObjective ?? control?.purpose);
+
+  return [
+    `1. ${performDept}는 "${normalizedTitle}" 통제를 ${frequency} 기준에 따라 수행하고 결과를 기록한다.`,
+    objective ? `2. 점검 목적은 ${objective}이며 예외 사항은 원인과 조치 계획을 함께 남긴다.` : "2. 점검 중 발견된 예외 사항은 원인과 조치 계획을 함께 남긴다.",
+    `3. 근거 자료는 증적(Evidence)으로 보관하고 ${reviewDept}가 검토 결과를 승인 또는 개선조치로 확정한다.`,
+  ].join("\n");
+}
+
 function normalizeControl(control) {
   const catalog = controlCatalog[control.id] ?? {};
   const performDept = control.performDept ?? control.performer ?? control.ownerDept ?? "";
@@ -627,13 +676,21 @@ function normalizeControl(control) {
     uniqueSystems(control.targetSystems ?? catalog.targetSystems).length > 0
       ? uniqueSystems(control.targetSystems ?? catalog.targetSystems)
       : defaultSystemsByCategory[control.process ?? catalog.process] ?? [];
+  const normalizedTitle = control.title?.replace(/\s+/g, " ").trim() ?? catalog.title ?? "";
+  const normalizedActivity = convertLeadingNumberBulletsToCircled(buildActivityFromControl({
+    ...control,
+    ...catalog,
+    title: normalizedTitle,
+  }));
+  const normalizedDescription = convertLeadingNumberBulletsToCircled(control.description ?? control.population ?? "");
+  const normalizedEvidenceText = convertLeadingNumberBulletsToCircled(control.evidenceText ?? "");
 
   return {
     ...control,
     ...catalog,
     process: control.process?.trim() ?? catalog.process ?? "",
     subProcess: control.subProcess?.trim() ?? catalog.subProcess ?? control.process?.trim() ?? catalog.process ?? "",
-    title: control.title?.replace(/\s+/g, " ").trim() ?? catalog.title ?? "",
+    title: normalizedTitle,
     controlType: control.controlType ?? catalog.controlType ?? "예방",
     keyControl: control.keyControl ?? catalog.keyControl ?? "No",
     ownerDept: performDept || catalog.performDept || "",
@@ -645,17 +702,17 @@ function normalizeControl(control) {
     targetSystems: normalizedSystems,
     riskName: control.riskName ?? "",
     controlObjective: control.controlObjective ?? control.purpose ?? "",
-    controlActivity: control.controlActivity ?? "",
-    description: control.description ?? control.population ?? "",
+    controlActivity: normalizedActivity,
+    description: normalizedDescription,
     automationLevel: control.automationLevel ?? "",
     ownerPerson: control.ownerPerson ?? control.reviewer ?? "",
-    evidenceText: control.evidenceText ?? "",
+    evidenceText: normalizedEvidenceText,
     testMethod: control.testMethod ?? "",
     policyReference: control.policyReference ?? "",
     deficiencyImpact: control.deficiencyImpact ?? "",
     evidenceFiles: Array.isArray(control.evidenceFiles) ? control.evidenceFiles : [],
     attributes: Array.isArray(control.attributes) ? control.attributes : [],
-    evidences: Array.isArray(control.evidences) ? control.evidences : [],
+    evidences: Array.isArray(control.evidences) ? control.evidences.map((item) => convertLeadingNumberBulletsToCircled(item)) : [],
     procedures: Array.isArray(control.procedures) ? control.procedures : [],
   };
 }
@@ -2185,6 +2242,15 @@ export default function App() {
     () => controls.filter((control) => String(control.executionNote ?? "").trim().length > 0),
     [controls],
   );
+  const reviewPendingCount = useMemo(
+    () =>
+      controls.filter(
+        (control) =>
+          String(control.executionNote ?? "").trim().length > 0
+          && String(control.reviewChecked ?? "미검토") !== "검토 완료",
+      ).length,
+    [controls],
+  );
   const reviewVisibleControls =
     processFilter === "전체"
       ? reviewQueueControls
@@ -2901,6 +2967,14 @@ export default function App() {
     }
     if (!canSubmitRegistration) {
       showCenterAlert(`필수 항목이 누락되었습니다: ${registrationMissingFields.join(", ")}`);
+      return;
+    }
+    if (
+      registrationForm.controlName.trim()
+      && registrationForm.controlActivity.trim()
+      && registrationForm.controlName.trim() === registrationForm.controlActivity.trim()
+    ) {
+      showCenterAlert("통제명과 Activity는 동일하게 입력할 수 없습니다.");
       return;
     }
 
@@ -3636,6 +3710,11 @@ export default function App() {
             >
               <span className="nav-button-icon" aria-hidden="true">{icon}</span>
               <span className="nav-button-label">{label}</span>
+              {key === "control-workbench" && reviewPendingCount > 0 ? (
+                <span className="menu-pending-badge" aria-label={`검토 대기 ${reviewPendingCount}건`}>
+                  {reviewPendingCount}
+                </span>
+              ) : null}
             </button>
           ))}
         </nav>
@@ -3652,6 +3731,11 @@ export default function App() {
           >
             <span className="mobile-nav-icon" aria-hidden="true">{icon}</span>
             <span className="mobile-nav-label">{label}</span>
+            {key === "control-workbench" && reviewPendingCount > 0 ? (
+              <span className="menu-pending-badge mobile" aria-label={`검토 대기 ${reviewPendingCount}건`}>
+                {reviewPendingCount}
+              </span>
+            ) : null}
           </button>
         ))}
       </nav>
@@ -3915,6 +3999,7 @@ export default function App() {
                   onClick={() => handleWorkbenchTabChange("control-review")}
                 >
                   통제 검토
+                  {reviewPendingCount > 0 ? <span className="tab-pending-badge">{reviewPendingCount}</span> : null}
                 </button>
               </div>
             </section>
@@ -4160,13 +4245,8 @@ export default function App() {
                       <span>검토 부서</span>
                       <input value={registrationForm.reviewDept} onChange={(event) => updateRegistrationField("reviewDept", event.target.value)} />
                     </label>
-                    <label className="registration-field registration-field-row-start registration-audit-evidence">
-                      <span>Evidence <em>필수</em></span>
-                      <textarea rows="4" value={registrationForm.evidence} onChange={(event) => updateRegistrationField("evidence", event.target.value)} />
-                      <small className="registration-field-spacer" aria-hidden="true">placeholder</small>
-                    </label>
                     {registrationFormMode === "advanced" ? (
-                      <label className="registration-field">
+                      <label className="registration-field registration-audit-advanced-half registration-audit-automation">
                         <span>자동화 수준</span>
                         <select value={registrationForm.automationLevel} onChange={(event) => updateRegistrationField("automationLevel", event.target.value)}>
                           <option value="수동">수동</option>
@@ -4176,7 +4256,7 @@ export default function App() {
                       </label>
                     ) : null}
                     {registrationFormMode === "advanced" ? (
-                      <label className="registration-field">
+                      <label className="registration-field registration-audit-advanced-half registration-audit-deficiency">
                         <span>결함 영향도</span>
                         <select value={registrationForm.deficiencyImpact} onChange={(event) => updateRegistrationField("deficiencyImpact", event.target.value)}>
                           <option value="높음">높음</option>
@@ -4186,21 +4266,26 @@ export default function App() {
                       </label>
                     ) : null}
                     {registrationFormMode === "advanced" ? (
-                      <label className="registration-field">
+                      <label className="registration-field registration-audit-advanced-half registration-audit-test-method">
                         <span>테스트 방법</span>
                         <textarea rows="4" value={registrationForm.testMethod} onChange={(event) => updateRegistrationField("testMethod", event.target.value)} />
                         <small>감사/자가점검 시 어떻게 검증할지 기술</small>
                       </label>
                     ) : null}
                     {registrationFormMode === "advanced" ? (
-                      <label className="registration-field">
+                      <label className="registration-field registration-audit-advanced-half registration-audit-population">
                         <span>모집단</span>
                         <textarea rows="4" value={registrationForm.population} onChange={(event) => updateRegistrationField("population", event.target.value)} />
                         <small>점검 대상 기간, 건수, 추출 기준 등을 작성</small>
                       </label>
                     ) : null}
+                    <label className="registration-field registration-field-row-start registration-audit-evidence">
+                      <span>Evidence <em>필수</em></span>
+                      <textarea rows="4" value={registrationForm.evidence} onChange={(event) => updateRegistrationField("evidence", event.target.value)} />
+                      <small className="registration-field-spacer" aria-hidden="true">placeholder</small>
+                    </label>
                     {registrationFormMode === "advanced" ? (
-                      <div className="registration-switch-card">
+                      <div className="registration-switch-card registration-audit-advanced-full">
                         <div>
                           <strong>핵심통제(Key Control)</strong>
                           <p>재무/감사 영향도가 높아 별도 검증이 필요한 통제</p>
