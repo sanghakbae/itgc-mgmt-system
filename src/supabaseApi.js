@@ -7,6 +7,7 @@ export const ITGC_WORKFLOWS_TABLE = "itgc_workflows";
 export const ITGC_MEMBER_TABLE = "itgc_member_master";
 export const ITGC_AUDIT_TABLE = "itgc_audit_log";
 export const ITGC_EVIDENCE_BUCKET = "itgc_evidence_files";
+const AUDIT_LOG_MAX_ITEMS = 3000;
 
 function assertSupabaseConfigured() {
   if (!supabaseConfigured || !supabase) {
@@ -251,7 +252,7 @@ export async function fetchSupabaseWorkspace() {
     supabase.from(ITGC_EVIDENCE_TABLE).select("*").order("uploaded_at", { ascending: false }),
     supabase.from(ITGC_WORKFLOWS_TABLE).select("*").order("due_date", { ascending: true }),
     supabase.from(ITGC_MEMBER_TABLE).select("*").order("member_name", { ascending: true }),
-    supabase.from(ITGC_AUDIT_TABLE).select("*").order("created_at_ts", { ascending: false }).limit(300),
+    supabase.from(ITGC_AUDIT_TABLE).select("*").order("created_at_ts", { ascending: false }).limit(AUDIT_LOG_MAX_ITEMS),
   ]);
 
   if (controlError) {
@@ -402,8 +403,9 @@ export async function syncSupabaseWorkspace(workspace) {
   const nowIso = new Date().toISOString();
   const controls = Array.isArray(workspace.controls) ? workspace.controls : [];
   const workflows = Array.isArray(workspace.workflows) ? workspace.workflows : [];
-  const people = Array.isArray(workspace.people) ? workspace.people : [];
-  const auditLogs = Array.isArray(workspace.auditLogs) ? workspace.auditLogs.slice(0, 300) : [];
+  const people = (Array.isArray(workspace.people) ? workspace.people : [])
+    .filter((member) => String(member?.id ?? "").startsWith("MBR-"));
+  const auditLogs = Array.isArray(workspace.auditLogs) ? workspace.auditLogs.slice(0, AUDIT_LOG_MAX_ITEMS) : [];
 
   const controlRows = controls.map((control, index) => mapControlToMasterRow(control, index, nowIso));
   const executionRows = controls.map((control) => mapControlToExecutionRow(control, nowIso));

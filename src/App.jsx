@@ -16,11 +16,18 @@ import { defaultControls30 } from "./defaultControls30";
 const STORAGE_KEY = "itgc-workspace-v8";
 const REGISTRATION_DRAFT_KEY = "itgc-registration-draft-v1";
 const AUTH_STORAGE_KEY = "itgc-google-auth-v1";
+const AUDIT_LOG_MAX_ITEMS = 3000;
 const GOOGLE_SCRIPT_URL = import.meta.env.VITE_GOOGLE_SCRIPT_URL ?? "";
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
+const ALLOWED_DOMAIN_ENV = import.meta.env.VITE_ALLOWED_DOMAIN ?? "muhayu.com";
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL ?? "";
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
 const DATA_BACKEND_ENV = (import.meta.env.VITE_DATA_BACKEND ?? "").trim().toLowerCase();
+const ALLOWED_EMAIL_DOMAINS = ALLOWED_DOMAIN_ENV
+  .split(",")
+  .map((domain) => domain.trim().toLowerCase())
+  .filter(Boolean);
+const ALLOWED_EMAIL_DOMAIN_SET = new Set(ALLOWED_EMAIL_DOMAINS);
 
 const DATA_BACKEND = (() => {
   if (DATA_BACKEND_ENV === "supabase") {
@@ -98,12 +105,7 @@ const defaultData = {
 };
 
 const implementationStatusOrder = ["todo", "in_progress", "done"];
-const defaultPeople = [
-  { id: "USR-001", name: "정보보호유닛", role: "reviewer", team: "정보보호", accessRole: "user", email: "" },
-  { id: "USR-002", name: "QA유닛", role: "performer", team: "QA", accessRole: "user", email: "" },
-  { id: "USR-003", name: "TA유닛", role: "reviewer", team: "TA", accessRole: "user", email: "" },
-  { id: "USR-004", name: "개발 5유닛", role: "performer", team: "개발", accessRole: "user", email: "" },
-];
+const defaultPeople = [];
 const systemOptions = ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"];
 const controlCatalog = {
   "PWC-01": {
@@ -1148,6 +1150,18 @@ function decodeJwtPayload(token) {
   }
 }
 
+function isAllowedEmail(email) {
+  const normalized = String(email ?? "").trim().toLowerCase();
+  if (!normalized || !normalized.includes("@")) {
+    return false;
+  }
+  if (ALLOWED_EMAIL_DOMAIN_SET.size === 0) {
+    return true;
+  }
+  const domain = normalized.split("@")[1] ?? "";
+  return ALLOWED_EMAIL_DOMAIN_SET.has(domain);
+}
+
 function loadAuthSession() {
   try {
     const saved = window.localStorage.getItem(AUTH_STORAGE_KEY);
@@ -1156,7 +1170,7 @@ function loadAuthSession() {
     }
 
     const parsed = JSON.parse(saved);
-    if (!parsed?.email || !String(parsed.email).toLowerCase().endsWith("@muhayu.com")) {
+    if (!parsed?.email || !isAllowedEmail(parsed.email)) {
       window.localStorage.removeItem(AUTH_STORAGE_KEY);
       return null;
     }
@@ -1171,6 +1185,7 @@ export default function App() {
   const [authUser, setAuthUser] = useState(() => loadAuthSession());
   const [authError, setAuthError] = useState("");
   const [workspace, setWorkspace] = useState(() => loadWorkspace());
+  const workspaceRef = useRef(workspace);
   const [currentView, setCurrentView] = useState("dashboard");
   const [selectedControlId, setSelectedControlId] = useState("");
   const [processFilter, setProcessFilter] = useState("전체");
@@ -1218,6 +1233,9 @@ export default function App() {
   }));
   const googleLoginRef = useRef(null);
   const reportPreviewFrameRef = useRef(null);
+  const allowedDomainText = ALLOWED_EMAIL_DOMAINS.length > 0
+    ? ALLOWED_EMAIL_DOMAINS.join(", ")
+    : "모든 도메인";
 
   const { controls, workflows, people } = workspace;
   const isWorkbenchView = currentView === "control-workbench";
@@ -1233,14 +1251,12 @@ export default function App() {
   const performerPeople = people.filter((person) => person.role === "performer" || person.role === "both");
   const reviewerPeople = people.filter((person) => person.role === "reviewer" || person.role === "both");
   const memberDirectory = useMemo(() => {
-    const syncedPeople = people
-      .filter((person) => String(person.email ?? "").trim().length > 0)
-      .map((person) => ({
-        ...person,
-        email: person.email ?? "",
-        unit: person.unit ?? person.team ?? "미지정",
-        accessRole: person.accessRole ?? "viewer",
-      }));
+    const syncedPeople = people.map((person) => ({
+      ...person,
+      email: person.email ?? "",
+      unit: person.unit ?? person.team ?? "미지정",
+      accessRole: person.accessRole ?? "viewer",
+    }));
 
     if (!authUser?.email) {
       return syncedPeople;
@@ -1389,7 +1405,31 @@ export default function App() {
 
     const normalizedEmail = authUser.email.toLowerCase();
     const currentMember = people.find((person) => String(person.email ?? "").toLowerCase() === normalizedEmail);
-    if (!currentMember || currentMember.accessRole === "admin") {
+    if (!currentMember) {
+      updateWorkspace({
+        ...workspace,
+        people: [
+          {
+            id: `MBR-${String(Date.now()).slice(-6)}`,
+            name: authUser.name ?? normalizedEmail,
+            email: normalizedEmail,
+            role: "both",
+            unit: "미지정",
+            team: "미지정",
+            accessRole: "admin",
+          },
+          ...people,
+        ],
+      });
+      return;
+    }
+
+    const needsPatch =
+      currentMember.accessRole !== "admin"
+      || (currentMember.name ?? "") !== (authUser.name ?? normalizedEmail)
+      || !String(currentMember.unit ?? currentMember.team ?? "").trim();
+
+    if (!needsPatch) {
       return;
     }
 
@@ -1397,11 +1437,21 @@ export default function App() {
       ...workspace,
       people: people.map((person) =>
         String(person.email ?? "").toLowerCase() === normalizedEmail
-          ? { ...person, accessRole: "admin" }
+          ? {
+              ...person,
+              name: authUser.name ?? normalizedEmail,
+              unit: person.unit ?? person.team ?? "미지정",
+              team: person.team ?? person.unit ?? "미지정",
+              accessRole: "admin",
+            }
           : person,
       ),
     });
   }, [authUser, people]);
+
+  useEffect(() => {
+    workspaceRef.current = workspace;
+  }, [workspace]);
 
   const dashboardFilteredControls = useMemo(
     () => controls.filter((control) => {
@@ -1699,8 +1749,12 @@ export default function App() {
     const payload = decodeJwtPayload(response?.credential ?? "");
     const email = String(payload?.email ?? "").toLowerCase();
 
-    if (!payload || !payload.email_verified || !email.endsWith("@muhayu.com")) {
-      setAuthError("muhayu.com 계정만 로그인할 수 있습니다.");
+    if (!payload || !payload.email_verified || !email || !isAllowedEmail(email)) {
+      setAuthError(
+        ALLOWED_EMAIL_DOMAINS.length > 0
+          ? `${allowedDomainText} 계정만 로그인할 수 있습니다.`
+          : "Google 계정 인증에 실패했습니다.",
+      );
       window.localStorage.removeItem(AUTH_STORAGE_KEY);
       setAuthUser(null);
       return;
@@ -1777,7 +1831,7 @@ export default function App() {
         callback: handleLoginSuccess,
         auto_select: false,
         cancel_on_tap_outside: true,
-        hd: "muhayu.com",
+        ...(ALLOWED_EMAIL_DOMAINS.length === 1 ? { hd: ALLOWED_EMAIL_DOMAINS[0] } : {}),
       });
       googleLoginRef.current.innerHTML = "";
       window.google.accounts.id.renderButton(googleLoginRef.current, {
@@ -1871,8 +1925,7 @@ export default function App() {
             auditLogs: [],
           };
 
-          setWorkspace(seededWorkspace);
-          persistWorkspace(seededWorkspace);
+          updateWorkspace(seededWorkspace);
           syncRemoteWorkspaceByBackend(seededWorkspace).catch(() => {});
           return;
         }
@@ -1890,8 +1943,7 @@ export default function App() {
           ...current,
           spreadsheet: "연결됨",
         }));
-        setWorkspace(nextWorkspace);
-        persistWorkspace(nextWorkspace);
+        updateWorkspace(nextWorkspace);
       })
       .catch(() => {
         setIntegrationStatus((current) => ({
@@ -1905,7 +1957,13 @@ export default function App() {
     };
   }, []);
 
-  function updateWorkspace(nextWorkspace) {
+  function updateWorkspace(nextWorkspaceOrUpdater) {
+    const nextWorkspace =
+      typeof nextWorkspaceOrUpdater === "function"
+        ? nextWorkspaceOrUpdater(workspaceRef.current)
+        : nextWorkspaceOrUpdater;
+
+    workspaceRef.current = nextWorkspace;
     setWorkspace(nextWorkspace);
     persistWorkspace(nextWorkspace);
     if (HAS_REMOTE_BACKEND) {
@@ -1925,9 +1983,10 @@ export default function App() {
     }
   }
 
-  function writeAuditLog(action, target, detail, baseWorkspace = workspace) {
+  function writeAuditLog(action, target, detail, baseWorkspace = null) {
+    const currentWorkspace = baseWorkspace ?? workspaceRef.current;
     const nextWorkspace = {
-      ...baseWorkspace,
+      ...currentWorkspace,
       auditLogs: [
         {
           id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1940,8 +1999,8 @@ export default function App() {
           createdAt: formatSeoulDateTime(new Date()),
           createdAtTs: new Date().toISOString(),
         },
-        ...(baseWorkspace.auditLogs ?? auditLogs),
-      ].slice(0, 300),
+        ...(currentWorkspace.auditLogs ?? []),
+      ].slice(0, AUDIT_LOG_MAX_ITEMS),
     };
 
     updateWorkspace(nextWorkspace);
@@ -2314,8 +2373,8 @@ export default function App() {
       return;
     }
 
-    if (person.email && !person.email.endsWith("@muhayu.com")) {
-      window.alert("muhayu.com 이메일만 등록할 수 있습니다.");
+    if (person.email && !isAllowedEmail(person.email)) {
+      window.alert(`${allowedDomainText} 이메일만 등록할 수 있습니다.`);
       return;
     }
 
@@ -2408,6 +2467,53 @@ export default function App() {
         ...workspace,
         people: nextPeople,
       },
+    );
+  }
+
+  function handleMemberDelete(personId) {
+    if (!canManageMembers) {
+      return;
+    }
+
+    const targetPerson = people.find((person) => person.id === personId);
+    if (!targetPerson) {
+      return;
+    }
+
+    const normalizedAuthEmail = String(authUser?.email ?? "").trim().toLowerCase();
+    const normalizedTargetEmail = String(targetPerson.email ?? "").trim().toLowerCase();
+    if (normalizedAuthEmail && normalizedTargetEmail && normalizedAuthEmail === normalizedTargetEmail) {
+      window.alert("현재 로그인한 본인 계정은 삭제할 수 없습니다.");
+      return;
+    }
+
+    const adminCount = people.filter((person) => (person.accessRole ?? "viewer") === "admin").length;
+    if ((targetPerson.accessRole ?? "viewer") === "admin" && adminCount <= 1) {
+      window.alert("마지막 admin 계정은 삭제할 수 없습니다.");
+      return;
+    }
+
+    if (!window.confirm(`${targetPerson.name} 계정을 삭제할까요?`)) {
+      return;
+    }
+
+    const nextPeople = people.filter((person) => person.id !== personId);
+    const nextWorkspace = {
+      ...workspace,
+      people: nextPeople,
+    };
+
+    setMemberDrafts((current) => {
+      const nextDrafts = { ...current };
+      delete nextDrafts[personId];
+      return nextDrafts;
+    });
+
+    writeAuditLog(
+      "MEMBER_DELETED",
+      targetPerson.email || targetPerson.id,
+      `${targetPerson.name} 회원 삭제`,
+      nextWorkspace,
     );
   }
 
@@ -2665,7 +2771,7 @@ export default function App() {
             <span className="login-method-label">로그인 방식</span>
             <div className="login-method-row">
               <strong>Google OAuth</strong>
-              <span>muhayu.com</span>
+              <span>{allowedDomainText}</span>
             </div>
             <p className="login-method-note">로그인 시 이름과 이메일 정보를 수집합니다.</p>
           </div>
@@ -2677,7 +2783,7 @@ export default function App() {
             <p className="login-error">`.env`에 `VITE_GOOGLE_CLIENT_ID`를 설정하세요.</p>
           )}
           {authError ? <p className="login-error">{authError}</p> : null}
-          <p className="login-footnote">인가된 `muhayu.com` 계정만 접근할 수 있습니다.</p>
+          <p className="login-footnote">인가된 도메인 계정만 접근할 수 있습니다.</p>
         </section>
       </div>
     );
@@ -3766,6 +3872,7 @@ export default function App() {
                         <th>유닛</th>
                         <th>권한</th>
                         <th>저장</th>
+                        <th>삭제</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3802,6 +3909,16 @@ export default function App() {
                               disabled={!canManageMembers}
                             >
                               저장
+                            </button>
+                          </td>
+                          <td>
+                            <button
+                              className="secondary-button slim-button"
+                              type="button"
+                              onClick={() => handleMemberDelete(person.id)}
+                              disabled={!canManageMembers || !people.some((entry) => entry.id === person.id)}
+                            >
+                              삭제
                             </button>
                           </td>
                         </tr>
@@ -3865,7 +3982,7 @@ export default function App() {
                   </article>
                 </div>
 
-                <div className="table-wrap">
+                <div className="table-wrap report-table-wrap">
                   <table className="report-table">
                     <thead>
                       <tr>
