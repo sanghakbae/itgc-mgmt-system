@@ -64,6 +64,7 @@ const UI_THEME_OPTIONS = [
   { value: "midnight", label: "Midnight" },
 ];
 const UI_THEME_VALUES = new Set(UI_THEME_OPTIONS.map((option) => option.value));
+const CONTROL_UNIT_FILTER_OPTIONS = ["전체", "개발유닛", "인프라유닛", "정보보호유닛", "QA유닛"];
 
 const defaultData = {
   controls: defaultControls30,
@@ -103,7 +104,7 @@ const defaultData = {
       id: "WF-004",
       controlId: "CO-02",
       step: "월별 백업 결과 보고서 2건 확보",
-      assignee: "개발 5유닛",
+      assignee: "인프라유닛",
       reviewer: "정보보호유닛",
       dueDate: "2026-03-30",
       status: "todo",
@@ -202,7 +203,7 @@ const controlCatalog = {
     title: "DB 데이터 직접 변경 시 요청 및 승인",
     keyControl: "Yes",
     frequency: "Event Driven",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "정보보호유닛",
     targetSystems: ["판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
   },
@@ -212,7 +213,7 @@ const controlCatalog = {
     title: "DB 계정 생성 및 접근 부여 시 요청 및 승인",
     keyControl: "No",
     frequency: "Event Driven",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "정보보호유닛",
     targetSystems: ["판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
   },
@@ -222,7 +223,7 @@ const controlCatalog = {
     title: "OS 계정 생성 및 접근 권한 부여 시 요청 및 승인",
     keyControl: "No",
     frequency: "Event Driven",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "QA유닛",
     targetSystems: ["판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
   },
@@ -232,7 +233,7 @@ const controlCatalog = {
     title: "DB/OS 접근 가능 사용자 및 관리자 권한 보유자 모니터링",
     keyControl: "Yes",
     frequency: "Half-Bi-annual",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "정보보호유닛",
     targetSystems: ["판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
   },
@@ -252,7 +253,7 @@ const controlCatalog = {
     title: "개발/테스트, 운영 환경의 분리",
     keyControl: "Yes",
     frequency: "Other",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "QA유닛",
     targetSystems: ["영림원", "BI"],
   },
@@ -262,7 +263,7 @@ const controlCatalog = {
     title: "프로그램 이관 승인",
     keyControl: "Yes",
     frequency: "Event Driven",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "QA유닛",
     targetSystems: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
   },
@@ -272,7 +273,7 @@ const controlCatalog = {
     title: "운영 환경 내 시스템 변경 불가",
     keyControl: "Yes",
     frequency: "Event Driven",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "QA유닛",
     targetSystems: ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"],
   },
@@ -292,7 +293,7 @@ const controlCatalog = {
     title: "데이터 백업 이상 건에 대한 조치 및 보고",
     keyControl: "Yes",
     frequency: "Monthly",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "정보보호유닛",
     targetSystems: ["BI"],
   },
@@ -302,7 +303,7 @@ const controlCatalog = {
     title: "데이터센터 출입 로그 검토",
     keyControl: "Yes",
     frequency: "Quarterly",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "정보보호유닛",
     targetSystems: ["BI"],
   },
@@ -312,7 +313,7 @@ const controlCatalog = {
     title: "데이터베이스 복구테스트의 실시 및 결과 보고",
     keyControl: "Yes",
     frequency: "Annual",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "정보보호유닛",
     targetSystems: ["BI"],
   },
@@ -332,7 +333,7 @@ const controlCatalog = {
     title: "데이터 정합성 테스트",
     keyControl: "Yes",
     frequency: "Event Driven",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "QA유닛",
     targetSystems: ["BI"],
   },
@@ -382,7 +383,7 @@ const controlCatalog = {
     title: "정보보안 대상 자산 및 인프라 목록 작성 및 업데이트",
     keyControl: "Yes",
     frequency: "Annual",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "정보보호유닛",
     targetSystems: ["BI"],
   },
@@ -392,7 +393,7 @@ const controlCatalog = {
     title: "ESM(통합 관제 시스템) 상 감지된 특이상 분석, 조치 및 보고",
     keyControl: "Yes",
     frequency: "Monthly",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "정보보호유닛",
     targetSystems: ["BI"],
   },
@@ -402,7 +403,7 @@ const controlCatalog = {
     title: "네트워크 보안 장비(방화벽, 보안프로토콜, 라우터 등)의 운용 및 관리",
     keyControl: "Yes",
     frequency: "Event Driven",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "정보보호유닛",
     targetSystems: ["BI"],
   },
@@ -412,7 +413,7 @@ const controlCatalog = {
     title: "원격접속 권한의 요청 및 승인",
     keyControl: "Yes",
     frequency: "Event Driven",
-    performDept: "개발 5유닛",
+    performDept: "인프라유닛",
     reviewDept: "정보보호유닛",
     targetSystems: ["BI"],
   },
@@ -637,6 +638,31 @@ function normalizeCompactText(value) {
   return String(value ?? "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeUnitName(value) {
+  return normalizeCompactText(value).toLowerCase();
+}
+
+function toControlUnitFilterValue(control) {
+  const rawUnit = normalizeCompactText(control?.performDept ?? control?.performer ?? "");
+  const normalized = normalizeUnitName(rawUnit);
+  if (!normalized) {
+    return "미지정";
+  }
+  if (normalized.includes("정보보호")) {
+    return "정보보호유닛";
+  }
+  if (normalized.includes("인프라")) {
+    return "인프라유닛";
+  }
+  if (normalized.includes("개발")) {
+    return "개발유닛";
+  }
+  if (normalized.includes("qa") || normalized.includes("ta")) {
+    return "QA유닛";
+  }
+  return rawUnit;
 }
 
 function convertLeadingNumberBulletsToCircled(value) {
@@ -1715,6 +1741,8 @@ export default function App() {
   const [currentView, setCurrentView] = useState(() => loadPersistedCurrentView());
   const [selectedControlId, setSelectedControlId] = useState("");
   const [processFilter, setProcessFilter] = useState("전체");
+  const [controlUnitFilter, setControlUnitFilter] = useState("전체");
+  const [reviewUnitFilter, setReviewUnitFilter] = useState("전체");
   const [controlListPage, setControlListPage] = useState(1);
   const [controlPanelMode, setControlPanelMode] = useState("create");
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -1908,7 +1936,9 @@ export default function App() {
 
   const listPageSize = (isWorkbenchView || currentView === "control-list") ? 15 : 10;
   const visibleControls =
-    processFilter === "전체" ? controls : controls.filter((control) => control.process === processFilter);
+    controlUnitFilter === "전체"
+      ? controls
+      : controls.filter((control) => toControlUnitFilterValue(control) === controlUnitFilter);
   const totalControlPages = Math.max(1, Math.ceil(visibleControls.length / listPageSize));
   const currentControlPage = Math.min(controlListPage, totalControlPages);
   const limitedControls = visibleControls.slice(
@@ -2273,22 +2303,22 @@ export default function App() {
     };
   }, [controls, workflows]);
   const reviewQueueControls = useMemo(
-    () => controls.filter((control) => String(control.executionNote ?? "").trim().length > 0),
-    [controls],
-  );
-  const reviewPendingCount = useMemo(
     () =>
       controls.filter(
         (control) =>
           String(control.executionNote ?? "").trim().length > 0
-          && String(control.reviewChecked ?? "미검토") !== "검토 완료",
-      ).length,
+          && String(control.reviewChecked ?? "미검토") === "미검토",
+      ),
     [controls],
   );
+  const reviewPendingCount = useMemo(
+    () => reviewQueueControls.length,
+    [reviewQueueControls],
+  );
   const reviewVisibleControls =
-    processFilter === "전체"
+    reviewUnitFilter === "전체"
       ? reviewQueueControls
-      : reviewQueueControls.filter((control) => control.process === processFilter);
+      : reviewQueueControls.filter((control) => toControlUnitFilterValue(control) === reviewUnitFilter);
   const totalReviewPages = Math.max(1, Math.ceil(reviewVisibleControls.length / listPageSize));
   const currentReviewPage = Math.min(controlListPage, totalReviewPages);
   const reviewPagedControls = reviewVisibleControls.slice(
@@ -2343,13 +2373,14 @@ export default function App() {
 
     if (nextTab === "controls") {
       setProcessFilter("전체");
+      setControlUnitFilter("전체");
       setControlListPage(1);
       setSelectedControlId(controls[0]?.id ?? "");
       return;
     }
 
     if (nextTab === "control-review") {
-      setProcessFilter("전체");
+      setReviewUnitFilter("전체");
       setControlListPage(1);
       setSelectedControlId(reviewQueueControls[0]?.id ?? "");
     }
@@ -3549,7 +3580,7 @@ export default function App() {
     const reviewChecked = reviewDecision === "양호" ? "검토 완료" : "반려";
 
     if (!reviewer) {
-      showCenterAlert("검토자를 입력하세요.");
+      showCenterAlert("검토 부서/검토자를 입력하세요.");
       return;
     }
 
@@ -3574,6 +3605,12 @@ export default function App() {
     const loggedWorkspace = writeAuditLog("REVIEW_SAVED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 저장`, nextWorkspace);
     if (reviewDecision === "양호") {
       writeAuditLog("REVIEW_COMPLETED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 완료 · ${reviewer}`, loggedWorkspace);
+    } else {
+      setCurrentView("control-workbench");
+      setWorkbenchTab("register");
+      setRegistrationCategoryFilter("전체");
+      setRegistrationListPage(1);
+      setRegistrationSelectedControlId(selectedReviewControl.id);
     }
     showCenterAlert("검토 결과가 저장되었습니다.");
   }
@@ -4485,8 +4522,8 @@ export default function App() {
                     <h2>통제 항목 목록</h2>
                   </div>
                   <label className="filter-label">
-                    <select value={processFilter} onChange={(event) => { setProcessFilter(event.target.value); setControlListPage(1); }}>
-                      {processOptions.map((option) => (
+                    <select value={controlUnitFilter} onChange={(event) => { setControlUnitFilter(event.target.value); setControlListPage(1); }}>
+                      {CONTROL_UNIT_FILTER_OPTIONS.map((option) => (
                         <option key={option} value={option}>{option}</option>
                       ))}
                     </select>
@@ -4554,6 +4591,12 @@ export default function App() {
                         <div className="badge-row">
                           <span className={`status-badge ${statusClass(selectedControl.status)}`}>{selectedControl.status}</span>
                           <span className={`status-badge ${evidenceClass(selectedControl.evidenceStatus)}`}>{selectedControl.evidenceStatus}</span>
+                          <span className="status-badge unit-assignee-badge">
+                            수행: {selectedControl.performDept ?? selectedControl.performer ?? "-"}
+                          </span>
+                          <span className="status-badge unit-review-badge">
+                            검토: {selectedControl.reviewDept ?? selectedControl.reviewer ?? "-"}
+                          </span>
                         </div>
                       </div>
                       <p className="detail-purpose">{selectedControl.id} · {selectedControl.title}</p>
@@ -4678,45 +4721,45 @@ export default function App() {
               <article className="panel control-list-panel">
                 <div className="section-heading">
                   <div>
-                    <h2>등록 통제 내역</h2>
+                    <h2>통제 검토 필요</h2>
                   </div>
-                  {reviewPagedControls.length === 0 ? (
-                    <span className="detail-body-text review-empty-inline">검토 대기 건이 없습니다.</span>
-                  ) : (
+                  {reviewPagedControls.length > 0 ? (
                     <label className="filter-label">
-                      <select value={processFilter} onChange={(event) => { setProcessFilter(event.target.value); setControlListPage(1); }}>
-                        {processOptions.map((option) => (
+                      <select value={reviewUnitFilter} onChange={(event) => { setReviewUnitFilter(event.target.value); setControlListPage(1); }}>
+                        {CONTROL_UNIT_FILTER_OPTIONS.map((option) => (
                           <option key={option} value={option}>{option}</option>
                         ))}
                       </select>
                     </label>
-                  )}
+                  ) : null}
                 </div>
-                <div className="control-list">
-                  {reviewPagedControls.map((control) => (
-                    <button
-                      type="button"
-                      key={control.id}
-                      className={
-                        control.id === selectedReviewControl?.id
-                          ? "registration-example-item registration-control-item control-operation-card active"
-                          : "registration-example-item registration-control-item control-operation-card"
-                      }
-                      onClick={() => {
-                        setSelectedControlId(control.id);
-                        writeAuditLog("REVIEW_VIEWED", control.id, `${control.title} 검토 화면 조회`);
-                      }}
-                    >
-                      <div className="registration-example-head">
-                        <strong>{control.id}</strong>
-                        <span className={`status-badge ${isKeyControl(control.keyControl) ? "key-badge" : "normal-badge"}`}>
-                          {isKeyControl(control.keyControl) ? "Key" : "Normal"}
-                        </span>
-                      </div>
-                      <p>{control.title}</p>
-                    </button>
-                  ))}
-                </div>
+                {reviewPagedControls.length > 0 ? (
+                  <div className="control-list">
+                    {reviewPagedControls.map((control) => (
+                      <button
+                        type="button"
+                        key={control.id}
+                        className={
+                          control.id === selectedReviewControl?.id
+                            ? "registration-example-item registration-control-item control-operation-card active"
+                            : "registration-example-item registration-control-item control-operation-card"
+                        }
+                        onClick={() => {
+                          setSelectedControlId(control.id);
+                          writeAuditLog("REVIEW_VIEWED", control.id, `${control.title} 검토 화면 조회`);
+                        }}
+                      >
+                        <div className="registration-example-head">
+                          <strong>{control.id}</strong>
+                          <span className={`status-badge ${isKeyControl(control.keyControl) ? "key-badge" : "normal-badge"}`}>
+                            {isKeyControl(control.keyControl) ? "Key" : "Normal"}
+                          </span>
+                        </div>
+                        <p>{control.title}</p>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 {totalReviewPages > 1 ? (
                   <div className="pagination">
                     {Array.from({ length: totalReviewPages }, (_, index) => index + 1).map((page) => (
@@ -4754,6 +4797,9 @@ export default function App() {
                       <div className="badge-row">
                         <span className={`status-badge ${statusClass(selectedReviewControl.status)}`}>{selectedReviewControl.status}</span>
                         <span className={`status-badge ${evidenceClass(selectedReviewControl.evidenceStatus)}`}>{selectedReviewControl.evidenceStatus}</span>
+                        <span className="status-badge unit-assignee-badge">
+                          수행: {selectedReviewControl.performDept ?? selectedReviewControl.performer ?? "-"}
+                        </span>
                       </div>
                     </div>
                     <p className="detail-purpose">{selectedReviewControl.id} · {selectedReviewControl.title}</p>
@@ -4818,12 +4864,12 @@ export default function App() {
                           </select>
                         </label>
                         <label>
-                          검토자
+                          검토 부서/검토자
                           <input
                             name="reviewer"
                             type="text"
                             defaultValue={selectedReviewControl.reviewer ?? selectedReviewControl.reviewDept ?? ""}
-                            placeholder="검토자 입력"
+                            placeholder="검토 부서/검토자 입력"
                           />
                         </label>
                       </div>
@@ -4832,16 +4878,7 @@ export default function App() {
                       </div>
                     </form>
                   </>
-                ) : (
-                  <div className="empty-selection-panel">
-                    <div className="section-heading control-review-empty-heading">
-                      <div>
-                        <h2>검토 대기 건이 없습니다.</h2>
-                      </div>
-                    </div>
-                    <p className="detail-purpose">통제 운영에서 수행 내역을 먼저 저장하면 여기에 표시됩니다.</p>
-                  </div>
-                )}
+                ) : null}
               </article>
               </div>
             </section>
@@ -5298,7 +5335,7 @@ export default function App() {
                         <span className="detail-body-text">{roleAssignmentControl.performDept ?? roleAssignmentControl.performer ?? "-"}</span>
                       </div>
                       <div className="execution-meta-item">
-                        <span>현재 검토자</span>
+                        <span>현재 검토 부서/검토자</span>
                         <span className="detail-body-text">{roleAssignmentControl.reviewDept ?? roleAssignmentControl.reviewer ?? "-"}</span>
                       </div>
                       <div className="execution-meta-item">
@@ -5316,7 +5353,7 @@ export default function App() {
                         </select>
                       </label>
                       <label className="execution-form-item">
-                        검토자
+                        검토 부서/검토자
                         <select name="reviewer" defaultValue={roleAssignmentControl.reviewDept ?? roleAssignmentControl.reviewer ?? ""}>
                           {(reviewerPeople.length > 0 ? reviewerPeople : people).map((person) => (
                             <option key={person.id} value={person.name}>{person.name}</option>
