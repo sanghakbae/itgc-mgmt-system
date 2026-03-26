@@ -169,7 +169,7 @@ function mapAuditToRow(log, nowIso) {
     actor_email: log.actorEmail ?? "",
     ip: log.ip ?? "-",
     created_at: log.createdAt ?? "",
-    created_at_ts: nowIso,
+    created_at_ts: log.createdAtTs ?? nowIso,
     audit_payload: log,
   };
 }
@@ -384,6 +384,7 @@ export async function fetchSupabaseWorkspace() {
       actorEmail: row.actor_email,
       ip: row.ip,
       createdAt: row.created_at,
+      createdAtTs: row.created_at_ts,
     };
   });
 

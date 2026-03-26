@@ -1622,16 +1622,6 @@ export default function App() {
   ];
 
   function handleViewChange(nextView) {
-    if (nextView === "controls") {
-      setProcessFilter("전체");
-      setControlListPage(1);
-      setSelectedControlId(controls[0]?.id ?? "");
-    }
-    if (nextView === "control-review") {
-      setProcessFilter("전체");
-      setControlListPage(1);
-      setSelectedControlId(reviewQueueControls[0]?.id ?? "");
-    }
     if (nextView === "control-workbench") {
       setWorkbenchTab("register");
       setRegistrationCategoryFilter("전체");
@@ -1694,11 +1684,12 @@ export default function App() {
     setProcessFilter(resolvedProcess);
     setControlListPage(1);
     setSelectedControlId(controlId || targetControl?.id || controls[0]?.id || "");
-    setCurrentView("controls");
+    setCurrentView("control-workbench");
+    setWorkbenchTab("controls");
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "auto" });
     }
-    writeAuditLog("MENU_OPEN", "controls", `통제 운영 열람 · ${controlId || resolvedProcess}`);
+    writeAuditLog("MENU_OPEN", "control-workbench", `통제 관리 열람 · ${controlId || resolvedProcess}`);
     if (window.matchMedia("(max-width: 960px)").matches) {
       setIsSidebarOpen(false);
     }
@@ -1947,6 +1938,7 @@ export default function App() {
           actorEmail: authUser?.email ?? "",
           ip: "-",
           createdAt: formatSeoulDateTime(new Date()),
+          createdAtTs: new Date().toISOString(),
         },
         ...(baseWorkspace.auditLogs ?? auditLogs),
       ].slice(0, 300),
@@ -2372,14 +2364,24 @@ export default function App() {
       accessRole: sourcePerson.accessRole ?? "viewer",
     };
     const normalizedEmail = String(sourcePerson.email ?? "").trim().toLowerCase();
-    if (!normalizedEmail) return;
-
-    const existingIndex = people.findIndex((person) => String(person.email ?? "").trim().toLowerCase() === normalizedEmail);
+    const existingIndex = people.findIndex((person) => {
+      if (person.id === personId) {
+        return true;
+      }
+      if (!normalizedEmail) {
+        return false;
+      }
+      return String(person.email ?? "").trim().toLowerCase() === normalizedEmail;
+    });
     const nextEntry = {
-      id: existingIndex >= 0 ? people[existingIndex].id : `MBR-${String(Date.now()).slice(-6)}`,
+      id: existingIndex >= 0
+        ? people[existingIndex].id
+        : personId.startsWith("AUTH-")
+          ? `MBR-${String(Date.now()).slice(-6)}`
+          : personId,
       name: sourcePerson.name,
       email: normalizedEmail,
-      role: existingIndex >= 0 ? people[existingIndex].role ?? "both" : "both",
+      role: existingIndex >= 0 ? people[existingIndex].role ?? sourcePerson.role ?? "both" : sourcePerson.role ?? "both",
       unit: draft.unit.trim() || "미지정",
       team: draft.unit.trim() || "미지정",
       accessRole: draft.accessRole || "viewer",
@@ -2400,7 +2402,7 @@ export default function App() {
 
     writeAuditLog(
       action,
-      nextEntry.email,
+      nextEntry.email || nextEntry.id,
       `${nextEntry.name} · 유닛:${previousPerson?.team ?? previousPerson?.unit ?? "-"} -> ${nextEntry.team}, 권한:${previousPerson?.accessRole ?? "-"} -> ${nextEntry.accessRole}`,
       {
         ...workspace,
