@@ -1596,7 +1596,7 @@ export default function App() {
     return Number.isInteger(month) && month >= 1 && month <= 12 ? month : 1;
   });
   const currentCalendarMonth = useMemo(() => new Date().getMonth() + 1, []);
-  const [reportPeriod, setReportPeriod] = useState("monthly");
+  const [reportPeriod, setReportPeriod] = useState("annual");
   const [reportFormat, setReportFormat] = useState("html");
   const [reportPreviewOpen, setReportPreviewOpen] = useState(false);
   const [reportPreviewMarkup, setReportPreviewMarkup] = useState("");
