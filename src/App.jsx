@@ -11,6 +11,7 @@ const STORAGE_KEY = "itgc-workspace-v8";
 const REGISTRATION_DRAFT_KEY = "itgc-registration-draft-v1";
 const AUTH_STORAGE_KEY = "itgc-google-auth-v1";
 const LOGIN_DOMAIN_STORAGE_KEY = "itgc-login-domain-v1";
+const DELETED_MEMBER_EMAILS_STORAGE_KEY = "itgc-deleted-member-emails-v1";
 const CURRENT_VIEW_STORAGE_KEY = "itgc-current-view-v1";
 const WORKBENCH_TAB_STORAGE_KEY = "itgc-workbench-tab-v1";
 const AUDIT_LOG_MAX_ITEMS = 3000;
@@ -21,6 +22,8 @@ const ALLOWED_DOMAIN_ENV = (import.meta.env.VITE_ALLOWED_DOMAIN ?? "").trim() ||
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL ?? "").trim() || "https://gfybyxbrmkwbzuyhyqiv.supabase.co";
 const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY ?? "").trim() || "sb_publishable_Cd-7SADAjF_J5vEo9QkmAA_Jz2_diWz";
 const DATA_BACKEND_ENV = (import.meta.env.VITE_DATA_BACKEND ?? "").trim().toLowerCase();
+let googleDriveAccessTokenCache = "";
+let googleDriveAccessTokenExpiresAt = 0;
 const ALLOWED_EMAIL_DOMAINS = ALLOWED_DOMAIN_ENV
   .split(",")
   .map((domain) => domain.trim().toLowerCase())
@@ -655,23 +658,83 @@ async function uploadEvidenceFiles(controlId, files) {
     throw new Error("google_drive_not_configured");
   }
   if (!window.google?.accounts?.oauth2) {
+    await new Promise((resolve, reject) => {
+      if (window.google?.accounts?.oauth2) {
+        resolve();
+        return;
+      }
+
+      const handleLoaded = () => {
+        if (window.google?.accounts?.oauth2) {
+          resolve();
+          return;
+        }
+        reject(new Error("google_oauth_not_ready"));
+      };
+      const handleError = () => reject(new Error("google_oauth_script_load_failed"));
+
+      const existingScript = document.querySelector('script[data-google-identity="true"]');
+      if (existingScript) {
+        existingScript.addEventListener("load", handleLoaded, { once: true });
+        existingScript.addEventListener("error", handleError, { once: true });
+        return;
+      }
+
+      const script = document.createElement("script");
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      script.dataset.googleIdentity = "true";
+      script.onload = handleLoaded;
+      script.onerror = handleError;
+      document.head.appendChild(script);
+    });
+  }
+  if (!window.google?.accounts?.oauth2) {
     throw new Error("google_oauth_not_ready");
   }
 
-  const accessToken = await new Promise((resolve, reject) => {
+  const requestAccessToken = (prompt = "") => new Promise((resolve, reject) => {
     const tokenClient = window.google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
       scope: "https://www.googleapis.com/auth/drive.file",
       callback: (tokenResponse) => {
         if (!tokenResponse?.access_token || tokenResponse?.error) {
-          reject(new Error(tokenResponse?.error || "google_token_failed"));
+          const code = String(tokenResponse?.error || "google_token_failed");
+          const description = String(tokenResponse?.error_description || "").trim();
+          reject(new Error(`google_token_failed|code=${code}|description=${description}`));
           return;
         }
-        resolve(tokenResponse.access_token);
+        resolve(tokenResponse);
       },
     });
-    tokenClient.requestAccessToken({ prompt: "" });
+    tokenClient.requestAccessToken({ prompt });
   });
+
+  let accessToken = "";
+  const now = Date.now();
+  if (googleDriveAccessTokenCache && googleDriveAccessTokenExpiresAt > now + 30_000) {
+    accessToken = googleDriveAccessTokenCache;
+  } else {
+    try {
+      const tokenResponse = await requestAccessToken("");
+      accessToken = String(tokenResponse?.access_token ?? "");
+      const expiresInSec = Number(tokenResponse?.expires_in ?? 0);
+      googleDriveAccessTokenCache = accessToken;
+      googleDriveAccessTokenExpiresAt = now + (Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec * 1000 : 50 * 60 * 1000);
+    } catch (error) {
+      const normalized = String(error?.message ?? "").toLowerCase();
+      if (normalized.includes("access_denied") || normalized.includes("interaction_required") || normalized.includes("consent_required")) {
+        const tokenResponse = await requestAccessToken("consent");
+        accessToken = String(tokenResponse?.access_token ?? "");
+        const expiresInSec = Number(tokenResponse?.expires_in ?? 0);
+        googleDriveAccessTokenCache = accessToken;
+        googleDriveAccessTokenExpiresAt = Date.now() + (Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec * 1000 : 50 * 60 * 1000);
+      } else {
+        throw error;
+      }
+    }
+  }
 
   const uploadedFiles = [];
   for (const file of files) {
@@ -695,7 +758,14 @@ async function uploadEvidenceFiles(controlId, files) {
       body,
     });
     if (!response.ok) {
-      throw new Error("google_drive_upload_failed");
+      if (response.status === 401) {
+        googleDriveAccessTokenCache = "";
+        googleDriveAccessTokenExpiresAt = 0;
+      }
+      const errorBody = await response.json().catch(() => null);
+      const reason = String(errorBody?.error?.errors?.[0]?.reason || errorBody?.error?.status || "unknown_reason");
+      const message = String(errorBody?.error?.message || `status_${response.status}`);
+      throw new Error(`google_drive_upload_failed|status=${response.status}|reason=${reason}|message=${message}`);
     }
     const result = await response.json();
     uploadedFiles.push({
@@ -1219,6 +1289,16 @@ function isAllowedEmailBySet(email, domainSet) {
   return domainSet.has(domain);
 }
 
+function parseEmailList(raw) {
+  const source = Array.isArray(raw) ? raw.join(",") : String(raw ?? "");
+  return [...new Set(
+    source
+      .split(/[,\n;\s]+/)
+      .map((token) => token.trim().toLowerCase())
+      .filter((token) => token.includes("@")),
+  )];
+}
+
 function parseDomainList(raw) {
   const source = Array.isArray(raw) ? raw.join(",") : String(raw ?? "");
   return source
@@ -1230,6 +1310,18 @@ function parseDomainList(raw) {
       return normalized.replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^\./, "");
     })
     .filter(Boolean);
+}
+
+function loadDeletedMemberEmails() {
+  try {
+    const saved = window.localStorage.getItem(DELETED_MEMBER_EMAILS_STORAGE_KEY);
+    if (!saved) {
+      return [];
+    }
+    return parseEmailList(JSON.parse(saved));
+  } catch {
+    return [];
+  }
 }
 
 function loadLoginDomains() {
@@ -1374,6 +1466,7 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [loginDomains, setLoginDomains] = useState(() => loadLoginDomains());
   const [loginDomainDraft, setLoginDomainDraft] = useState(() => loadLoginDomains().join(", "));
+  const [deletedMemberEmails, setDeletedMemberEmails] = useState(() => loadDeletedMemberEmails());
   const [workspace, setWorkspace] = useState(() => loadWorkspace());
   const workspaceRef = useRef(workspace);
   const [currentView, setCurrentView] = useState(() => loadPersistedCurrentView());
@@ -1427,6 +1520,7 @@ export default function App() {
   const googleLoginRef = useRef(null);
   const reportPreviewFrameRef = useRef(null);
   const confirmResolverRef = useRef(null);
+  const deletedMemberEmailSet = useMemo(() => new Set(deletedMemberEmails), [deletedMemberEmails]);
   const effectiveLoginDomains = useMemo(() => {
     const merged = parseDomainList([
       ...(Array.isArray(loginDomains) ? loginDomains : []),
@@ -1467,7 +1561,12 @@ export default function App() {
       return syncedPeople;
     }
 
-    const hasCurrentUser = syncedPeople.some((person) => person.email === authUser.email);
+    const normalizedAuthEmail = String(authUser.email ?? "").trim().toLowerCase();
+    if (deletedMemberEmailSet.has(normalizedAuthEmail)) {
+      return syncedPeople;
+    }
+
+    const hasCurrentUser = syncedPeople.some((person) => String(person.email ?? "").trim().toLowerCase() === normalizedAuthEmail);
     if (hasCurrentUser) {
       return syncedPeople;
     }
@@ -1475,15 +1574,15 @@ export default function App() {
     return [
       {
         id: "AUTH-CURRENT",
-        name: authUser.name ?? authUser.email,
-        email: authUser.email,
+        name: authUser.name ?? normalizedAuthEmail,
+        email: normalizedAuthEmail,
         unit: "미지정",
         team: "미지정",
         accessRole: "viewer",
       },
       ...syncedPeople,
     ];
-  }, [authUser, people, loginDomainSet]);
+  }, [authUser, people, deletedMemberEmailSet]);
   const currentAccessRole = normalizeAccessRole(
     memberDirectory.find((person) => person.email === authUser?.email)?.accessRole ?? "viewer",
   );
@@ -1503,6 +1602,12 @@ export default function App() {
     setAuthUser(null);
     setAuthError(LOGIN_DOMAIN_ERROR_MESSAGE);
   }, [authUser, loginDomainSet]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DELETED_MEMBER_EMAILS_STORAGE_KEY, JSON.stringify(deletedMemberEmails));
+    } catch {}
+  }, [deletedMemberEmails]);
 
   useEffect(() => {
     try {
@@ -1652,6 +1757,9 @@ export default function App() {
     }
 
     const normalizedEmail = authUser.email.toLowerCase();
+    if (deletedMemberEmailSet.has(normalizedEmail)) {
+      return;
+    }
     const currentMember = people.find((person) => String(person.email ?? "").toLowerCase() === normalizedEmail);
     if (!currentMember) {
       updateWorkspace({
@@ -1694,7 +1802,7 @@ export default function App() {
           : person,
       ),
     });
-  }, [authUser, people, loginDomainSet]);
+  }, [authUser, people, deletedMemberEmailSet]);
 
   useEffect(() => {
     workspaceRef.current = workspace;
@@ -2016,6 +2124,13 @@ export default function App() {
     const currentWorkspace = workspaceRef.current;
     const currentPeople = Array.isArray(currentWorkspace.people) ? currentWorkspace.people : [];
     const existingMember = currentPeople.find((person) => String(person.email ?? "").toLowerCase() === email);
+    if (deletedMemberEmailSet.has(email) && !existingMember) {
+      setAuthError("삭제된 계정은 관리자 승인 전까지 다시 등록할 수 없습니다.");
+      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+      setAuthUser(null);
+      window.google?.accounts?.id?.disableAutoSelect?.();
+      return;
+    }
     const nextPeople = existingMember
       ? currentPeople.map((person) =>
           String(person.email ?? "").toLowerCase() === email
@@ -2694,6 +2809,9 @@ export default function App() {
       ...workspace,
       people: [person, ...people],
     });
+    if (person.email) {
+      setDeletedMemberEmails((current) => current.filter((email) => email !== person.email));
+    }
     event.currentTarget.reset();
   }
 
@@ -2767,6 +2885,9 @@ export default function App() {
       existingIndex >= 0
         ? people.map((person, index) => (index === existingIndex ? { ...person, ...nextEntry } : person))
         : [nextEntry, ...people];
+    if (nextEntry.email) {
+      setDeletedMemberEmails((current) => current.filter((email) => email !== nextEntry.email));
+    }
 
     const previousPerson = existingIndex >= 0 ? people[existingIndex] : null;
     const action =
@@ -2829,6 +2950,9 @@ export default function App() {
     }
 
     const nextPeople = people.filter((person) => person.id !== personId);
+    if (normalizedTargetEmail) {
+      setDeletedMemberEmails((current) => [...new Set([...current, normalizedTargetEmail])]);
+    }
     const nextWorkspace = {
       ...workspace,
       people: nextPeople,
@@ -2950,18 +3074,29 @@ export default function App() {
           ...current,
           drive: uploadResult.uploaded ? "연결됨" : current.drive,
         }));
-      } catch {
-        const fallbackFiles = files.map((file) => ({
-          name: file.name,
-          size: file.size,
-          uploadedAt: new Date().toISOString(),
-          url: "",
-        }));
-        nextEvidenceFiles = [...nextEvidenceFiles, ...fallbackFiles];
+      } catch (error) {
+        const code = String(error?.message ?? "");
+        const normalized = code.toLowerCase();
+        let message = "증적 파일을 Google Drive에 저장하지 못했습니다. 다시 시도해주세요.";
+        if (normalized.includes("access_denied")) {
+          message = "Google OAuth 권한이 거부되어 업로드할 수 없습니다. 테스트 사용자 등록/앱 게시 상태를 확인하세요.";
+        } else if (normalized.includes("insufficientfilepermissions") || normalized.includes("file not found")) {
+          message = "Google Drive 폴더 접근 권한이 없습니다. 폴더 권한과 폴더 ID를 확인하세요.";
+        } else if (normalized.includes("google_drive_not_configured")) {
+          message = "Google Drive 설정이 누락되었습니다. `VITE_GOOGLE_CLIENT_ID`와 `VITE_GOOGLE_DRIVE_FOLDER_ID`를 확인하세요.";
+        } else if (normalized.includes("google_oauth_not_ready") || normalized.includes("google_oauth_script_load_failed")) {
+          message = "Google OAuth 스크립트를 불러오지 못했습니다. 페이지를 새로고침한 뒤 다시 시도하세요.";
+        } else if (normalized.includes("popup_closed_by_user")) {
+          message = "Google 권한 팝업이 닫혀 업로드가 취소되었습니다.";
+        }
+        const debugMessage = `${message}\n[debug] ${code || "unknown_error"}`;
         setIntegrationStatus((current) => ({
           ...current,
           drive: "오류",
         }));
+        showCenterAlert(debugMessage);
+        console.error("Google Drive upload failed:", error);
+        return;
       }
     }
 

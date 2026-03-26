@@ -452,7 +452,7 @@ textarea {
 .eyebrow {
   margin: 0 0 6px;
   font-family: "Space Grotesk", sans-serif;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   opacity: 0.72;
   font-size: 0.72rem;
@@ -3395,9 +3395,12 @@ th {
   font-size: 0.84rem;
   font-weight: 600;
   line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  letter-spacing: -0.01em;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .control-operation-card p {
@@ -3405,9 +3408,12 @@ th {
   font-size: 0.84rem;
   font-weight: 600;
   line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  letter-spacing: -0.01em;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
   text-align: left;
 }
 
@@ -3416,9 +3422,11 @@ th {
   margin-top: 1px;
   font-size: 0.72rem;
   min-height: 18px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .control-operation-card small {
@@ -3426,15 +3434,20 @@ th {
   margin-top: 1px;
   font-size: 0.72rem;
   min-height: 18px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .control-operation-card strong {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  letter-spacing: -0.01em;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
   text-align: left;
 }
 
@@ -4214,10 +4227,12 @@ textarea,
   font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.25;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal;
+  text-overflow: clip;
   display: block;
-  overflow: hidden;
+  overflow: visible;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .registration-identity-box p,
@@ -4272,9 +4287,11 @@ textarea,
   display: block;
   min-height: 20px;
   margin: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .control-detail-card .registration-section-head {
