@@ -1,15 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  fetchIntegrationStatus as fetchGoogleIntegrationStatus,
-  fetchRemoteWorkspace as fetchGoogleWorkspace,
-  syncRemoteWorkspace as syncGoogleWorkspace,
-  uploadEvidenceToDrive,
-} from "./googleSheetApi";
-import {
   fetchSupabaseIntegrationStatus,
   fetchSupabaseWorkspace,
   syncSupabaseWorkspace,
-  uploadEvidenceToSupabase,
+  deleteSupabaseMember,
 } from "./supabaseApi";
 import { defaultControls30 } from "./defaultControls30";
 
@@ -17,10 +11,12 @@ const STORAGE_KEY = "itgc-workspace-v8";
 const REGISTRATION_DRAFT_KEY = "itgc-registration-draft-v1";
 const AUTH_STORAGE_KEY = "itgc-google-auth-v1";
 const LOGIN_DOMAIN_STORAGE_KEY = "itgc-login-domain-v1";
+const CURRENT_VIEW_STORAGE_KEY = "itgc-current-view-v1";
+const WORKBENCH_TAB_STORAGE_KEY = "itgc-workbench-tab-v1";
 const AUDIT_LOG_MAX_ITEMS = 3000;
 const LOGIN_DOMAIN_ERROR_MESSAGE = "허용된 도메인만 로그인할 수 있습니다.";
-const GOOGLE_SCRIPT_URL = import.meta.env.VITE_GOOGLE_SCRIPT_URL ?? "";
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
+const GOOGLE_DRIVE_FOLDER_ID = (import.meta.env.VITE_GOOGLE_DRIVE_FOLDER_ID ?? "").trim() || "1ZxNyDTkjD3G9Ju_7x0MTSEiBxyTNnEmg";
 const ALLOWED_DOMAIN_ENV = (import.meta.env.VITE_ALLOWED_DOMAIN ?? "").trim() || "muhayu.com";
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL ?? "").trim() || "https://gfybyxbrmkwbzuyhyqiv.supabase.co";
 const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY ?? "").trim() || "sb_publishable_Cd-7SADAjF_J5vEo9QkmAA_Jz2_diWz";
@@ -34,20 +30,15 @@ const DATA_BACKEND = (() => {
   if (DATA_BACKEND_ENV === "supabase") {
     return "supabase";
   }
-  if (DATA_BACKEND_ENV === "google") {
-    return "google";
-  }
   if (SUPABASE_URL && SUPABASE_ANON_KEY) {
     return "supabase";
-  }
-  if (GOOGLE_SCRIPT_URL) {
-    return "google";
   }
   return "local";
 })();
 
-const IS_SUPABASE_BACKEND = DATA_BACKEND === "supabase";
 const HAS_REMOTE_BACKEND = DATA_BACKEND !== "local";
+const VIEW_KEYS = ["dashboard", "control-list", "control-workbench", "report", "people", "audit", "register", "controls", "control-review", "roles"];
+const WORKBENCH_TAB_KEYS = ["register", "controls", "control-review"];
 
 const defaultData = {
   controls: defaultControls30,
@@ -660,9 +651,66 @@ async function uploadEvidenceFiles(controlId, files) {
     };
   }
 
-  const result = IS_SUPABASE_BACKEND
-    ? await uploadEvidenceToSupabase(controlId, files)
-    : await uploadEvidenceToDrive(GOOGLE_SCRIPT_URL, controlId, files);
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_DRIVE_FOLDER_ID) {
+    throw new Error("google_drive_not_configured");
+  }
+  if (!window.google?.accounts?.oauth2) {
+    throw new Error("google_oauth_not_ready");
+  }
+
+  const accessToken = await new Promise((resolve, reject) => {
+    const tokenClient = window.google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: "https://www.googleapis.com/auth/drive.file",
+      callback: (tokenResponse) => {
+        if (!tokenResponse?.access_token || tokenResponse?.error) {
+          reject(new Error(tokenResponse?.error || "google_token_failed"));
+          return;
+        }
+        resolve(tokenResponse.access_token);
+      },
+    });
+    tokenClient.requestAccessToken({ prompt: "" });
+  });
+
+  const uploadedFiles = [];
+  for (const file of files) {
+    const boundary = `itgc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const metadata = {
+      name: `${controlId}_${Date.now()}_${file.name}`,
+      parents: [GOOGLE_DRIVE_FOLDER_ID],
+    };
+    const body = new Blob([
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`,
+      `--${boundary}\r\nContent-Type: ${file.type || "application/octet-stream"}\r\n\r\n`,
+      file,
+      `\r\n--${boundary}--`,
+    ]);
+    const response = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,webContentLink", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    });
+    if (!response.ok) {
+      throw new Error("google_drive_upload_failed");
+    }
+    const result = await response.json();
+    uploadedFiles.push({
+      evidenceId: `EVD-${controlId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: result.name ?? file.name,
+      mimeType: result.mimeType ?? (file.type || "application/octet-stream"),
+      size: file.size,
+      uploadedAt: new Date().toISOString(),
+      url: result.webViewLink ?? result.webContentLink ?? "",
+      driveFileId: result.id ?? "",
+      provider: "google-drive",
+    });
+  }
+
+  const result = { files: uploadedFiles };
   return {
     uploaded: true,
     files: Array.isArray(result.files) && result.files.length > 0
@@ -672,33 +720,15 @@ async function uploadEvidenceFiles(controlId, files) {
 }
 
 async function fetchRemoteIntegrationStatusByBackend() {
-  if (IS_SUPABASE_BACKEND) {
-    return fetchSupabaseIntegrationStatus();
-  }
-  if (GOOGLE_SCRIPT_URL) {
-    return fetchGoogleIntegrationStatus(GOOGLE_SCRIPT_URL);
-  }
-  return { spreadsheet: false, drive: false };
+  return fetchSupabaseIntegrationStatus();
 }
 
 async function fetchRemoteWorkspaceByBackend() {
-  if (IS_SUPABASE_BACKEND) {
-    return fetchSupabaseWorkspace();
-  }
-  if (GOOGLE_SCRIPT_URL) {
-    return fetchGoogleWorkspace(GOOGLE_SCRIPT_URL);
-  }
-  return null;
+  return fetchSupabaseWorkspace();
 }
 
 async function syncRemoteWorkspaceByBackend(workspace) {
-  if (IS_SUPABASE_BACKEND) {
-    return syncSupabaseWorkspace(workspace);
-  }
-  if (GOOGLE_SCRIPT_URL) {
-    return syncGoogleWorkspace(GOOGLE_SCRIPT_URL, workspace);
-  }
-  return { ok: true };
+  return syncSupabaseWorkspace(workspace);
 }
 
 function createDefaultWorkflowSeeds(controls) {
@@ -1166,6 +1196,17 @@ function decodeJwtPayload(token) {
   }
 }
 
+function normalizeAccessRole(role) {
+  const normalized = String(role ?? "").trim().toLowerCase();
+  if (normalized === "admin") {
+    return "admin";
+  }
+  if (normalized === "reviewer" || normalized === "editor") {
+    return "reviewer";
+  }
+  return "viewer";
+}
+
 function isAllowedEmailBySet(email, domainSet) {
   const normalized = String(email ?? "").trim().toLowerCase();
   if (!normalized || !normalized.includes("@")) {
@@ -1308,6 +1349,26 @@ function loadAuthSession() {
   }
 }
 
+function loadPersistedCurrentView() {
+  try {
+    const saved = window.localStorage.getItem(CURRENT_VIEW_STORAGE_KEY);
+    if (saved && VIEW_KEYS.includes(saved)) {
+      return saved;
+    }
+  } catch {}
+  return "dashboard";
+}
+
+function loadPersistedWorkbenchTab() {
+  try {
+    const saved = window.localStorage.getItem(WORKBENCH_TAB_STORAGE_KEY);
+    if (saved && WORKBENCH_TAB_KEYS.includes(saved)) {
+      return saved;
+    }
+  } catch {}
+  return "register";
+}
+
 export default function App() {
   const [authUser, setAuthUser] = useState(() => loadAuthSession());
   const [authError, setAuthError] = useState("");
@@ -1315,7 +1376,7 @@ export default function App() {
   const [loginDomainDraft, setLoginDomainDraft] = useState(() => loadLoginDomains().join(", "));
   const [workspace, setWorkspace] = useState(() => loadWorkspace());
   const workspaceRef = useRef(workspace);
-  const [currentView, setCurrentView] = useState("dashboard");
+  const [currentView, setCurrentView] = useState(() => loadPersistedCurrentView());
   const [selectedControlId, setSelectedControlId] = useState("");
   const [processFilter, setProcessFilter] = useState("전체");
   const [controlListPage, setControlListPage] = useState(1);
@@ -1341,7 +1402,7 @@ export default function App() {
   const [dashboardView, setDashboardView] = useState("category");
   const [dashboardUnitFilter, setDashboardUnitFilter] = useState("전체");
   const [dashboardDelayFilter, setDashboardDelayFilter] = useState("전체");
-  const [workbenchTab, setWorkbenchTab] = useState("register");
+  const [workbenchTab, setWorkbenchTab] = useState(() => loadPersistedWorkbenchTab());
   const [dashboardCalendarMonth, setDashboardCalendarMonth] = useState(() => {
     const month = new Date().getMonth() + 1;
     return Number.isInteger(month) && month >= 1 && month <= 12 ? month : 1;
@@ -1354,6 +1415,8 @@ export default function App() {
   const [evidencePreviewFile, setEvidencePreviewFile] = useState(null);
   const [executionSavePopupOpen, setExecutionSavePopupOpen] = useState(false);
   const [memberSavePopupMessage, setMemberSavePopupMessage] = useState("");
+  const [centerAlertMessage, setCenterAlertMessage] = useState("");
+  const [centerConfirmMessage, setCenterConfirmMessage] = useState("");
   const [memberDrafts, setMemberDrafts] = useState({});
   const [auditLogQuery, setAuditLogQuery] = useState("");
   const [auditLogPage, setAuditLogPage] = useState(1);
@@ -1363,6 +1426,7 @@ export default function App() {
   }));
   const googleLoginRef = useRef(null);
   const reportPreviewFrameRef = useRef(null);
+  const confirmResolverRef = useRef(null);
   const effectiveLoginDomains = useMemo(() => {
     const merged = parseDomainList([
       ...(Array.isArray(loginDomains) ? loginDomains : []),
@@ -1392,11 +1456,11 @@ export default function App() {
   const performerPeople = people.filter((person) => person.role === "performer" || person.role === "both");
   const reviewerPeople = people.filter((person) => person.role === "reviewer" || person.role === "both");
   const memberDirectory = useMemo(() => {
-    const syncedPeople = people.map((person) => ({
+  const syncedPeople = people.map((person) => ({
       ...person,
       email: person.email ?? "",
       unit: person.unit ?? person.team ?? "미지정",
-      accessRole: person.accessRole ?? "viewer",
+      accessRole: normalizeAccessRole(person.accessRole),
     }));
 
     if (!authUser?.email) {
@@ -1415,13 +1479,18 @@ export default function App() {
         email: authUser.email,
         unit: "미지정",
         team: "미지정",
-        accessRole: isAllowedEmailBySet(authUser.email, loginDomainSet) ? "admin" : "viewer",
+        accessRole: "viewer",
       },
       ...syncedPeople,
     ];
   }, [authUser, people, loginDomainSet]);
+  const currentAccessRole = normalizeAccessRole(
+    memberDirectory.find((person) => person.email === authUser?.email)?.accessRole ?? "viewer",
+  );
+  const isAdmin = currentAccessRole === "admin";
+  const canOperateControl = currentAccessRole === "admin" || currentAccessRole === "reviewer";
   const canManageMembers =
-    (memberDirectory.find((person) => person.email === authUser?.email)?.accessRole ?? "viewer") === "admin";
+    isAdmin;
 
   useEffect(() => {
     if (!authUser?.email) {
@@ -1434,6 +1503,18 @@ export default function App() {
     setAuthUser(null);
     setAuthError(LOGIN_DOMAIN_ERROR_MESSAGE);
   }, [authUser, loginDomainSet]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CURRENT_VIEW_STORAGE_KEY, currentView);
+    } catch {}
+  }, [currentView]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(WORKBENCH_TAB_STORAGE_KEY, workbenchTab);
+    } catch {}
+  }, [workbenchTab]);
 
   useEffect(() => {
     const workspaceDomains = parseDomainList(workspace.loginDomains);
@@ -1548,7 +1629,7 @@ export default function App() {
           person.id,
           {
             unit: person.unit ?? person.team ?? "미지정",
-            accessRole: person.accessRole ?? "viewer",
+            accessRole: normalizeAccessRole(person.accessRole),
           },
         ]),
       ),
@@ -1583,7 +1664,7 @@ export default function App() {
             role: "both",
             unit: "미지정",
             team: "미지정",
-            accessRole: isAllowedEmailBySet(normalizedEmail, loginDomainSet) ? "admin" : "viewer",
+            accessRole: "viewer",
           },
           ...people,
         ],
@@ -1592,8 +1673,7 @@ export default function App() {
     }
 
     const needsPatch =
-      currentMember.accessRole !== (isAllowedEmailBySet(normalizedEmail, loginDomainSet) ? "admin" : currentMember.accessRole ?? "viewer")
-      || (currentMember.name ?? "") !== (authUser.name ?? normalizedEmail)
+      (currentMember.name ?? "") !== (authUser.name ?? normalizedEmail)
       || !String(currentMember.unit ?? currentMember.team ?? "").trim();
 
     if (!needsPatch) {
@@ -1609,7 +1689,7 @@ export default function App() {
               name: authUser.name ?? normalizedEmail,
               unit: person.unit ?? person.team ?? "미지정",
               team: person.team ?? person.unit ?? "미지정",
-              accessRole: isAllowedEmailBySet(normalizedEmail, loginDomainSet) ? "admin" : person.accessRole ?? "viewer",
+              accessRole: normalizeAccessRole(person.accessRole),
             }
           : person,
       ),
@@ -1944,7 +2024,7 @@ export default function App() {
                 name: nextUser.name,
                 email,
                 unit: person.unit ?? person.team ?? "미지정",
-                accessRole: isAllowedEmailBySet(email, loginDomainSet) ? "admin" : person.accessRole ?? "viewer",
+                accessRole: normalizeAccessRole(person.accessRole),
               }
             : person,
         )
@@ -1956,7 +2036,7 @@ export default function App() {
             role: "both",
             unit: "미지정",
             team: "미지정",
-            accessRole: isAllowedEmailBySet(email, loginDomainSet) ? "admin" : "viewer",
+            accessRole: "viewer",
           },
           ...currentPeople,
         ];
@@ -2114,7 +2194,7 @@ export default function App() {
           loginDomains: remoteLoginDomains.length > 0
             ? remoteLoginDomains
             : (localLoginDomains.length > 0 ? localLoginDomains : parseDomainList(defaultData.loginDomains)),
-          people: mergePeopleByIdOrEmail(remotePeople, currentWorkspace.people ?? []),
+          people: remotePeople,
           auditLogs: mergeAuditLogs(remoteAuditLogs, currentWorkspace.auditLogs ?? []),
         };
 
@@ -2159,6 +2239,46 @@ export default function App() {
             spreadsheet: "오류",
           }));
         });
+    }
+  }
+
+  function showCenterAlert(message) {
+    setCenterAlertMessage(String(message ?? ""));
+  }
+
+  function showCenterConfirm(message) {
+    return new Promise((resolve) => {
+      confirmResolverRef.current = resolve;
+      setCenterConfirmMessage(String(message ?? ""));
+    });
+  }
+
+  function closeCenterConfirm(result) {
+    setCenterConfirmMessage("");
+    if (confirmResolverRef.current) {
+      const resolver = confirmResolverRef.current;
+      confirmResolverRef.current = null;
+      resolver(result);
+    }
+  }
+
+  async function ensureRemoteSync(nextWorkspace) {
+    if (!HAS_REMOTE_BACKEND) {
+      return true;
+    }
+    try {
+      await syncRemoteWorkspaceByBackend(nextWorkspace);
+      setIntegrationStatus((current) => ({
+        ...current,
+        spreadsheet: "연결됨",
+      }));
+      return true;
+    } catch {
+      setIntegrationStatus((current) => ({
+        ...current,
+        spreadsheet: "오류",
+      }));
+      return false;
     }
   }
 
@@ -2294,7 +2414,7 @@ export default function App() {
 
     const previewUrl = isImageEvidence(file) ? getEvidencePreviewUrl(file) : getEvidenceEmbedUrl(file);
     if (!previewUrl) {
-      window.alert("저장된 파일만 미리볼 수 있습니다.");
+      showCenterAlert("저장된 파일만 미리볼 수 있습니다.");
       return;
     }
 
@@ -2304,7 +2424,7 @@ export default function App() {
   function handleDownloadEvidence(file) {
     const href = String(file?.url ?? "").trim();
     if (!href) {
-      window.alert("다운로드할 파일 URL이 없습니다.");
+      showCenterAlert("다운로드할 파일 URL이 없습니다.");
       return;
     }
 
@@ -2380,7 +2500,7 @@ export default function App() {
 
   function saveRegistrationDraft() {
     window.localStorage.setItem(REGISTRATION_DRAFT_KEY, JSON.stringify(registrationForm));
-    window.alert("통제 등록 초안을 임시 저장했습니다.");
+    showCenterAlert("통제 등록 초안을 임시 저장했습니다.");
   }
 
   function loadRegistrationControl(control) {
@@ -2429,8 +2549,12 @@ export default function App() {
   }
 
   function saveRegisteredControl() {
+    if (!isAdmin) {
+      showCenterAlert("admin 권한만 통제 등록/수정이 가능합니다.");
+      return;
+    }
     if (!canSubmitRegistration) {
-      window.alert(`필수 항목이 누락되었습니다: ${registrationMissingFields.join(", ")}`);
+      showCenterAlert(`필수 항목이 누락되었습니다: ${registrationMissingFields.join(", ")}`);
       return;
     }
 
@@ -2480,7 +2604,7 @@ export default function App() {
     const duplicateControl = controls.find((control) => control.id === nextControl.id);
 
     if (duplicateControl && duplicateControl.id !== editingControl?.id) {
-      window.alert("같은 통제번호가 이미 존재합니다.");
+      showCenterAlert("같은 통제번호가 이미 존재합니다.");
       return;
     }
 
@@ -2503,7 +2627,7 @@ export default function App() {
       };
       writeAuditLog("CONTROL_UPDATED", nextControl.id, `${nextControl.title} 수정`, nextWorkspace);
       setRegistrationSelectedControlId(nextControl.id);
-      window.alert("통제를 수정했습니다.");
+      showCenterAlert("통제를 수정했습니다.");
       return;
     }
 
@@ -2520,7 +2644,7 @@ export default function App() {
     writeAuditLog("CONTROL_CREATED", nextControl.id, `${nextControl.title} 등록`, nextWorkspace);
     window.localStorage.removeItem(REGISTRATION_DRAFT_KEY);
     setRegistrationSelectedControlId(nextControl.id);
-    window.alert("통제를 등록했습니다.");
+    showCenterAlert("통제를 등록했습니다.");
   }
 
   useEffect(() => {
@@ -2553,16 +2677,16 @@ export default function App() {
       email: formData.get("personEmail").toString().trim().toLowerCase(),
       role: "both",
       team: formData.get("personTeam").toString().trim(),
-      accessRole: "user",
+      accessRole: "viewer",
     };
 
     if (people.some((entry) => entry.id === person.id)) {
-      window.alert("같은 담당자 ID가 이미 존재합니다.");
+      showCenterAlert("같은 담당자 ID가 이미 존재합니다.");
       return;
     }
 
     if (person.email && !isAllowedEmailBySet(person.email, loginDomainSet)) {
-      window.alert(`${allowedDomainText} 이메일만 등록할 수 있습니다.`);
+      showCenterAlert(`${allowedDomainText} 이메일만 등록할 수 있습니다.`);
       return;
     }
 
@@ -2598,7 +2722,7 @@ export default function App() {
     }));
   }
 
-  function handleMemberSave(personId, overrideDraft = null) {
+  async function handleMemberSave(personId, overrideDraft = null) {
     if (!canManageMembers) {
       return;
     }
@@ -2608,7 +2732,7 @@ export default function App() {
 
     const draft = overrideDraft ?? memberDrafts[personId] ?? {
       unit: sourcePerson.unit ?? sourcePerson.team ?? "미지정",
-      accessRole: sourcePerson.accessRole ?? "viewer",
+      accessRole: normalizeAccessRole(sourcePerson.accessRole),
     };
     const normalizedEmail = String(sourcePerson.email ?? "").trim().toLowerCase();
     const existingIndex = people.findIndex((person) => {
@@ -2631,11 +2755,11 @@ export default function App() {
       role: existingIndex >= 0 ? people[existingIndex].role ?? sourcePerson.role ?? "both" : sourcePerson.role ?? "both",
       unit: draft.unit.trim() || "미지정",
       team: draft.unit.trim() || "미지정",
-      accessRole: draft.accessRole || "viewer",
+      accessRole: normalizeAccessRole(draft.accessRole),
     };
 
     if (nextEntry.accessRole === "admin" && !isAllowedEmailBySet(nextEntry.email, loginDomainSet)) {
-      window.alert(`admin 권한은 ${allowedDomainText} 도메인 계정에만 부여할 수 있습니다.`);
+      showCenterAlert(`admin 권한은 ${allowedDomainText} 도메인 계정에만 부여할 수 있습니다.`);
       return;
     }
 
@@ -2652,7 +2776,7 @@ export default function App() {
           ? "ROLE_CHANGED"
           : "MEMBER_UPDATED";
 
-    writeAuditLog(
+    const loggedWorkspace = writeAuditLog(
       action,
       nextEntry.email || nextEntry.id,
       `${nextEntry.name} · 유닛:${previousPerson?.team ?? previousPerson?.unit ?? "-"} -> ${nextEntry.team}, 권한:${previousPerson?.accessRole ?? "-"} -> ${nextEntry.accessRole}`,
@@ -2661,10 +2785,15 @@ export default function App() {
         people: nextPeople,
       },
     );
-    setMemberSavePopupMessage("회원 정보가 저장되었습니다.");
+    const synced = await ensureRemoteSync(loggedWorkspace);
+    if (!HAS_REMOTE_BACKEND || synced) {
+      setMemberSavePopupMessage("회원 정보가 저장되었습니다.");
+      return;
+    }
+    showCenterAlert("회원 정보 저장은 되었지만 원격 동기화에 실패했습니다.");
   }
 
-  function handleMemberDelete(personId) {
+  async function handleMemberDelete(personId) {
     if (!canManageMembers) {
       return;
     }
@@ -2677,17 +2806,25 @@ export default function App() {
     const normalizedAuthEmail = String(authUser?.email ?? "").trim().toLowerCase();
     const normalizedTargetEmail = String(targetPerson.email ?? "").trim().toLowerCase();
     if (normalizedAuthEmail && normalizedTargetEmail && normalizedAuthEmail === normalizedTargetEmail) {
-      window.alert("현재 로그인한 본인 계정은 삭제할 수 없습니다.");
+      showCenterAlert("현재 로그인한 본인 계정은 삭제할 수 없습니다.");
       return;
     }
 
-    const adminCount = people.filter((person) => (person.accessRole ?? "viewer") === "admin").length;
-    if ((targetPerson.accessRole ?? "viewer") === "admin" && adminCount <= 1) {
-      window.alert("마지막 admin 계정은 삭제할 수 없습니다.");
+    const adminCount = people.filter((person) => normalizeAccessRole(person.accessRole) === "admin").length;
+    if (normalizeAccessRole(targetPerson.accessRole) === "admin" && adminCount <= 1) {
+      showCenterAlert("마지막 admin 계정은 삭제할 수 없습니다.");
       return;
     }
 
-    if (!window.confirm(`${targetPerson.name} 계정을 삭제할까요?`)) {
+    const confirmed = await showCenterConfirm(`${targetPerson.name} 계정을 삭제할까요?`);
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await deleteSupabaseMember(targetPerson.id);
+    } catch {
+      showCenterAlert("회원 삭제를 DB에 반영하지 못했습니다. 다시 시도해주세요.");
       return;
     }
 
@@ -2703,12 +2840,18 @@ export default function App() {
       return nextDrafts;
     });
 
-    writeAuditLog(
+    const loggedWorkspace = writeAuditLog(
       "MEMBER_DELETED",
       targetPerson.email || targetPerson.id,
       `${targetPerson.name} 회원 삭제`,
       nextWorkspace,
     );
+    const synced = await ensureRemoteSync(loggedWorkspace);
+    if (!HAS_REMOTE_BACKEND || synced) {
+      setMemberSavePopupMessage("회원 정보가 삭제되었습니다.");
+      return;
+    }
+    showCenterAlert("회원 삭제는 되었지만 원격 동기화에 실패했습니다.");
   }
 
   function handleLoginDomainSave() {
@@ -2718,13 +2861,13 @@ export default function App() {
 
     const nextDomains = parseDomainList(loginDomainDraft);
     if (nextDomains.length === 0) {
-      window.alert("최소 1개 로그인 허용 도메인을 입력하세요.");
+      showCenterAlert("최소 1개 로그인 허용 도메인을 입력하세요.");
       return;
     }
 
     const normalizedAuthEmail = String(authUser?.email ?? "").trim().toLowerCase();
     if (normalizedAuthEmail && !isAllowedEmailBySet(normalizedAuthEmail, new Set(nextDomains))) {
-      window.alert("현재 로그인 계정 도메인이 제외되어 저장할 수 없습니다.");
+      showCenterAlert("현재 로그인 계정 도메인이 제외되어 저장할 수 없습니다.");
       return;
     }
 
@@ -2736,11 +2879,15 @@ export default function App() {
     setLoginDomains(nextDomains);
     setLoginDomainDraft(nextDomains.join(", "));
     writeAuditLog("MEMBER_UPDATED", "login-domain", `로그인 허용 도메인 변경: ${nextDomains.join(", ")}`, nextWorkspace);
-    window.alert("로그인 허용 도메인이 저장되었습니다.");
+    showCenterAlert("로그인 허용 도메인이 저장되었습니다.");
   }
 
   function handleRoleAssignmentSubmit(event) {
     event.preventDefault();
+    if (!isAdmin) {
+      showCenterAlert("admin 권한만 통제 등록/수정이 가능합니다.");
+      return;
+    }
     if (!roleAssignmentControl) return;
 
     const formData = new FormData(event.currentTarget);
@@ -2774,6 +2921,10 @@ export default function App() {
 
   async function handleAssignmentSubmit(event) {
     event.preventDefault();
+    if (!canOperateControl) {
+      showCenterAlert("reviewer 이상 권한만 통제 수행/검토가 가능합니다.");
+      return;
+    }
     if (!selectedControl) return;
 
     const formData = new FormData(event.currentTarget);
@@ -2786,7 +2937,7 @@ export default function App() {
     let uploaded = false;
 
     if (!executionNote && files.length === 0) {
-      window.alert("수행 내역 또는 증적 파일을 입력하세요.");
+      showCenterAlert("수행 내역 또는 증적 파일을 입력하세요.");
       return;
     }
 
@@ -2800,12 +2951,17 @@ export default function App() {
           drive: uploadResult.uploaded ? "연결됨" : current.drive,
         }));
       } catch {
+        const fallbackFiles = files.map((file) => ({
+          name: file.name,
+          size: file.size,
+          uploadedAt: new Date().toISOString(),
+          url: "",
+        }));
+        nextEvidenceFiles = [...nextEvidenceFiles, ...fallbackFiles];
         setIntegrationStatus((current) => ({
           ...current,
           drive: "오류",
         }));
-        window.alert("증적 파일 업로드에 실패했습니다.");
-        return;
       }
     }
 
@@ -2830,6 +2986,10 @@ export default function App() {
 
   function handleReviewSubmit(event) {
     event.preventDefault();
+    if (!canOperateControl) {
+      showCenterAlert("reviewer 이상 권한만 통제 수행/검토가 가능합니다.");
+      return;
+    }
     if (!selectedReviewControl) return;
 
     const formData = new FormData(event.currentTarget);
@@ -2839,7 +2999,7 @@ export default function App() {
     const reviewChecked = reviewDecision === "양호" ? "검토 완료" : "반려";
 
     if (!reviewer) {
-      window.alert("검토자를 입력하세요.");
+      showCenterAlert("검토자를 입력하세요.");
       return;
     }
 
@@ -2865,7 +3025,7 @@ export default function App() {
     if (reviewDecision === "양호") {
       writeAuditLog("REVIEW_COMPLETED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 완료 · ${reviewer}`, loggedWorkspace);
     }
-    window.alert("검토 결과가 저장되었습니다.");
+    showCenterAlert("검토 결과가 저장되었습니다.");
   }
 
   function handleWorkflowSubmit(event) {
@@ -2921,7 +3081,7 @@ export default function App() {
     };
 
     if (controls.some((control) => control.id === nextControl.id)) {
-      window.alert("같은 통제번호가 이미 존재합니다.");
+      showCenterAlert("같은 통제번호가 이미 존재합니다.");
       return;
     }
 
@@ -3591,6 +3751,7 @@ export default function App() {
                       className="primary-button"
                       type="button"
                       onClick={saveRegisteredControl}
+                      disabled={!isAdmin}
                     >
                       통제 등록
                     </button>
@@ -3884,7 +4045,7 @@ export default function App() {
                           <p className="field-help">현재는 업로드 URL 미설정 상태라 파일명이 먼저 저장됩니다.</p>
                         ) : null}
                         <div className="execution-form-item execution-form-action">
-                          <button className="primary-button" type="submit">수행 내역 저장</button>
+                          <button className="primary-button" type="submit" disabled={!canOperateControl}>수행 내역 저장</button>
                         </div>
                       </form>
                     </article>
@@ -4055,7 +4216,7 @@ export default function App() {
                         </label>
                       </div>
                       <div className="execution-form-item execution-form-action">
-                        <button className="primary-button" type="submit">검토 저장</button>
+                        <button className="primary-button" type="submit" disabled={!canOperateControl}>검토 저장</button>
                       </div>
                     </form>
                   </>
@@ -4081,22 +4242,24 @@ export default function App() {
                   <div>
                     <h2>회원 관리</h2>
                   </div>
-                  {!canManageMembers ? <span className="detail-body-text">admin만 수정할 수 있습니다.</span> : <span className="detail-body-text">로그인 허용 도메인: {allowedDomainText}</span>}
+                  {!canManageMembers ? <span className="detail-body-text member-admin-only-note">admin만 수정할 수 있습니다.</span> : null}
                 </div>
-                <div className="report-toolbar">
-                  <label className="filter-label" style={{ minWidth: "320px" }}>
-                    <span>로그인 허용 도메인 (콤마 구분)</span>
-                    <input
-                      type="text"
-                      value={loginDomainDraft}
-                      onChange={(event) => setLoginDomainDraft(event.target.value)}
-                      placeholder="예: muhayu.com,example.com"
-                      disabled={!canManageMembers}
-                    />
-                  </label>
-                  <button className="secondary-button slim-button" type="button" onClick={handleLoginDomainSave} disabled={!canManageMembers}>
-                    로그인 도메인 저장
-                  </button>
+                <div className="report-toolbar login-domain-toolbar">
+                  <div className="login-domain-inline">
+                    <label className="filter-label" style={{ minWidth: "320px" }}>
+                      <span>로그인 허용 도메인 (콤마 구분)</span>
+                      <input
+                        type="text"
+                        value={loginDomainDraft}
+                        onChange={(event) => setLoginDomainDraft(event.target.value)}
+                        placeholder="예: muhayu.com,example.com"
+                        disabled={!canManageMembers}
+                      />
+                    </label>
+                    <button className="secondary-button slim-button no-wrap login-domain-save-button" type="button" onClick={handleLoginDomainSave} disabled={!canManageMembers}>
+                      인증 허용 도메인 저장
+                    </button>
+                  </div>
                 </div>
                 <div className="table-wrap member-table-wrap">
                   <table className="member-table">
@@ -4128,12 +4291,12 @@ export default function App() {
                           </td>
                           <td>
                             <select
-                              value={memberDrafts[person.id]?.accessRole ?? person.accessRole ?? "viewer"}
+                              value={normalizeAccessRole(memberDrafts[person.id]?.accessRole ?? person.accessRole ?? "viewer")}
                               onChange={(event) => handleMemberDraftChange(person.id, "accessRole", event.target.value)}
                               disabled={!canManageMembers}
                             >
                               <option value="admin" disabled={!isAllowedEmailBySet(person.email, loginDomainSet)}>admin</option>
-                              <option value="editor">editor</option>
+                              <option value="reviewer">reviewer</option>
                               <option value="viewer">viewer</option>
                             </select>
                           </td>
@@ -4337,6 +4500,33 @@ export default function App() {
             </div>
           ) : null}
 
+          {centerAlertMessage ? (
+            <div className="center-alert-overlay" role="dialog" aria-modal="true" aria-label="안내">
+              <div className="center-alert-modal">
+                <p>{centerAlertMessage}</p>
+                <button className="primary-button" type="button" onClick={() => setCenterAlertMessage("")}>
+                  확인
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {centerConfirmMessage ? (
+            <div className="center-alert-overlay" role="dialog" aria-modal="true" aria-label="확인">
+              <div className="center-alert-modal">
+                <p>{centerConfirmMessage}</p>
+                <div className="report-preview-actions">
+                  <button className="secondary-button slim-button" type="button" onClick={() => closeCenterConfirm(false)}>
+                    취소
+                  </button>
+                  <button className="primary-button" type="button" onClick={() => closeCenterConfirm(true)}>
+                    확인
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           {currentView === "audit" ? (
             <section className="compact-stack">
               <article className="panel">
@@ -4480,7 +4670,7 @@ export default function App() {
                         </select>
                       </label>
                       <div className="execution-form-item execution-form-action">
-                        <button className="primary-button" type="submit">역할 저장</button>
+                        <button className="primary-button" type="submit" disabled={!isAdmin}>역할 저장</button>
                       </div>
                     </form>
                   </>

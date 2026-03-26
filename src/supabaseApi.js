@@ -477,6 +477,25 @@ export async function syncSupabaseWorkspace(workspace) {
   return { ok: true };
 }
 
+export async function deleteSupabaseMember(memberId) {
+  assertSupabaseConfigured();
+  const normalizedId = String(memberId ?? "").trim();
+  if (!normalizedId || normalizedId === LOGIN_DOMAIN_CONFIG_MEMBER_ID) {
+    throw new Error("invalid_member_id");
+  }
+
+  const { error } = await supabase
+    .from(ITGC_MEMBER_TABLE)
+    .delete()
+    .eq("member_id", normalizedId);
+
+  if (error) {
+    throw new Error(`member_delete_failed:${error.message}`);
+  }
+
+  return { ok: true };
+}
+
 export async function uploadEvidenceToSupabase(controlId, files) {
   assertSupabaseConfigured();
 

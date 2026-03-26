@@ -23,7 +23,7 @@ begin
 end
 $$;
 
--- Authenticated upload policy
+-- Public/anon upload policy (this app uses anon key from client)
 do $$
 begin
   if not exists (
@@ -31,18 +31,18 @@ begin
     from pg_policies
     where schemaname = 'storage'
       and tablename = 'objects'
-      and policyname = 'itgc_evidence_files_auth_insert'
+      and policyname = 'itgc_evidence_files_anon_insert'
   ) then
-    create policy itgc_evidence_files_auth_insert
+    create policy itgc_evidence_files_anon_insert
       on storage.objects
       for insert
-      to authenticated
+      to anon, authenticated
       with check (bucket_id = 'itgc_evidence_files');
   end if;
 end
 $$;
 
--- Authenticated update/delete policies
+-- Update/delete policies
 do $$
 begin
   if not exists (
