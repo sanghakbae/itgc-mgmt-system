@@ -60,6 +60,9 @@ npm run dev
 ```env
 VITE_GOOGLE_CLIENT_ID=YOUR_GOOGLE_CLIENT_ID
 VITE_GOOGLE_SCRIPT_URL=https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec
+VITE_GOOGLE_CHAT_WEBHOOK_URL=https://chat.googleapis.com/v1/spaces/...
+VITE_GOOGLE_CHAT_ALERT_ACTIONS=EXECUTION_SAVED,REVIEW_COMPLETED
+VITE_GOOGLE_CHAT_DEDUP_MS=60000
 
 # optional: supabase backend
 VITE_DATA_BACKEND=supabase
@@ -73,6 +76,12 @@ VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_KEY
   - Google Cloud OAuth 웹 클라이언트 ID
 - `VITE_GOOGLE_SCRIPT_URL`
   - Apps Script 웹앱 `/exec` 주소
+- `VITE_GOOGLE_CHAT_WEBHOOK_URL`
+  - 통제 변경 알림을 받을 Google Chat Incoming Webhook URL (옵션)
+- `VITE_GOOGLE_CHAT_ALERT_ACTIONS`
+  - 알림 액션 목록 (콤마 구분). 예: `EXECUTION_SAVED,REVIEW_COMPLETED`
+- `VITE_GOOGLE_CHAT_DEDUP_MS`
+  - 동일 이벤트 중복 알림 방지 시간(ms). 예: `60000`이면 60초 내 중복 전송 차단
 - `VITE_DATA_BACKEND`
   - `supabase` 또는 `google` (미설정 시 자동 선택)
 - `VITE_SUPABASE_URL`

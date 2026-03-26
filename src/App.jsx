@@ -21,9 +21,16 @@ const GOOGLE_DRIVE_FOLDER_ID = (import.meta.env.VITE_GOOGLE_DRIVE_FOLDER_ID ?? "
 const ALLOWED_DOMAIN_ENV = (import.meta.env.VITE_ALLOWED_DOMAIN ?? "").trim() || "muhayu.com";
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL ?? "").trim() || "https://gfybyxbrmkwbzuyhyqiv.supabase.co";
 const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY ?? "").trim() || "sb_publishable_Cd-7SADAjF_J5vEo9QkmAA_Jz2_diWz";
+const GOOGLE_CHAT_WEBHOOK_URL = (import.meta.env.VITE_GOOGLE_CHAT_WEBHOOK_URL ?? "").trim();
+const GOOGLE_CHAT_ALERT_ACTIONS_ENV = (import.meta.env.VITE_GOOGLE_CHAT_ALERT_ACTIONS ?? "").trim();
+const GOOGLE_CHAT_DEDUP_MS_ENV = Number(import.meta.env.VITE_GOOGLE_CHAT_DEDUP_MS ?? 60000);
+const GOOGLE_CHAT_DEDUP_WINDOW_MS = Number.isFinite(GOOGLE_CHAT_DEDUP_MS_ENV) && GOOGLE_CHAT_DEDUP_MS_ENV >= 0
+  ? GOOGLE_CHAT_DEDUP_MS_ENV
+  : 60000;
 const DATA_BACKEND_ENV = (import.meta.env.VITE_DATA_BACKEND ?? "").trim().toLowerCase();
 let googleDriveAccessTokenCache = "";
 let googleDriveAccessTokenExpiresAt = 0;
+const googleChatAlertDedupCache = new Map();
 const ALLOWED_EMAIL_DOMAINS = ALLOWED_DOMAIN_ENV
   .split(",")
   .map((domain) => domain.trim().toLowerCase())
@@ -1074,6 +1081,73 @@ function auditActionLabel(action) {
   };
 
   return labels[action] ?? "기타";
+}
+
+const DEFAULT_CONTROL_CHANGE_ALERT_ACTIONS = [
+  "EXECUTION_SAVED",
+  "REVIEW_COMPLETED",
+];
+
+const CONTROL_CHANGE_ALERT_ACTIONS = new Set(
+  GOOGLE_CHAT_ALERT_ACTIONS_ENV
+    .split(/[,\n;\s]+/)
+    .map((token) => token.trim().toUpperCase())
+    .filter(Boolean),
+);
+
+if (CONTROL_CHANGE_ALERT_ACTIONS.size === 0) {
+  DEFAULT_CONTROL_CHANGE_ALERT_ACTIONS.forEach((action) => CONTROL_CHANGE_ALERT_ACTIONS.add(action));
+}
+
+const CONTROL_CHANGE_ALERT_ACTIONS_ALL = new Set([
+  "CONTROL_CREATED",
+  "CONTROL_UPDATED",
+  "EXECUTION_SAVED",
+  "REVIEW_SAVED",
+  "REVIEW_COMPLETED",
+]);
+
+function sendGoogleChatControlAlert({ action, target, detail, actorName, actorEmail, createdAt }) {
+  if (!GOOGLE_CHAT_WEBHOOK_URL || !CONTROL_CHANGE_ALERT_ACTIONS_ALL.has(action) || !CONTROL_CHANGE_ALERT_ACTIONS.has(action)) {
+    return;
+  }
+
+  const dedupKey = [action, target || "-", detail || "-", actorEmail || "-"].join("|");
+  const now = Date.now();
+  const lastSentAt = googleChatAlertDedupCache.get(dedupKey) ?? 0;
+  if (GOOGLE_CHAT_DEDUP_WINDOW_MS > 0 && now - lastSentAt < GOOGLE_CHAT_DEDUP_WINDOW_MS) {
+    return;
+  }
+  googleChatAlertDedupCache.set(dedupKey, now);
+
+  const host = typeof window !== "undefined" ? window.location.origin : "";
+  const alertTitle = action === "EXECUTION_SAVED"
+    ? "ITGC 통제 수행 등록 알림"
+    : action === "REVIEW_COMPLETED"
+      ? "ITGC 통제 검토 완료 알림"
+      : "ITGC 통제 관리 변경 알림";
+  const lines = [
+    alertTitle,
+    `- 액션: ${auditActionLabel(action)} (${action})`,
+    `- 통제 ID/대상: ${target || "-"}`,
+    `- 내용: ${detail || "-"}`,
+    `- 작업자: ${actorName || "-"} (${actorEmail || "-"})`,
+    `- 시각: ${createdAt || new Date().toISOString()}`,
+    host ? `- 시스템: ${host}` : "",
+  ].filter(Boolean);
+
+  fetch(GOOGLE_CHAT_WEBHOOK_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json; charset=UTF-8",
+    },
+    body: JSON.stringify({
+      text: lines.join("\n"),
+    }),
+  }).catch((error) => {
+    console.error("Google Chat alert failed:", error);
+    googleChatAlertDedupCache.delete(dedupKey);
+  });
 }
 
 function DashboardIcon() {
@@ -2422,6 +2496,7 @@ export default function App() {
     const currentWorkspace = baseWorkspace ?? workspaceRef.current;
     const actorName = actorOverride?.actorName ?? authUser?.name ?? "";
     const actorEmail = actorOverride?.actorEmail ?? authUser?.email ?? "";
+    const createdAtTs = new Date().toISOString();
     const nextWorkspace = {
       ...currentWorkspace,
       auditLogs: mergeAuditLogs(
@@ -2435,7 +2510,7 @@ export default function App() {
             actorEmail,
             ip: "-",
             createdAt: formatSeoulDateTime(new Date()),
-            createdAtTs: new Date().toISOString(),
+            createdAtTs,
           },
         ],
         currentWorkspace.auditLogs ?? [],
@@ -2443,6 +2518,14 @@ export default function App() {
     };
 
     updateWorkspace(nextWorkspace);
+    sendGoogleChatControlAlert({
+      action,
+      target,
+      detail,
+      actorName,
+      actorEmail,
+      createdAt: createdAtTs,
+    });
     return nextWorkspace;
   }
 
