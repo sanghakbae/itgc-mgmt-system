@@ -15,6 +15,7 @@ const DELETED_MEMBER_EMAILS_STORAGE_KEY = "itgc-deleted-member-emails-v1";
 const CURRENT_VIEW_STORAGE_KEY = "itgc-current-view-v1";
 const WORKBENCH_TAB_STORAGE_KEY = "itgc-workbench-tab-v1";
 const AUDIT_LOG_MAX_ITEMS = 3000;
+const AUDIT_LOG_PAGE_SIZE = 30;
 const LOGIN_DOMAIN_ERROR_MESSAGE = "허용된 도메인만 로그인할 수 있습니다.";
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
 const GOOGLE_DRIVE_FOLDER_ID = (import.meta.env.VITE_GOOGLE_DRIVE_FOLDER_ID ?? "").trim() || "1ZxNyDTkjD3G9Ju_7x0MTSEiBxyTNnEmg";
@@ -1059,6 +1060,44 @@ function workflowLabel(status) {
   return "대기";
 }
 
+function createDeleteVerificationCode(length = 6) {
+  return Math.random().toString(36).slice(2, 2 + length).toUpperCase();
+}
+
+function buildCondensedPagination(totalPages, currentPage, innerSlots = 8) {
+  if (totalPages <= 10) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  let start = Math.max(2, currentPage - 3);
+  let end = Math.min(totalPages - 1, currentPage + 3);
+
+  while (end - start + 1 < innerSlots) {
+    if (start > 2) {
+      start -= 1;
+      continue;
+    }
+    if (end < totalPages - 1) {
+      end += 1;
+      continue;
+    }
+    break;
+  }
+
+  const pages = [1];
+  if (start > 2) {
+    pages.push("ellipsis-left");
+  }
+  for (let page = start; page <= end; page += 1) {
+    pages.push(page);
+  }
+  if (end < totalPages - 1) {
+    pages.push("ellipsis-right");
+  }
+  pages.push(totalPages);
+  return pages;
+}
+
 function auditActionLabel(action) {
   const labels = {
     LOGIN_SUCCESS: "로그인",
@@ -1073,6 +1112,7 @@ function auditActionLabel(action) {
     REVIEW_VIEWED: "통제 운영 검토 조회",
     CONTROL_CREATED: "통제 등록",
     CONTROL_UPDATED: "통제 수정",
+    CONTROL_DELETED: "통제 삭제",
     EXECUTION_SAVED: "통제 운영 저장",
     REVIEW_SAVED: "검토 저장",
     REVIEW_COMPLETED: "승인 완료",
@@ -1086,6 +1126,7 @@ function auditActionLabel(action) {
 
 const REQUIRED_CONTROL_CHANGE_ALERT_ACTIONS = [
   "EXECUTION_SAVED",
+  "REVIEW_SAVED",
   "REVIEW_COMPLETED",
 ];
 
@@ -1100,6 +1141,7 @@ const CONTROL_CHANGE_ALERT_ACTIONS = new Set([
 const CONTROL_CHANGE_ALERT_ACTIONS_ALL = new Set([
   "CONTROL_CREATED",
   "CONTROL_UPDATED",
+  "CONTROL_DELETED",
   "EXECUTION_SAVED",
   "REVIEW_SAVED",
   "REVIEW_COMPLETED",
@@ -1133,19 +1175,46 @@ function sendGoogleChatControlAlert({ action, target, detail, actorName, actorEm
     `- 시각: ${createdAt || new Date().toISOString()}`,
     host ? `- 시스템: ${host}` : "",
   ].filter(Boolean);
+  const payload = JSON.stringify({
+    text: lines.join("\n"),
+  });
 
   fetch(GOOGLE_CHAT_WEBHOOK_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json; charset=UTF-8",
     },
-    body: JSON.stringify({
-      text: lines.join("\n"),
-    }),
-  }).catch((error) => {
-    console.error("Google Chat alert failed:", error);
-    googleChatAlertDedupCache.delete(dedupKey);
-  });
+    body: payload,
+    keepalive: true,
+  })
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`google_chat_http_${response.status}`);
+      }
+    })
+    .catch((error) => {
+      try {
+        if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+          const sent = navigator.sendBeacon(
+            GOOGLE_CHAT_WEBHOOK_URL,
+            new Blob([payload], { type: "application/json; charset=UTF-8" }),
+          );
+          if (sent) {
+            return;
+          }
+        }
+      } catch {}
+
+      fetch(GOOGLE_CHAT_WEBHOOK_URL, {
+        method: "POST",
+        mode: "no-cors",
+        body: payload,
+        keepalive: true,
+      }).catch((fallbackError) => {
+        console.error("Google Chat alert failed:", error, fallbackError);
+        googleChatAlertDedupCache.delete(dedupKey);
+      });
+    });
 }
 
 function DashboardIcon() {
@@ -1579,6 +1648,7 @@ export default function App() {
   const [registrationCategoryFilter, setRegistrationCategoryFilter] = useState("전체");
   const [registrationListPage, setRegistrationListPage] = useState(1);
   const [registrationSelectedControlId, setRegistrationSelectedControlId] = useState("");
+  const [registrationFormMode, setRegistrationFormMode] = useState("basic");
   const [roleAssignmentControlId, setRoleAssignmentControlId] = useState("");
   const [evidenceInputCount, setEvidenceInputCount] = useState(1);
   const [assignmentExecutionNote, setAssignmentExecutionNote] = useState("");
@@ -1679,6 +1749,23 @@ export default function App() {
   const currentAccessRole = normalizeAccessRole(
     memberDirectory.find((person) => person.email === authUser?.email)?.accessRole ?? "viewer",
   );
+  const sortedMemberDirectory = useMemo(() => {
+    const rolePriority = {
+      admin: 0,
+      reviewer: 1,
+      viewer: 2,
+    };
+    return [...memberDirectory].sort((left, right) => {
+      const leftRole = normalizeAccessRole(memberDrafts[left.id]?.accessRole ?? left.accessRole);
+      const rightRole = normalizeAccessRole(memberDrafts[right.id]?.accessRole ?? right.accessRole);
+      const leftRank = rolePriority[leftRole] ?? 99;
+      const rightRank = rolePriority[rightRole] ?? 99;
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+      return String(left.name ?? "").localeCompare(String(right.name ?? ""), "ko");
+    });
+  }, [memberDirectory, memberDrafts]);
   const isAdmin = currentAccessRole === "admin";
   const canOperateControl = currentAccessRole === "admin" || currentAccessRole === "reviewer";
   const canManageMembers =
@@ -1816,9 +1903,12 @@ export default function App() {
         .includes(normalizedQuery),
     );
   }, [auditLogQuery, auditLogs]);
-  const totalAuditLogPages = Math.max(1, Math.ceil(filteredAuditLogs.length / 30));
+  const totalAuditLogPages = Math.max(1, Math.ceil(filteredAuditLogs.length / AUDIT_LOG_PAGE_SIZE));
   const currentAuditLogPage = Math.min(auditLogPage, totalAuditLogPages);
-  const pagedAuditLogs = filteredAuditLogs.slice((currentAuditLogPage - 1) * 30, currentAuditLogPage * 30);
+  const pagedAuditLogs = filteredAuditLogs.slice(
+    (currentAuditLogPage - 1) * AUDIT_LOG_PAGE_SIZE,
+    currentAuditLogPage * AUDIT_LOG_PAGE_SIZE,
+  );
 
   useEffect(() => {
     setMemberDrafts(
@@ -2166,11 +2256,35 @@ export default function App() {
   }
 
   function moveToDashboardTarget(targetId) {
-    const element = document.getElementById(targetId);
-    if (!element) {
+    const resolveDashboardViewByTarget = (id) => {
+      if (id.startsWith("dashboard-frequency-")) {
+        return "frequency";
+      }
+      if (id.startsWith("dashboard-control-")) {
+        return "control";
+      }
+      if (id.startsWith("dashboard-category-")) {
+        return "category";
+      }
+      return dashboardView;
+    };
+    const nextView = resolveDashboardViewByTarget(targetId);
+    if (nextView !== dashboardView) {
+      setDashboardView(nextView);
+    }
+
+    if (typeof window === "undefined") {
       return;
     }
-    element.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const element = document.getElementById(targetId);
+        if (!element) {
+          return;
+        }
+        element.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
   }
 
   function openControlOperation(controlId, nextProcessFilter = "전체") {
@@ -2880,6 +2994,67 @@ export default function App() {
     showCenterAlert("통제를 등록했습니다.");
   }
 
+  async function handleRegisteredControlDelete() {
+    if (!isAdmin) {
+      showCenterAlert("admin 권한만 통제 등록/수정이 가능합니다.");
+      return;
+    }
+
+    const targetControl =
+      controls.find((control) => control.id === registrationSelectedControlId)
+      ?? registrationSelectedControl
+      ?? null;
+    if (!targetControl) {
+      showCenterAlert("삭제할 통제를 먼저 선택하세요.");
+      return;
+    }
+
+    const confirmed = await showCenterConfirm(`${targetControl.id} 통제를 삭제할까요?`);
+    if (!confirmed) {
+      return;
+    }
+
+    const verificationCode = createDeleteVerificationCode();
+    const enteredCode = typeof window !== "undefined"
+      ? window.prompt(
+        `삭제 확인값을 입력하세요.\n확인값: ${verificationCode}`,
+        "",
+      )
+      : null;
+
+    if (enteredCode === null) {
+      showCenterAlert("통제 삭제를 취소했습니다.");
+      return;
+    }
+    if (enteredCode.trim().toUpperCase() !== verificationCode) {
+      showCenterAlert("확인값이 일치하지 않아 삭제하지 않았습니다.");
+      return;
+    }
+
+    const nextControls = controls.filter((control) => control.id !== targetControl.id);
+    const nextWorkflows = workflows.filter((workflow) => workflow.controlId !== targetControl.id);
+    const nextRegistrationControlId = nextControls[0]?.id ?? "";
+    const nextWorkspace = {
+      ...workspace,
+      controls: nextControls,
+      workflows: nextWorkflows,
+    };
+
+    writeAuditLog("CONTROL_DELETED", targetControl.id, `${targetControl.title} 삭제`, nextWorkspace);
+
+    setRegistrationSelectedControlId(nextRegistrationControlId);
+    if (!nextRegistrationControlId) {
+      setRegistrationForm(initialRegistrationForm);
+    }
+    if (selectedControlId === targetControl.id) {
+      setSelectedControlId(nextControls[0]?.id ?? "");
+    }
+    if (roleAssignmentControlId === targetControl.id) {
+      setRoleAssignmentControlId(nextControls[0]?.id ?? "");
+    }
+    showCenterAlert("통제를 삭제했습니다.");
+  }
+
   useEffect(() => {
     if (!registrationSelectedControlId) {
       return;
@@ -3512,7 +3687,10 @@ export default function App() {
                           type="button"
                           key={bucket.month}
                           className={className}
-                          onClick={() => setDashboardCalendarMonth(bucket.month)}
+                          onClick={() => {
+                            setDashboardCalendarMonth(bucket.month);
+                            moveToDashboardTarget("dashboard-month-card-list");
+                          }}
                         >
                           <span>{bucket.month}월</span>
                           <strong>{bucket.items.length}건</strong>
@@ -3520,7 +3698,7 @@ export default function App() {
                       );
                     })}
                   </div>
-                  <div className="dashboard-month-card-list">
+                  <div className="dashboard-month-card-list" id="dashboard-month-card-list">
                     {dashboardMonthlyCards.length > 0 ? (
                       dashboardMonthlyCards.map((item) => (
                         <button
@@ -3866,10 +4044,12 @@ export default function App() {
                         <option value="백업관리">백업관리</option>
                       </select>
                     </label>
-                    <label className="registration-field">
-                      <span>Sub Process</span>
-                      <input value={registrationForm.subProcess} onChange={(event) => updateRegistrationField("subProcess", event.target.value)} />
-                    </label>
+                    {registrationFormMode === "advanced" ? (
+                      <label className="registration-field">
+                        <span>Sub Process</span>
+                        <input value={registrationForm.subProcess} onChange={(event) => updateRegistrationField("subProcess", event.target.value)} />
+                      </label>
+                    ) : null}
                     <fieldset className="system-fieldset registration-field">
                       <legend>관련 시스템 <em>필수</em></legend>
                       <div className="system-options">
@@ -3885,10 +4065,12 @@ export default function App() {
                         ))}
                       </div>
                     </fieldset>
-                    <label className="registration-field">
-                      <span>정책/기준서 참조</span>
-                      <input value={registrationForm.policyReference} onChange={(event) => updateRegistrationField("policyReference", event.target.value)} />
-                    </label>
+                    {registrationFormMode === "advanced" ? (
+                      <label className="registration-field">
+                        <span>정책/기준서 참조</span>
+                        <input value={registrationForm.policyReference} onChange={(event) => updateRegistrationField("policyReference", event.target.value)} />
+                      </label>
+                    ) : null}
                   </div>
                 </article>
 
@@ -3922,12 +4104,34 @@ export default function App() {
                 </article>
 
                 <article className="panel registration-section-card">
-                  <div className="registration-section-head">
-                    <h2>운영 및 감사 정보</h2>
-                    <p>실행 가능성과 감사 검증 가능성을 높이는 필수 운영 정보</p>
+                  <div className="registration-section-head with-mode-toggle">
+                    <div>
+                      <h2>운영 및 감사 정보</h2>
+                      <p>실행 가능성과 감사 검증 가능성을 높이는 필수 운영 정보</p>
+                    </div>
+                    <div className="registration-mode-toggle" role="tablist" aria-label="등록 폼 표시 모드">
+                      <button
+                        type="button"
+                        className={registrationFormMode === "basic" ? "secondary-button slim-button no-wrap registration-mode-button active" : "secondary-button slim-button no-wrap registration-mode-button"}
+                        onClick={() => setRegistrationFormMode("basic")}
+                        role="tab"
+                        aria-selected={registrationFormMode === "basic"}
+                      >
+                        기본 입력
+                      </button>
+                      <button
+                        type="button"
+                        className={registrationFormMode === "advanced" ? "secondary-button slim-button no-wrap registration-mode-button active" : "secondary-button slim-button no-wrap registration-mode-button"}
+                        onClick={() => setRegistrationFormMode("advanced")}
+                        role="tab"
+                        aria-selected={registrationFormMode === "advanced"}
+                      >
+                        고급 입력
+                      </button>
+                    </div>
                   </div>
-                  <div className="registration-form-grid three-col">
-                    <label className="registration-field">
+                  <div className="registration-form-grid three-col registration-audit-grid">
+                    <label className="registration-field registration-audit-frequency">
                       <span>Frequency <em>필수</em></span>
                       <select value={registrationForm.frequency} onChange={(event) => updateRegistrationField("frequency", event.target.value)}>
                         <option value="Daily">Daily</option>
@@ -3940,7 +4144,7 @@ export default function App() {
                         <option value="Other">Other</option>
                       </select>
                     </label>
-                    <label className="registration-field">
+                    <label className="registration-field registration-audit-control-type">
                       <span>Control Type <em>필수</em></span>
                       <select value={registrationForm.controlType} onChange={(event) => updateRegistrationField("controlType", event.target.value)}>
                         <option value="예방">예방</option>
@@ -3948,59 +4152,69 @@ export default function App() {
                         <option value="예방 + 탐지">예방 + 탐지</option>
                       </select>
                     </label>
-                    <label className="registration-field">
-                      <span>자동화 수준</span>
-                      <select value={registrationForm.automationLevel} onChange={(event) => updateRegistrationField("automationLevel", event.target.value)}>
-                        <option value="수동">수동</option>
-                        <option value="반자동">반자동</option>
-                        <option value="자동">자동</option>
-                      </select>
-                    </label>
-                    <label className="registration-field">
-                      <span>결함 영향도</span>
-                      <select value={registrationForm.deficiencyImpact} onChange={(event) => updateRegistrationField("deficiencyImpact", event.target.value)}>
-                        <option value="높음">높음</option>
-                        <option value="중간">중간</option>
-                        <option value="낮음">낮음</option>
-                      </select>
-                    </label>
-                    <label className="registration-field">
+                    <label className="registration-field registration-audit-owner-dept">
                       <span>담당 부서 <em>필수</em></span>
                       <input value={registrationForm.ownerDept} onChange={(event) => updateRegistrationField("ownerDept", event.target.value)} />
                     </label>
-                    <label className="registration-field">
+                    <label className="registration-field registration-audit-review-dept">
                       <span>검토 부서</span>
                       <input value={registrationForm.reviewDept} onChange={(event) => updateRegistrationField("reviewDept", event.target.value)} />
                     </label>
-                    <label className="registration-field registration-field-row-start">
+                    <label className="registration-field registration-field-row-start registration-audit-evidence">
                       <span>Evidence <em>필수</em></span>
                       <textarea rows="4" value={registrationForm.evidence} onChange={(event) => updateRegistrationField("evidence", event.target.value)} />
                       <small className="registration-field-spacer" aria-hidden="true">placeholder</small>
                     </label>
-                    <label className="registration-field">
-                      <span>테스트 방법</span>
-                      <textarea rows="4" value={registrationForm.testMethod} onChange={(event) => updateRegistrationField("testMethod", event.target.value)} />
-                      <small>감사/자가점검 시 어떻게 검증할지 기술</small>
-                    </label>
-                    <label className="registration-field">
-                      <span>모집단</span>
-                      <textarea rows="4" value={registrationForm.population} onChange={(event) => updateRegistrationField("population", event.target.value)} />
-                      <small>점검 대상 기간, 건수, 추출 기준 등을 작성</small>
-                    </label>
-                    <div className="registration-switch-card">
-                      <div>
-                        <strong>핵심통제(Key Control)</strong>
-                        <p>재무/감사 영향도가 높아 별도 검증이 필요한 통제</p>
-                      </div>
-                      <label className="switch">
-                        <input
-                          type="checkbox"
-                          checked={registrationForm.keyControl}
-                          onChange={(event) => updateRegistrationField("keyControl", event.target.checked)}
-                        />
-                        <span className="switch-slider" />
+                    {registrationFormMode === "advanced" ? (
+                      <label className="registration-field">
+                        <span>자동화 수준</span>
+                        <select value={registrationForm.automationLevel} onChange={(event) => updateRegistrationField("automationLevel", event.target.value)}>
+                          <option value="수동">수동</option>
+                          <option value="반자동">반자동</option>
+                          <option value="자동">자동</option>
+                        </select>
                       </label>
-                    </div>
+                    ) : null}
+                    {registrationFormMode === "advanced" ? (
+                      <label className="registration-field">
+                        <span>결함 영향도</span>
+                        <select value={registrationForm.deficiencyImpact} onChange={(event) => updateRegistrationField("deficiencyImpact", event.target.value)}>
+                          <option value="높음">높음</option>
+                          <option value="중간">중간</option>
+                          <option value="낮음">낮음</option>
+                        </select>
+                      </label>
+                    ) : null}
+                    {registrationFormMode === "advanced" ? (
+                      <label className="registration-field">
+                        <span>테스트 방법</span>
+                        <textarea rows="4" value={registrationForm.testMethod} onChange={(event) => updateRegistrationField("testMethod", event.target.value)} />
+                        <small>감사/자가점검 시 어떻게 검증할지 기술</small>
+                      </label>
+                    ) : null}
+                    {registrationFormMode === "advanced" ? (
+                      <label className="registration-field">
+                        <span>모집단</span>
+                        <textarea rows="4" value={registrationForm.population} onChange={(event) => updateRegistrationField("population", event.target.value)} />
+                        <small>점검 대상 기간, 건수, 추출 기준 등을 작성</small>
+                      </label>
+                    ) : null}
+                    {registrationFormMode === "advanced" ? (
+                      <div className="registration-switch-card">
+                        <div>
+                          <strong>핵심통제(Key Control)</strong>
+                          <p>재무/감사 영향도가 높아 별도 검증이 필요한 통제</p>
+                        </div>
+                        <label className="switch">
+                          <input
+                            type="checkbox"
+                            checked={registrationForm.keyControl}
+                            onChange={(event) => updateRegistrationField("keyControl", event.target.checked)}
+                          />
+                          <span className="switch-slider" />
+                        </label>
+                      </div>
+                    ) : null}
                   </div>
                 </article>
                   <div className="registration-action-group">
@@ -4010,7 +4224,15 @@ export default function App() {
                       onClick={saveRegisteredControl}
                       disabled={!isAdmin}
                     >
-                      통제 등록
+                      통제 등록/수정
+                    </button>
+                    <button
+                      className="secondary-button registration-delete-button"
+                      type="button"
+                      onClick={handleRegisteredControlDelete}
+                      disabled={!isAdmin || !registrationSelectedControl}
+                    >
+                      통제 삭제
                     </button>
                   </div>
               </div>
@@ -4532,7 +4754,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {memberDirectory.map((person) => (
+                      {sortedMemberDirectory.map((person) => (
                         <tr key={person.id}>
                           <td>{person.id}</td>
                           <td>{person.name}</td>
@@ -4859,16 +5081,22 @@ export default function App() {
                 </div>
                 {totalAuditLogPages > 1 ? (
                   <div className="pagination registration-pagination">
-                    {Array.from({ length: totalAuditLogPages }, (_, index) => index + 1).map((page) => (
-                      <button
-                        key={page}
-                        type="button"
-                        className={page === currentAuditLogPage ? "page-button active" : "page-button"}
-                        onClick={() => setAuditLogPage(page)}
-                      >
-                        {page}
-                      </button>
-                    ))}
+                    {buildCondensedPagination(totalAuditLogPages, currentAuditLogPage).map((item, index) =>
+                      typeof item === "number" ? (
+                        <button
+                          key={item}
+                          type="button"
+                          className={item === currentAuditLogPage ? "page-button active" : "page-button"}
+                          onClick={() => setAuditLogPage(item)}
+                        >
+                          {item}
+                        </button>
+                      ) : (
+                        <span key={`${item}-${index}`} className="page-ellipsis" aria-hidden="true">
+                          ...
+                        </span>
+                      ),
+                    )}
                   </div>
                 ) : null}
               </article>

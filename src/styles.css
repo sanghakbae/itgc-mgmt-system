@@ -15,7 +15,10 @@
   --shadow: 0 18px 50px rgba(24, 49, 83, 0.1);
   --box-padding: 16px;
   --frame-gap: 16px;
-  --frame-title-size: 1.22rem;
+  --frame-title-size: 1.14rem;
+  --type-body-size: 0.9rem;
+  --type-meta-size: 0.8rem;
+  --type-badge-size: 0.72rem;
   font-family: "IBM Plex Sans KR", sans-serif;
   font-size: 14px;
 }
@@ -35,7 +38,7 @@ body {
   margin: 0;
   color: var(--text);
   line-height: 1.6;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.004em;
   background:
     radial-gradient(circle at top left, rgba(24, 49, 83, 0.12), transparent 28%),
     radial-gradient(circle at bottom right, rgba(39, 103, 73, 0.16), transparent 30%),
@@ -427,8 +430,8 @@ textarea {
 
 .page-toolbar-label {
   color: var(--muted);
-  font-size: 0.82rem;
-  letter-spacing: 0.04em;
+  font-size: var(--type-meta-size);
+  letter-spacing: 0.02em;
   text-transform: uppercase;
 }
 
@@ -575,6 +578,7 @@ textarea {
 
 .control-progress-section {
   padding: var(--box-padding);
+  overflow-anchor: none;
 }
 
 .hero-panel,
@@ -692,6 +696,8 @@ textarea {
   width: 92px;
   min-width: 92px;
   max-width: 92px;
+  font-size: 0.84rem;
+  font-weight: 700;
 }
 
 .tab-button.active {
@@ -936,6 +942,16 @@ textarea {
   background: var(--navy);
   border-color: var(--navy);
   color: #fff;
+}
+
+.page-ellipsis {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 .metric-grid {
@@ -1344,7 +1360,7 @@ textarea {
 }
 
 .member-table-wrap {
-  margin-top: 24px;
+  margin-top: 40px;
 }
 
 table {
@@ -1776,7 +1792,7 @@ th {
   min-width: 58px;
   padding: 3px 6px;
   border-radius: 8px;
-  font-size: 0.72rem;
+  font-size: var(--type-badge-size);
   font-weight: 600;
   line-height: 1.2;
   white-space: nowrap;
@@ -1885,8 +1901,9 @@ th {
 
 .detail-purpose {
   margin: 8px 0 0;
-  font-size: 0.92rem;
-  font-weight: 600;
+  font-size: var(--type-body-size);
+  font-weight: 500;
+  color: var(--muted);
 }
 
 .control-progress-summary {
@@ -1899,6 +1916,11 @@ th {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
   justify-content: end;
+  min-height: 340px;
+}
+
+.control-progress-list.category-progress-list {
+  min-height: 340px;
 }
 
 .control-progress-group {
@@ -1981,21 +2003,21 @@ th {
 
 .control-progress-summary-grid {
   display: grid;
-  gap: 8px;
+  gap: 12px;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  margin-bottom: 14px;
+  margin-bottom: 22px;
   justify-content: end;
 }
 
 .dashboard-tabs {
-  margin: 0 0 14px;
+  margin: 6px 0 22px;
 }
 
 .dashboard-month-calendar {
   display: grid;
-  gap: 8px;
-  margin-bottom: 14px;
-  padding: 10px;
+  gap: 14px;
+  margin-bottom: 24px;
+  padding: 16px;
   border: 1px solid rgba(24, 49, 83, 0.22);
   border-radius: 4px;
   background:
@@ -2025,7 +2047,7 @@ th {
 
 .dashboard-month-grid {
   display: grid;
-  gap: 6px;
+  gap: 10px;
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
@@ -2054,12 +2076,13 @@ th {
 
 .dashboard-month-button span {
   color: #334155;
-  font-size: 0.74rem;
+  font-size: 0.9rem;
+  font-weight: 700;
 }
 
 .dashboard-month-button strong {
-  font-size: 0.76rem;
-  color: #0f1720;
+  font-size: 1rem;
+  color: #0b63c8;
 }
 
 .dashboard-month-button.active {
@@ -2092,7 +2115,7 @@ th {
 
 .dashboard-month-card-list {
   display: grid;
-  gap: 6px;
+  gap: 10px;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
@@ -2112,7 +2135,7 @@ th {
 }
 
 .dashboard-month-calendar + .section-heading {
-  margin-top: 8px;
+  margin-top: 14px;
 }
 
 .control-progress-summary-card {
@@ -2971,7 +2994,7 @@ th {
 .registration-alert-box p {
   margin: 6px 0 0;
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: var(--type-meta-size);
   line-height: 1.45;
 }
 
@@ -3049,6 +3072,30 @@ th {
   margin-bottom: 10px;
 }
 
+.registration-section-head.with-mode-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.registration-mode-toggle {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.registration-mode-toggle .registration-mode-button {
+  width: auto;
+  min-width: 84px;
+}
+
+.registration-mode-toggle .registration-mode-button.active {
+  background: #111;
+  border-color: #111;
+  color: #fff;
+}
+
 .registration-form-grid {
   display: grid;
   gap: 10px;
@@ -3060,6 +3107,14 @@ th {
 
 .registration-form-grid.three-col {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.registration-audit-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.registration-audit-evidence {
+  grid-column: 1 / -1;
 }
 
 .registration-field {
@@ -3077,16 +3132,17 @@ th {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  font-size: 0.79rem;
+  font-size: var(--type-meta-size);
 }
 
 .registration-field em {
   font-style: normal;
-  font-size: 0.72rem;
-  color: #b83232;
-  background: rgba(184, 50, 50, 0.12);
+  font-size: 0.62rem !important;
+  color: #7f1d1d;
+  background: #fde047;
   border-radius: 999px;
-  padding: 1px 6px;
+  padding: 1px 5px;
+  line-height: 1.15;
 }
 
 .registration-field small {
@@ -3181,8 +3237,22 @@ th {
 
 .registration-action-group {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin-top: 10px;
+}
+
+.registration-delete-button {
+  max-width: none;
+  background: #dc2626;
+  border: none;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.registration-delete-button:hover,
+.registration-delete-button:focus-visible {
+  background: #b91c1c;
 }
 
 .registration-guide-grid {
@@ -3622,6 +3692,10 @@ th {
     grid-template-columns: 1fr;
   }
 
+  .registration-action-group {
+    grid-template-columns: 1fr;
+  }
+
   html,
   body {
     overflow-x: hidden;
@@ -3744,7 +3818,8 @@ th {
   }
 
   .table-wrap {
-    overflow-x: hidden;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .member-table-wrap {
@@ -3755,6 +3830,35 @@ th {
   .member-table {
     min-width: 760px;
     width: max-content;
+  }
+
+  .audit-table {
+    width: 100%;
+    min-width: 0;
+    table-layout: fixed;
+  }
+
+  .audit-table th,
+  .audit-table td {
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  .login-domain-inline {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .login-domain-inline .filter-label {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .login-domain-save-button {
+    max-width: none !important;
+    width: 100%;
   }
 
   table {
@@ -3862,7 +3966,8 @@ th {
     max-width: none;
     min-height: 32px;
     padding: 0 2px;
-    font-size: 0.54rem;
+    font-size: 0.74rem;
+    font-weight: 700;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -4071,7 +4176,8 @@ th {
   }
 
   .dashboard-tabs .tab-button {
-    font-size: 0.7rem;
+    font-size: 0.8rem;
+    font-weight: 700;
   }
 
   .control-progress-summary-grid,
@@ -4249,6 +4355,8 @@ textarea,
   font-size: var(--frame-title-size);
   color: var(--text);
   font-weight: 700;
+  letter-spacing: -0.005em;
+  line-height: 1.28;
 }
 
 .control-browser-list .registration-control-item,
@@ -4266,10 +4374,10 @@ textarea,
 .control-browser-list .registration-control-item p,
 .control-operation-card p {
   color: var(--text);
-  font-size: clamp(0.76rem, 1.1vw, 0.88rem);
-  font-weight: 600;
+  font-size: var(--type-body-size);
+  font-weight: 500;
   letter-spacing: -0.02em;
-  line-height: 1.25;
+  line-height: 1.35;
   white-space: normal;
   text-overflow: clip;
   display: block;
@@ -4293,7 +4401,7 @@ textarea,
 .info-block strong,
 .detail-body-text {
   color: var(--text);
-  font-size: 0.92rem;
+  font-size: var(--type-body-size);
 }
 
 .registration-identity-box,
