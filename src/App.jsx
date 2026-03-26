@@ -1251,6 +1251,15 @@ function preserveDisplayLineBreaks(value) {
     .replace(/([^\n])\s(?=\d+\.\s)/g, "$1\n");
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function decodeJwtPayload(token) {
   try {
     const payload = token.split(".")[1];
@@ -1690,7 +1699,7 @@ export default function App() {
         reviewer: control.reviewDept ?? control.reviewer ?? "-",
         status: control.status ?? "-",
         reviewChecked: control.reviewChecked ?? "미검토",
-        executionNote: control.executionNote?.trim() || "-",
+        executionNote: typeof control.executionNote === "string" ? control.executionNote : "",
         evidenceCount: Array.isArray(control.evidenceFiles) ? control.evidenceFiles.length : 0,
         evidenceFiles: Array.isArray(control.evidenceFiles) ? control.evidenceFiles : [],
       }));
@@ -2427,25 +2436,34 @@ export default function App() {
 
   function buildReportMarkup() {
     const periodLabel = reportPeriodConfig[reportPeriod]?.label ?? "주기";
+    const toMultilineHtml = (value) => {
+      const normalized = String(value ?? "").replace(/\r\n/g, "\n");
+      if (!normalized.trim()) {
+        return "-";
+      }
+      return escapeHtml(normalized).replace(/\n/g, "<br />");
+    };
     const rows = reportControls.map((item) => `
       <tr>
-        <td>${item.id}</td>
-        <td>${item.title}</td>
-        <td>${item.process}</td>
-        <td>${item.performer}</td>
-        <td>${item.reviewer}</td>
-        <td>${item.status}</td>
-        <td>${item.reviewChecked}</td>
+        <td>${escapeHtml(item.id)}</td>
+        <td>${escapeHtml(item.title)}</td>
+        <td>${escapeHtml(item.process)}</td>
+        <td>${escapeHtml(item.performer)}</td>
+        <td>${escapeHtml(item.reviewer)}</td>
+        <td>${escapeHtml(item.status)}</td>
+        <td>${escapeHtml(item.reviewChecked)}</td>
         <td>
           <div>${item.evidenceCount}건</div>
-          <div class="evidence-preview-list">
+        </td>
+        <td class="execution-cell">
+          <div class="execution-note">${toMultilineHtml(item.executionNote)}</div>
+          <div class="execution-image-list">
             ${item.evidenceFiles
-              .filter((file) => isImageEvidence(file) && file.url)
-              .map((file) => `<img src="${getEvidencePreviewUrl(file)}" alt="${file.name}" class="evidence-preview-image" />`)
+              .filter((file) => isImageEvidence(file) && Boolean(getEvidencePreviewUrl(file)))
+              .map((file) => `<img src="${escapeHtml(getEvidencePreviewUrl(file))}" alt="${escapeHtml(file.name || "증적 이미지")}" class="execution-image" />`)
               .join("")}
           </div>
         </td>
-        <td>${item.executionNote}</td>
       </tr>
     `).join("");
 
@@ -2472,11 +2490,12 @@ export default function App() {
       vertical-align: middle;
       text-align: center;
       line-height: 1.2;
-      white-space: nowrap;
     }
     th { background: #f3f4f6; }
-    .evidence-preview-list { display: flex; gap: 4px; align-items: center; margin-top: 4px; }
-    .evidence-preview-image { width: 44px; height: 44px; object-fit: cover; border: 1px solid #d1d5db; }
+    .execution-cell { min-width: 520px; text-align: left; vertical-align: top; white-space: normal; }
+    .execution-note { white-space: pre-wrap; line-height: 1.35; }
+    .execution-image-list { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 8px; margin-top: 8px; }
+    .execution-image { width: 100%; min-height: 160px; max-height: 260px; object-fit: contain; border: 1px solid #d1d5db; background: #fff; }
   </style>
 </head>
 <body>
@@ -4543,7 +4562,22 @@ export default function App() {
                             <td>{item.status}</td>
                             <td>{item.reviewChecked}</td>
                             <td>{item.evidenceCount}건</td>
-                            <td>{item.executionNote}</td>
+                            <td className="report-execution-cell">
+                              <div className="report-execution-note">{preserveDisplayLineBreaks(item.executionNote) || "-"}</div>
+                              <div className="report-execution-image-list">
+                                {(item.evidenceFiles ?? [])
+                                  .filter((file) => isImageEvidence(file) && Boolean(getEvidencePreviewUrl(file)))
+                                  .map((file, index) => (
+                                    <img
+                                      key={`${item.id}-report-evidence-${index}`}
+                                      src={getEvidencePreviewUrl(file)}
+                                      alt={file.name || "증적 이미지"}
+                                      className="report-execution-image"
+                                      loading="lazy"
+                                    />
+                                  ))}
+                              </div>
+                            </td>
                           </tr>
                         ))
                       ) : (
