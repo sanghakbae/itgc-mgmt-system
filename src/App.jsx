@@ -23,7 +23,10 @@ const GOOGLE_DRIVE_FOLDER_ID = (import.meta.env.VITE_GOOGLE_DRIVE_FOLDER_ID ?? "
 const ALLOWED_DOMAIN_ENV = (import.meta.env.VITE_ALLOWED_DOMAIN ?? "").trim() || "muhayu.com";
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL ?? "").trim() || "https://gfybyxbrmkwbzuyhyqiv.supabase.co";
 const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY ?? "").trim() || "sb_publishable_Cd-7SADAjF_J5vEo9QkmAA_Jz2_diWz";
-const GOOGLE_CHAT_WEBHOOK_URL = (import.meta.env.VITE_GOOGLE_CHAT_WEBHOOK_URL ?? "").trim();
+const GOOGLE_CHAT_WEBHOOK_URL_DEFAULT =
+  "https://chat.googleapis.com/v1/spaces/AAQA_aatXEI/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=E6FuzUKxH0u5DAzMDpNWAXmkBUoaCcR6oWjTSfmqZY4";
+const GOOGLE_CHAT_WEBHOOK_URL =
+  (import.meta.env.VITE_GOOGLE_CHAT_WEBHOOK_URL ?? "").trim() || GOOGLE_CHAT_WEBHOOK_URL_DEFAULT;
 const GOOGLE_CHAT_ALERT_ACTIONS_ENV = (import.meta.env.VITE_GOOGLE_CHAT_ALERT_ACTIONS ?? "").trim();
 const GOOGLE_CHAT_DEDUP_MS_ENV = Number(import.meta.env.VITE_GOOGLE_CHAT_DEDUP_MS ?? 60000);
 const GOOGLE_CHAT_DEDUP_WINDOW_MS = Number.isFinite(GOOGLE_CHAT_DEDUP_MS_ENV) && GOOGLE_CHAT_DEDUP_MS_ENV >= 0
