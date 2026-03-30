@@ -2163,12 +2163,23 @@ export default function App() {
   const performerPeople = people.filter((person) => person.role === "performer" || person.role === "both");
   const reviewerPeople = people.filter((person) => person.role === "reviewer" || person.role === "both");
   const memberDirectory = useMemo(() => {
-  const syncedPeople = people.map((person) => ({
-      ...person,
-      email: person.email ?? "",
-      unit: person.unit ?? person.team ?? "미지정",
-      accessRole: normalizeAccessRole(person.accessRole),
-    }));
+    const seenEmails = new Set();
+    const syncedPeople = people.reduce((accumulator, person) => {
+      const normalizedEmail = String(person.email ?? "").trim().toLowerCase();
+      if (normalizedEmail && seenEmails.has(normalizedEmail)) {
+        return accumulator;
+      }
+      if (normalizedEmail) {
+        seenEmails.add(normalizedEmail);
+      }
+      accumulator.push({
+        ...person,
+        email: person.email ?? "",
+        unit: person.unit ?? person.team ?? "미지정",
+        accessRole: normalizeAccessRole(person.accessRole),
+      });
+      return accumulator;
+    }, []);
 
     if (!authUser?.email) {
       return syncedPeople;
@@ -2212,17 +2223,17 @@ export default function App() {
     }
     return String(control?.executionAuthorName ?? "").trim() || "-";
   };
-  const currentAccessRole = normalizeAccessRole(
-    memberDirectory.find((person) => person.email === authUser?.email)?.accessRole ?? "viewer",
-  );
   const normalizedAuthEmail = String(authUser?.email ?? "").trim().toLowerCase();
+  const currentAccessRole = normalizeAccessRole(
+    memberDirectory.find((person) => String(person.email ?? "").trim().toLowerCase() === normalizedAuthEmail)?.accessRole ?? "viewer",
+  );
   const sortedMemberDirectory = useMemo(() => {
     const rolePriority = {
       admin: 0,
       reviewer: 1,
       viewer: 2,
     };
-    return [...memberDirectory].sort((left, right) => {
+    return memberDirectory.filter((person) => person.id !== "AUTH-CURRENT").sort((left, right) => {
       const leftRole = normalizeAccessRole(memberDrafts[left.id]?.accessRole ?? left.accessRole);
       const rightRole = normalizeAccessRole(memberDrafts[right.id]?.accessRole ?? right.accessRole);
       const leftRank = rolePriority[leftRole] ?? 99;
