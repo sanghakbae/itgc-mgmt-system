@@ -4285,6 +4285,13 @@ th {
 }
 
 @media (max-width: 960px) {
+  .page-shell > .layout {
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+  }
+
   .app-shell,
   .hero,
   .double-grid,
@@ -4333,6 +4340,10 @@ th {
 
   .registration-action-group {
     grid-template-columns: 1fr;
+  }
+
+  .control-browser-layout > .control-list-panel {
+    overflow: visible;
   }
 
   html,
