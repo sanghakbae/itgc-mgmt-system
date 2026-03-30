@@ -2967,10 +2967,9 @@ export default function App() {
     (currentCompletedPage - 1) * listPageSize,
     currentCompletedPage * listPageSize,
   );
-  const selectedCompletedControl =
-    completedExecutionControls.find((control) => control.completedExecutionKey === selectedCompletedExecutionKey)
-    ?? completedPagedControls[0]
-    ?? null;
+  const selectedCompletedControl = selectedCompletedExecutionKey
+    ? (completedExecutionControls.find((control) => control.completedExecutionKey === selectedCompletedExecutionKey) ?? null)
+    : (completedPagedControls[0] ?? null);
   const reviewVisibleControls =
     reviewUnitFilter === "전체"
       ? reviewQueueControls
