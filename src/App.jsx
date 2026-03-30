@@ -707,6 +707,19 @@ function buildActivityFromControl(control) {
   if (!normalizedTitle) {
     return "";
   }
+  const performDept = normalizeCompactText(control?.performDept ?? control?.performer ?? control?.ownerDept) || "수행 부서";
+  const reviewDept = normalizeCompactText(control?.reviewDept ?? control?.reviewer) || "검토 부서";
+  const frequency = formatFrequencyLabel(control?.frequency) || "정기";
+  const objective = normalizeCompactText(control?.controlObjective ?? control?.purpose);
+
+  return [
+    `1. ${performDept}는 "${normalizedTitle}" 통제를 ${frequency} 기준에 따라 수행하고 결과를 기록한다.`,
+    objective ? `2. 점검 목적은 ${objective}이며 예외 사항은 원인과 조치 계획을 함께 남긴다.` : "2. 점검 중 발견된 예외 사항은 원인과 조치 계획을 함께 남긴다.",
+    `3. 근거 자료는 증적(Evidence)으로 보관하고 ${reviewDept}가 검토 결과를 승인 또는 개선조치로 확정한다.`,
+  ].join("\n");
+}
+
+function formatFrequencyLabel(frequency) {
   const frequencyLabelMap = {
     Daily: "일별",
     Weekly: "주별",
@@ -716,17 +729,16 @@ function buildActivityFromControl(control) {
     Annual: "연 1회",
     "Event Driven": "이벤트 발생 시",
     Other: "필요 시",
+    일별: "일별",
+    주별: "주별",
+    월별: "월별",
+    분기별: "분기별",
+    반기별: "반기별",
+    "연 1회 + 변경 시": "연 1회",
+    연간: "연 1회",
+    수시: "이벤트 발생 시",
   };
-  const performDept = normalizeCompactText(control?.performDept ?? control?.performer ?? control?.ownerDept) || "수행 부서";
-  const reviewDept = normalizeCompactText(control?.reviewDept ?? control?.reviewer) || "검토 부서";
-  const frequency = (frequencyLabelMap[control?.frequency] ?? normalizeCompactText(control?.frequency)) || "정기";
-  const objective = normalizeCompactText(control?.controlObjective ?? control?.purpose);
-
-  return [
-    `1. ${performDept}는 "${normalizedTitle}" 통제를 ${frequency} 기준에 따라 수행하고 결과를 기록한다.`,
-    objective ? `2. 점검 목적은 ${objective}이며 예외 사항은 원인과 조치 계획을 함께 남긴다.` : "2. 점검 중 발견된 예외 사항은 원인과 조치 계획을 함께 남긴다.",
-    `3. 근거 자료는 증적(Evidence)으로 보관하고 ${reviewDept}가 검토 결과를 승인 또는 개선조치로 확정한다.`,
-  ].join("\n");
+  return frequencyLabelMap[String(frequency ?? "").trim()] ?? String(frequency ?? "").trim();
 }
 
 function executionPeriodSortValue(period) {
@@ -1355,14 +1367,22 @@ const frequencyOrder = [
 ];
 
 const frequencyLabelMap = {
-  Daily: "Daily",
-  Weekly: "Weekly",
-  Monthly: "Monthly",
-  Quarterly: "Quarterly",
-  "Half-Bi-annual": "Half-Bi-annual",
-  Annual: "Annual",
-  "Event Driven": "Event Driven",
-  Other: "Other",
+  Daily: "일별",
+  Weekly: "주별",
+  Monthly: "월별",
+  Quarterly: "분기별",
+  "Half-Bi-annual": "반기별",
+  Annual: "연 1회",
+  "Event Driven": "이벤트 발생 시",
+  Other: "필요 시",
+  일별: "일별",
+  주별: "주별",
+  월별: "월별",
+  분기별: "분기별",
+  반기별: "반기별",
+  "연 1회 + 변경 시": "연 1회",
+  "이벤트 발생 시": "이벤트 발생 시",
+  수시: "이벤트 발생 시",
 };
 
 function scheduledMonthsByFrequency(frequency) {
@@ -2143,7 +2163,6 @@ export default function App() {
   const [assignmentExecutionNote, setAssignmentExecutionNote] = useState("");
   const [assignmentExecutionYear, setAssignmentExecutionYear] = useState("");
   const [assignmentExecutionPeriod, setAssignmentExecutionPeriod] = useState("");
-  const [assignmentReviewer, setAssignmentReviewer] = useState("");
   const [assignmentReviewChecked, setAssignmentReviewChecked] = useState("미검토");
   const [assignmentPendingEvidenceCount, setAssignmentPendingEvidenceCount] = useState(0);
   const [assignmentReviewNote, setAssignmentReviewNote] = useState("");
@@ -2169,6 +2188,7 @@ export default function App() {
   const [dashboardDelayYear, setDashboardDelayYear] = useState(() => String(new Date().getFullYear()));
   const [reportYear, setReportYear] = useState(() => String(new Date().getFullYear()));
   const [reportPeriod, setReportPeriod] = useState("annual");
+  const [reportCompletionFilter, setReportCompletionFilter] = useState("completed");
   const [reportFormat, setReportFormat] = useState("html");
   const [reportPreviewOpen, setReportPreviewOpen] = useState(false);
   const [reportPreviewMarkup, setReportPreviewMarkup] = useState("");
@@ -2273,12 +2293,62 @@ export default function App() {
       ),
     [memberDirectory],
   );
+  const memberUnitByEmail = useMemo(
+    () =>
+      new Map(
+        memberDirectory
+          .map((person) => [
+            String(person.email ?? "").trim().toLowerCase(),
+            String(person.unit ?? person.team ?? "").trim(),
+          ])
+          .filter(([email, unit]) => email && unit),
+      ),
+    [memberDirectory],
+  );
+  const formatExecutionDisplayUnit = (value) =>
+    String(value ?? "").trim().replace(/유닛$/, "");
+  const memberSingleNameByUnit = useMemo(() => {
+    const grouped = new Map();
+    memberDirectory.forEach((person) => {
+      const normalizedUnit = formatExecutionDisplayUnit(person?.unit ?? person?.team ?? "").replace(/\s+/g, "");
+      const name = String(person?.name ?? "").trim();
+      if (!normalizedUnit || !name) {
+        return;
+      }
+      const current = grouped.get(normalizedUnit) ?? new Set();
+      current.add(name);
+      grouped.set(normalizedUnit, current);
+    });
+    return new Map(
+      Array.from(grouped.entries())
+        .filter(([, names]) => names.size === 1)
+        .map(([unit, names]) => [unit, Array.from(names)[0]]),
+    );
+  }, [memberDirectory]);
   const resolveExecutionAuthorName = (control) => {
     const authorEmail = String(control?.executionAuthorEmail ?? "").trim().toLowerCase();
     if (authorEmail && memberNameByEmail.has(authorEmail)) {
       return memberNameByEmail.get(authorEmail);
     }
     return String(control?.executionAuthorName ?? "").trim() || "-";
+  };
+  const resolveExecutionAuthorDisplay = (control) => {
+    const authorEmail = String(control?.executionAuthorEmail ?? "").trim().toLowerCase();
+    const rawUnit =
+      (authorEmail && memberUnitByEmail.get(authorEmail))
+      || String(control?.performDept ?? control?.performer ?? "").trim();
+    const unit = formatExecutionDisplayUnit(rawUnit);
+    const normalizedUnit = unit.replace(/\s+/g, "");
+    const rawAuthorName = resolveExecutionAuthorName(control);
+    const inferredAuthorName =
+      (rawAuthorName && rawAuthorName !== "-" ? rawAuthorName : "")
+      || memberSingleNameByUnit.get(normalizedUnit)
+      || "";
+    const normalizedAuthorName = String(inferredAuthorName ?? "").trim().replace(/\s+/g, "").replace(/유닛$/, "");
+    if (unit && inferredAuthorName && normalizedAuthorName && normalizedAuthorName !== normalizedUnit) {
+      return `${unit}(${inferredAuthorName})`;
+    }
+    return unit || inferredAuthorName || rawAuthorName || "-";
   };
   const normalizedAuthEmail = String(authUser?.email ?? "").trim().toLowerCase();
   const currentAccessRole = normalizeAccessRole(
@@ -2424,7 +2494,6 @@ export default function App() {
     ?? registrationPagedControls[0]
     ?? controls[0]
     ?? null;
-  const assignmentStatus = deriveAssignmentStatus(assignmentExecutionNote, assignmentReviewChecked);
   const executionYearOptions = useMemo(() => buildExecutionYearOptions(), []);
   const executionPeriodOptions = useMemo(
     () => buildExecutionPeriodOptions(selectedControl?.frequency),
@@ -2480,6 +2549,13 @@ export default function App() {
             config.frequencies.includes(control.frequency)
             && String(entry.executionYear ?? "").trim() === reportYear,
           )
+          .filter((entry) =>
+            Boolean(entry.executionSubmitted)
+            && (
+              reportCompletionFilter === "all"
+              || String(entry.reviewChecked ?? "").trim() === "검토 완료"
+            ),
+          )
           .map((entry) => ({
             id: control.id,
             title: control.title,
@@ -2499,7 +2575,7 @@ export default function App() {
             evidenceFiles: Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles : [],
           })),
       );
-  }, [controls, memberNameByEmail, reportPeriod, reportYear]);
+  }, [controls, memberNameByEmail, reportCompletionFilter, reportPeriod, reportYear]);
   const reportSummary = useMemo(() => ({
     total: reportControls.length,
     completed: reportControls.filter((item) => item.status === "점검 완료" || item.status === "정상").length,
@@ -2803,12 +2879,12 @@ export default function App() {
         controlProgressGroups.find((group) => group.frequency === key)?.items.length ?? 0;
 
       return [
-        { label: "Monthly", value: `${countByFrequency("Monthly")}건`, targetId: "dashboard-frequency-monthly" },
-        { label: "Quarterly", value: `${countByFrequency("Quarterly")}건`, targetId: "dashboard-frequency-quarterly" },
-        { label: "Half-Bi-annual", value: `${countByFrequency("Half-Bi-annual")}건`, targetId: "dashboard-frequency-half-bi-annual" },
-        { label: "Annual", value: `${countByFrequency("Annual")}건`, targetId: "dashboard-frequency-annual" },
-        { label: "Event Driven", value: `${countByFrequency("Event Driven")}건`, targetId: "dashboard-frequency-event-driven" },
-        { label: "Other", value: `${countByFrequency("Other")}건`, targetId: "dashboard-frequency-other" },
+        { label: "월별", value: `${countByFrequency("Monthly")}건`, targetId: "dashboard-frequency-monthly" },
+        { label: "분기별", value: `${countByFrequency("Quarterly")}건`, targetId: "dashboard-frequency-quarterly" },
+        { label: "반기별", value: `${countByFrequency("Half-Bi-annual")}건`, targetId: "dashboard-frequency-half-bi-annual" },
+        { label: "연 1회", value: `${countByFrequency("Annual")}건`, targetId: "dashboard-frequency-annual" },
+        { label: "이벤트 발생 시", value: `${countByFrequency("Event Driven")}건`, targetId: "dashboard-frequency-event-driven" },
+        { label: "필요 시", value: `${countByFrequency("Other")}건`, targetId: "dashboard-frequency-other" },
       ];
     }
 
@@ -2909,12 +2985,6 @@ export default function App() {
     reviewVisibleControls.find((control) => control.reviewExecutionKey === selectedReviewExecutionKey)
     ?? reviewPagedControls[0]
     ?? null;
-  const canRecallReviewExecution =
-    !!selectedReviewControl
-    && normalizedAuthEmail.length > 0
-    && (isAdmin || String(selectedReviewControl.executionAuthorEmail ?? "").trim().toLowerCase() === normalizedAuthEmail)
-    && Boolean(selectedReviewControl.executionSubmitted)
-    && hasExecutionContent(selectedReviewControl);
   const menuItems = [
     { key: "dashboard", label: "대시보드", icon: <DashboardIcon /> },
     { key: "control-list", label: "통제 목록", icon: <ControlIcon /> },
@@ -3229,7 +3299,6 @@ export default function App() {
     setAssignmentExecutionNote("");
     setAssignmentExecutionYear(String(preset?.executionYear ?? "").trim());
     setAssignmentExecutionPeriod(String(preset?.executionPeriod ?? "").trim());
-    setAssignmentReviewer(selectedControl?.reviewer ?? selectedControl?.reviewDept ?? "");
     setAssignmentReviewChecked(nextEntry?.reviewChecked ?? "미검토");
     pendingAssignmentPresetRef.current = null;
   }, [
@@ -3358,10 +3427,16 @@ export default function App() {
         ? nextWorkspaceOrUpdater(workspaceRef.current)
         : nextWorkspaceOrUpdater;
 
+    commitWorkspace(nextWorkspace, { syncRemote: true });
+  }
+
+  function commitWorkspace(nextWorkspace, options = {}) {
+    const { syncRemote = true } = options;
+
     workspaceRef.current = nextWorkspace;
     setWorkspace(nextWorkspace);
     persistWorkspace(nextWorkspace);
-    if (HAS_REMOTE_BACKEND) {
+    if (syncRemote && HAS_REMOTE_BACKEND) {
       syncRemoteWorkspaceByBackend(nextWorkspace)
         .then(() => {
           setIntegrationStatus((current) => ({
@@ -3443,7 +3518,7 @@ export default function App() {
       ),
     };
 
-    updateWorkspace(nextWorkspace);
+    commitWorkspace(nextWorkspace, { syncRemote: baseWorkspace !== null });
     sendGoogleChatControlAlert({
       action,
       target,
@@ -3475,11 +3550,8 @@ export default function App() {
         <td>${escapeHtml(item.reviewer)}</td>
         <td>${escapeHtml(item.status)}</td>
         <td>${escapeHtml(item.reviewChecked)}</td>
-        <td>
-          <div>${item.evidenceCount}건</div>
-        </td>
-        <td class="execution-cell">
-          <div class="execution-note">${toMultilineHtml(item.executionNote)}</div>
+        <td class="execution-note">${toMultilineHtml(item.executionNote)}</td>
+        <td class="execution-evidence-cell">
           <div class="execution-image-list">
             ${item.evidenceFiles
               .filter((file) => isImageEvidence(file) && Boolean(getEvidenceReportImageUrl(file)))
@@ -3490,6 +3562,7 @@ export default function App() {
               })
               .join("")}
           </div>
+          ${item.evidenceFiles.filter((file) => isImageEvidence(file) && Boolean(getEvidenceReportImageUrl(file))).length === 0 ? '<div class="execution-empty">-</div>' : ""}
         </td>
       </tr>
     `).join("");
@@ -3519,10 +3592,11 @@ export default function App() {
       line-height: 1.2;
     }
     th { background: #f3f4f6; }
-    .execution-cell { min-width: 520px; text-align: left; vertical-align: top; white-space: normal; }
-    .execution-note { white-space: pre-wrap; line-height: 1.35; }
-    .execution-image-list { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 8px; margin-top: 8px; }
-    .execution-image { width: 100%; min-height: 160px; max-height: 260px; object-fit: contain; border: 1px solid #d1d5db; background: #fff; }
+    .execution-note { min-width: 300px; text-align: left; vertical-align: top; white-space: pre-line; line-height: 1.45; word-break: break-word; overflow-wrap: anywhere; }
+    .execution-evidence-cell { min-width: 220px; text-align: left; vertical-align: top; }
+    .execution-image-list { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 0; width: 100%; }
+    .execution-empty { width: 100%; text-align: left; color: #6b7280; }
+    .execution-image { display: block; width: 100%; min-height: 160px; max-height: 260px; object-fit: contain; border: 1px solid #d1d5db; background: #fff; }
   </style>
 </head>
 <body>
@@ -3537,7 +3611,7 @@ export default function App() {
   <table>
     <thead>
       <tr>
-        <th>ID</th><th>통제명</th><th>카테고리</th><th>수행자</th><th>검토자</th><th>상태</th><th>승인</th><th>증적</th><th>수행 내역</th>
+        <th>ID</th><th>통제명</th><th>카테고리</th><th>수행자</th><th>검토자</th><th>상태</th><th>승인</th><th>수행 내역</th><th>증적</th>
       </tr>
     </thead>
     <tbody>${rows || '<tr><td colspan="9">대상 통제가 없습니다.</td></tr>'}</tbody>
@@ -3673,11 +3747,6 @@ export default function App() {
         ? prev.targetSystems.filter((item) => item !== system)
         : [...(prev.targetSystems ?? []), system],
     }));
-  }
-
-  function saveRegistrationDraft() {
-    window.localStorage.setItem(REGISTRATION_DRAFT_KEY, JSON.stringify(registrationForm));
-    showCenterAlert("통제 등록 초안을 임시 저장했습니다.");
   }
 
   function loadRegistrationControl(control) {
@@ -3915,49 +3984,6 @@ export default function App() {
       setRegistrationSelectedControlId("");
     }
   }, [controls, registrationSelectedControlId]);
-
-  function handlePersonSubmit(event) {
-    event.preventDefault();
-    const formData = new FormData(event.currentTarget);
-    const person = {
-      id: formData.get("personId").toString().trim(),
-      name: formData.get("personName").toString().trim(),
-      email: formData.get("personEmail").toString().trim().toLowerCase(),
-      role: "both",
-      team: formData.get("personTeam").toString().trim(),
-      accessRole: "viewer",
-    };
-
-    if (people.some((entry) => entry.id === person.id)) {
-      showCenterAlert("같은 담당자 ID가 이미 존재합니다.");
-      return;
-    }
-
-    if (person.email && !isAllowedEmailBySet(person.email, loginDomainSet)) {
-      showCenterAlert(`${allowedDomainText} 이메일만 등록할 수 있습니다.`);
-      return;
-    }
-
-    updateWorkspace({
-      ...workspace,
-      people: [person, ...people],
-    });
-    if (person.email) {
-      setDeletedMemberEmails((current) => current.filter((email) => email !== person.email));
-    }
-    event.currentTarget.reset();
-  }
-
-  function handleMemberAccessRoleChange(personId, accessRole) {
-    updateWorkspace({
-      ...workspace,
-      people: people.map((person) =>
-        person.id === personId
-          ? { ...person, accessRole }
-          : person,
-        ),
-    });
-  }
 
   function handleMemberDraftChange(personId, key, value) {
     if (!canManageMembers) {
@@ -4213,7 +4239,7 @@ export default function App() {
       executionYear,
       executionPeriod,
     });
-    let nextEvidenceFiles = [];
+    let nextEvidenceFiles = Array.isArray(currentExecutionEntry?.evidenceFiles) ? [...currentExecutionEntry.evidenceFiles] : [];
     let uploaded = false;
 
     if (!executionAuthorEmail) {
@@ -4330,63 +4356,6 @@ export default function App() {
     setSelectedCompletedExecutionKey(completedExecutionKey);
     setSelectedControlId(selectedControl.id);
     setExecutionSavePopupMessage("수행 결과 등록이 완료되었습니다.");
-  }
-
-  async function handleAssignmentRecall(controlOverride = null) {
-    const targetControl = controlOverride ?? selectedControl;
-    const targetEntry = getPreferredExecutionEntry(targetControl, null, {
-      executionYear: assignmentExecutionYear,
-      executionPeriod: assignmentExecutionPeriod,
-    });
-    if (!targetControl) {
-      return;
-    }
-    const canRecall =
-      normalizedAuthEmail.length > 0
-      && (isAdmin || String(targetEntry?.executionAuthorEmail ?? "").trim().toLowerCase() === normalizedAuthEmail)
-      && Boolean(targetEntry?.executionSubmitted)
-      && hasExecutionEntryContent(targetEntry);
-    if (!canRecall) {
-      showCenterAlert("수행 등록 회수는 해당 수행 등록 작성자 또는 admin만 가능합니다.");
-      return;
-    }
-
-    const confirmed = await showCenterConfirm(`${targetControl.title} 수행 등록을 회수할까요?`);
-    if (!confirmed) {
-      return;
-    }
-
-    const nextWorkspace = {
-      ...workspace,
-      controls: controls.map((control) =>
-        control.id === targetControl.id
-          ? mergeExecutionHistoryIntoControl(
-              control,
-              getControlExecutionHistory(control).map((entry) =>
-                entry.executionYear === targetEntry?.executionYear && entry.executionPeriod === targetEntry?.executionPeriod
-                  ? {
-                      ...entry,
-                      executionSubmitted: false,
-                      reviewChecked: "미검토",
-                      note: "",
-                      reviewResult: "",
-                      reviewAuthorName: "",
-                      reviewAuthorEmail: "",
-                      status: deriveAssignmentStatus(entry.executionNote ?? "", "미검토"),
-                    }
-                  : entry,
-              ),
-              {
-                executionYear: targetEntry?.executionYear,
-                executionPeriod: targetEntry?.executionPeriod,
-              },
-            )
-          : control,
-      ),
-    };
-
-    writeAuditLog("EXECUTION_RECALLED", targetControl.id, `${targetControl.title} 수행 등록 회수`, nextWorkspace);
-    showCenterAlert("수행 등록을 회수했습니다.");
   }
 
   function handleRequestReviewFromCompleted() {
@@ -5464,14 +5433,14 @@ export default function App() {
                     <label className="registration-field registration-audit-frequency">
                       <span>Frequency <em>필수</em></span>
                       <select value={registrationForm.frequency} onChange={(event) => updateRegistrationField("frequency", event.target.value)}>
-                        <option value="Daily">Daily</option>
-                        <option value="Weekly">Weekly</option>
-                        <option value="Monthly">Monthly</option>
-                        <option value="Quarterly">Quarterly</option>
-                        <option value="Half-Bi-annual">Half-Bi-annual</option>
-                        <option value="Annual">Annual</option>
-                        <option value="Event Driven">Event Driven</option>
-                        <option value="Other">Other</option>
+                        <option value="Daily">일별</option>
+                        <option value="Weekly">주별</option>
+                        <option value="Monthly">월별</option>
+                        <option value="Quarterly">분기별</option>
+                        <option value="Half-Bi-annual">반기별</option>
+                        <option value="Annual">연 1회</option>
+                        <option value="Event Driven">이벤트 발생 시</option>
+                        <option value="Other">필요 시</option>
                       </select>
                     </label>
                     <label className="registration-field registration-audit-control-type">
@@ -5731,6 +5700,7 @@ export default function App() {
                           </div>
                         </div>
                         <p>{control.title}</p>
+                        <span className="control-item-subtext">{formatFrequencyLabel(control.frequency) || "-"}</span>
                       </button>
                     );
                   })}
@@ -5773,7 +5743,7 @@ export default function App() {
                           <span className={`status-badge ${statusClass(selectedControl.status)}`}>{selectedControl.status}</span>
                           <span className={`status-badge ${evidenceClass(selectedControl.evidenceStatus)}`}>{evidenceBadgeLabel(selectedControl)}</span>
                           <span className="status-badge unit-assignee-badge">
-                            수행: {resolveExecutionAuthorName(selectedAssignmentEntry ?? selectedControl)}
+                            수행: {resolveExecutionAuthorDisplay(selectedAssignmentEntry ?? selectedControl)}
                           </span>
                           <span className="status-badge unit-review-badge">
                             검토: {selectedControl.reviewDept ?? selectedControl.reviewer ?? "-"}
@@ -5926,7 +5896,7 @@ export default function App() {
                           <strong>{control.id}</strong>
                           <div className="badge-row">
                             <span className="status-badge unit-assignee-badge">
-                              {resolveExecutionAuthorName(control)}
+                              {resolveExecutionAuthorDisplay(control)}
                             </span>
                           </div>
                         </div>
@@ -5968,7 +5938,7 @@ export default function App() {
                           <span className={`status-badge ${statusClass(selectedCompletedControl.status)}`}>{selectedCompletedControl.status}</span>
                           <span className={`status-badge ${evidenceClass(selectedCompletedControl.evidenceStatus)}`}>{evidenceBadgeLabel(selectedCompletedControl, "review")}</span>
                           <span className="status-badge unit-assignee-badge">
-                            수행: {resolveExecutionAuthorName(selectedCompletedControl)}
+                            수행: {resolveExecutionAuthorDisplay(selectedCompletedControl)}
                           </span>
                         </div>
                       </div>
@@ -5980,7 +5950,7 @@ export default function App() {
                             <span className="review-meta-separator">|</span>
                             <span className="review-meta-chip review-meta-period">주기: {selectedCompletedControl.executionPeriod || "-"}</span>
                             <span className="review-meta-separator">|</span>
-                            <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorName(selectedCompletedControl)}</span>
+                            <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorDisplay(selectedCompletedControl)}</span>
                           </div>
                         </div>
                         <div className="execution-meta-item">
@@ -6262,7 +6232,7 @@ export default function App() {
                         <span className={`status-badge ${statusClass(selectedReviewControl.status)}`}>{selectedReviewControl.status}</span>
                         <span className={`status-badge ${evidenceClass(selectedReviewControl.evidenceStatus)}`}>{evidenceBadgeLabel(selectedReviewControl, "review")}</span>
                         <span className="status-badge unit-assignee-badge">
-                          수행: {resolveExecutionAuthorName(selectedReviewControl)}
+                          수행: {resolveExecutionAuthorDisplay(selectedReviewControl)}
                         </span>
                       </div>
                     </div>
@@ -6274,7 +6244,7 @@ export default function App() {
                           <span className="review-meta-separator">|</span>
                           <span className="review-meta-chip review-meta-period">주기: {selectedReviewControl.executionPeriod || "-"}</span>
                           <span className="review-meta-separator">|</span>
-                          <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorName(selectedReviewControl)}</span>
+                          <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorDisplay(selectedReviewControl)}</span>
                         </div>
                       </div>
                       <div className="execution-meta-item">
@@ -6488,6 +6458,25 @@ export default function App() {
                       <option value="pdf">PDF</option>
                     </select>
                   </label>
+                  <div className="registration-filter-field report-completion-filter">
+                    <span>완료 여부</span>
+                    <div className="report-completion-toggle" role="tablist" aria-label="완료 여부">
+                      <button
+                        type="button"
+                        className={reportCompletionFilter === "all" ? "secondary-button slim-button report-completion-button active" : "secondary-button slim-button report-completion-button"}
+                        onClick={() => setReportCompletionFilter("all")}
+                      >
+                        전체
+                      </button>
+                      <button
+                        type="button"
+                        className={reportCompletionFilter === "completed" ? "secondary-button slim-button report-completion-button active" : "secondary-button slim-button report-completion-button"}
+                        onClick={() => setReportCompletionFilter("completed")}
+                      >
+                        검토 완료
+                      </button>
+                    </div>
+                  </div>
                   <div className="report-action">
                     <button className="primary-button" type="button" onClick={handleReportExport}>
                       {reportFormat === "pdf" ? "PDF 출력" : "HTML 출력"}
@@ -6525,14 +6514,14 @@ export default function App() {
                         <th>검토자</th>
                         <th>상태</th>
                         <th>승인</th>
-                        <th>증적</th>
                         <th>수행 내역</th>
+                        <th>증적</th>
                       </tr>
                     </thead>
                     <tbody>
                       {reportControls.length > 0 ? (
                         reportControls.map((item) => (
-                          <tr key={item.id}>
+                          <tr key={`${item.id}-${item.executionYear}-${item.executionPeriod}`}>
                             <td>{item.id}</td>
                             <td>{item.title}</td>
                             <td>{item.process}</td>
@@ -6540,9 +6529,8 @@ export default function App() {
                             <td>{item.reviewer}</td>
                             <td>{item.status}</td>
                             <td>{item.reviewChecked}</td>
-                            <td>{item.evidenceCount}건</td>
-                            <td className="report-execution-cell">
-                              <div className="report-execution-note">{preserveDisplayLineBreaks(item.executionNote) || "-"}</div>
+                            <td className="report-execution-note">{preserveDisplayLineBreaks(item.executionNote) || "-"}</td>
+                            <td className="report-evidence-cell">
                               <div className="report-execution-image-list">
                                 {(item.evidenceFiles ?? [])
                                   .filter((file) => isImageEvidence(file) && Boolean(getEvidenceReportImageUrl(file)))
@@ -6565,6 +6553,9 @@ export default function App() {
                                     />
                                   ))}
                               </div>
+                              {((item.evidenceFiles ?? []).filter((file) => isImageEvidence(file) && Boolean(getEvidenceReportImageUrl(file))).length === 0) && (
+                                <div className="report-execution-empty">-</div>
+                              )}
                             </td>
                           </tr>
                         ))

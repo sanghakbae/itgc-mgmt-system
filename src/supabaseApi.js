@@ -219,7 +219,13 @@ function mapControlToExecutionRows(control, nowIso) {
     review_checked: entry.reviewChecked ?? "미검토",
     review_date: entry.reviewChecked === "검토 완료" ? normalizeDate(nowIso) : null,
     review_note: entry.note ?? "",
-    performed_by: entry.executionAuthorName ?? control.performer ?? control.performDept ?? control.ownerDept ?? "",
+    performed_by:
+      String(entry.executionAuthorName ?? "").trim()
+      || String(entry.executionAuthorEmail ?? "").trim().toLowerCase()
+      || control.performer
+      || control.performDept
+      || control.ownerDept
+      || "",
     reviewed_by: control.reviewer ?? control.reviewDept ?? "",
     drive_folder_id: null,
     last_updated_at: nowIso,
@@ -246,7 +252,13 @@ function mapControlToExecutionRows(control, nowIso) {
 
 function mapControlToEvidenceRows(control, nowIso) {
   return getControlExecutionHistory(control).flatMap((entry) => {
-    const uploader = entry.executionAuthorName ?? control.performer ?? control.performDept ?? control.ownerDept ?? "";
+    const uploader =
+      String(entry.executionAuthorName ?? "").trim()
+      || String(entry.executionAuthorEmail ?? "").trim().toLowerCase()
+      || control.performer
+      || control.performDept
+      || control.ownerDept
+      || "";
     const executionId = entry.executionId || createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod);
     const evidenceFiles = Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles : [];
 
