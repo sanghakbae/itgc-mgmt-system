@@ -49,7 +49,7 @@ const DATA_BACKEND = (() => {
 })();
 
 const HAS_REMOTE_BACKEND = DATA_BACKEND !== "local";
-const VIEW_KEYS = ["dashboard", "control-list", "control-workbench", "report", "people", "audit", "register", "controls", "control-review", "roles"];
+const VIEW_KEYS = ["dashboard", "dashboard-delay-detail", "control-list", "control-workbench", "report", "people", "audit", "register", "controls", "control-review", "roles"];
 const WORKBENCH_TAB_KEYS = ["register", "controls", "control-review"];
 const UI_THEME_OPTIONS = [
   { value: "classic", label: "Classic" },
@@ -65,6 +65,21 @@ const UI_THEME_OPTIONS = [
 ];
 const UI_THEME_VALUES = new Set(UI_THEME_OPTIONS.map((option) => option.value));
 const CONTROL_UNIT_FILTER_OPTIONS = ["전체", "개발유닛", "인프라유닛", "정보보호유닛", "QA유닛"];
+const DASHBOARD_DELAY_BUCKET_CONFIG = {
+  annual: {
+    label: "연 지연",
+    frequencies: [
+      "Monthly",
+      "Quarterly",
+      "Half-Bi-annual",
+      "Annual",
+      "월별",
+      "분기별",
+      "반기별",
+      "연 1회 + 변경 시",
+    ],
+  },
+};
 
 const defaultData = {
   controls: defaultControls30,
@@ -712,6 +727,7 @@ function normalizeControl(control) {
   const catalog = controlCatalog[control.id] ?? {};
   const performDept = control.performDept ?? control.performer ?? control.ownerDept ?? "";
   const reviewDept = control.reviewDept ?? control.reviewer ?? "";
+    const hasExecutionContentValue = hasExecutionContent(control);
   const normalizedSystems =
     uniqueSystems(control.targetSystems ?? catalog.targetSystems).length > 0
       ? uniqueSystems(control.targetSystems ?? catalog.targetSystems)
@@ -750,11 +766,58 @@ function normalizeControl(control) {
     testMethod: control.testMethod ?? "",
     policyReference: control.policyReference ?? "",
     deficiencyImpact: control.deficiencyImpact ?? "",
+    executionYear: String(control.executionYear ?? "").trim(),
+    executionPeriod: String(control.executionPeriod ?? "").trim(),
+    executionSubmitted: typeof control.executionSubmitted === "boolean" ? control.executionSubmitted : hasExecutionContentValue,
+    executionAuthorName: String(control.executionAuthorName ?? "").trim(),
+    executionAuthorEmail: String(control.executionAuthorEmail ?? "").trim().toLowerCase(),
+    reviewAuthorName: String(control.reviewAuthorName ?? "").trim(),
+    reviewAuthorEmail: String(control.reviewAuthorEmail ?? "").trim().toLowerCase(),
     evidenceFiles: Array.isArray(control.evidenceFiles) ? control.evidenceFiles : [],
     attributes: Array.isArray(control.attributes) ? control.attributes : [],
     evidences: Array.isArray(control.evidences) ? control.evidences.map((item) => convertLeadingNumberBulletsToCircled(item)) : [],
     procedures: Array.isArray(control.procedures) ? control.procedures : [],
   };
+}
+
+function hasExecutionContent(control) {
+  return (
+    String(control?.executionNote ?? "").trim().length > 0
+    || String(control?.executionYear ?? "").trim().length > 0
+    || String(control?.executionPeriod ?? "").trim().length > 0
+    || ((Array.isArray(control?.evidenceFiles) ? control.evidenceFiles : []).length > 0)
+  );
+}
+
+function buildExecutionYearOptions(baseYear = new Date().getFullYear(), span = 5) {
+  return Array.from({ length: span }, (_, index) => String(baseYear - index));
+}
+
+function buildExecutionPeriodOptions(frequency) {
+  const normalized = String(frequency ?? "").trim().toLowerCase();
+
+  if (normalized === "monthly" || normalized === "월별") {
+    return Array.from({ length: 12 }, (_, index) => `${index + 1}월`);
+  }
+  if (normalized === "quarterly" || normalized === "분기별") {
+    return ["1분기", "2분기", "3분기", "4분기"];
+  }
+  if (normalized === "half-bi-annual" || normalized === "반기별") {
+    return ["상반기", "하반기"];
+  }
+  if (normalized === "annual" || normalized === "연 1회 + 변경 시") {
+    return ["연간"];
+  }
+  if (normalized === "weekly" || normalized === "주별") {
+    return Array.from({ length: 53 }, (_, index) => `${index + 1}주차`);
+  }
+  if (normalized === "daily" || normalized === "일별") {
+    return Array.from({ length: 31 }, (_, index) => `${index + 1}일`);
+  }
+  if (normalized === "event driven" || normalized === "이벤트 발생 시") {
+    return ["수시"];
+  }
+  return ["기타"];
 }
 
 async function uploadEvidenceFiles(controlId, files) {
@@ -1130,6 +1193,47 @@ function scheduledMonthsByFrequency(frequency) {
   return [];
 }
 
+function overduePeriodLabelsForYear(frequency, year, currentDate = new Date()) {
+  const normalized = String(frequency ?? "").trim().toLowerCase();
+  const targetYear = Number(year);
+  const currentYear = currentDate.getFullYear();
+  const currentMonth = currentDate.getMonth() + 1;
+
+  if (!Number.isFinite(targetYear)) {
+    return [];
+  }
+  if (targetYear > currentYear) {
+    return [];
+  }
+
+  if (normalized === "monthly" || normalized === "월별") {
+    const maxMonth = targetYear < currentYear ? 12 : currentMonth;
+    return Array.from({ length: maxMonth }, (_, index) => `${index + 1}월`);
+  }
+  if (normalized === "quarterly" || normalized === "분기별") {
+    const quarterLabels = ["1분기", "2분기", "3분기", "4분기"];
+    const maxQuarter = targetYear < currentYear ? 4 : Math.floor(currentMonth / 3);
+    return quarterLabels.slice(0, maxQuarter);
+  }
+  if (normalized === "half-bi-annual" || normalized === "반기별") {
+    if (targetYear < currentYear) {
+      return ["상반기", "하반기"];
+    }
+    if (currentMonth >= 12) {
+      return ["상반기", "하반기"];
+    }
+    if (currentMonth >= 6) {
+      return ["상반기"];
+    }
+    return [];
+  }
+  if (normalized === "annual" || normalized === "연 1회 + 변경 시") {
+    return targetYear < currentYear || currentMonth >= 12 ? ["연간"] : [];
+  }
+
+  return [];
+}
+
 const controlGroupOrder = ["PWC", "APD", "PC", "CO", "PD", "CS"];
 
 function toDashboardAnchor(value) {
@@ -1143,6 +1247,17 @@ function evidenceClass(status) {
   if (status === "준비 완료") return "status-normal";
   if (status === "수집 중") return "status-warning";
   return "status-danger";
+}
+
+function evidenceBadgeLabel(control, mode = "default") {
+  const evidenceFiles = Array.isArray(control?.evidenceFiles) ? control.evidenceFiles : [];
+  if (evidenceFiles.length === 0 || String(control?.evidenceStatus ?? "").trim() === "미수집") {
+    return "증적없음";
+  }
+  if (mode === "review") {
+    return "증적있음";
+  }
+  return control?.evidenceStatus ?? "증적없음";
 }
 
 function workflowClass(status) {
@@ -1211,8 +1326,10 @@ function auditActionLabel(action) {
     CONTROL_UPDATED: "통제 수정",
     CONTROL_DELETED: "통제 삭제",
     EXECUTION_SAVED: "통제 운영 저장",
+    EXECUTION_RECALLED: "통제 운영 회수",
     REVIEW_SAVED: "검토 저장",
     REVIEW_COMPLETED: "승인 완료",
+    REVIEW_RECALLED: "검토 회수",
     REPORT_VIEWED: "리포트 조회",
     REPORT_HTML_EXPORTED: "HTML 리포트 출력",
     REPORT_PDF_PRINTED: "PDF 리포트 출력",
@@ -1240,8 +1357,10 @@ const CONTROL_CHANGE_ALERT_ACTIONS_ALL = new Set([
   "CONTROL_UPDATED",
   "CONTROL_DELETED",
   "EXECUTION_SAVED",
+  "EXECUTION_RECALLED",
   "REVIEW_SAVED",
   "REVIEW_COMPLETED",
+  "REVIEW_RECALLED",
 ]);
 
 function sendGoogleChatControlAlert({ action, target, detail, actorName, actorEmail, createdAt }) {
@@ -1742,6 +1861,7 @@ export default function App() {
   const [selectedControlId, setSelectedControlId] = useState("");
   const [processFilter, setProcessFilter] = useState("전체");
   const [controlUnitFilter, setControlUnitFilter] = useState("전체");
+  const [controlExecutionFilter, setControlExecutionFilter] = useState("전체");
   const [reviewUnitFilter, setReviewUnitFilter] = useState("전체");
   const [controlListPage, setControlListPage] = useState(1);
   const [controlPanelMode, setControlPanelMode] = useState("create");
@@ -1761,12 +1881,15 @@ export default function App() {
   const [roleAssignmentControlId, setRoleAssignmentControlId] = useState("");
   const [evidenceInputCount, setEvidenceInputCount] = useState(1);
   const [assignmentExecutionNote, setAssignmentExecutionNote] = useState("");
+  const [assignmentExecutionYear, setAssignmentExecutionYear] = useState("");
+  const [assignmentExecutionPeriod, setAssignmentExecutionPeriod] = useState("");
   const [assignmentReviewer, setAssignmentReviewer] = useState("");
   const [assignmentReviewChecked, setAssignmentReviewChecked] = useState("미검토");
   const [assignmentReviewNote, setAssignmentReviewNote] = useState("");
   const [dashboardView, setDashboardView] = useState("category");
   const [dashboardUnitFilter, setDashboardUnitFilter] = useState("전체");
   const [dashboardDelayFilter, setDashboardDelayFilter] = useState("전체");
+  const [dashboardDelayDetailKey, setDashboardDelayDetailKey] = useState("monthly");
   const [workbenchTab, setWorkbenchTab] = useState(() => loadPersistedWorkbenchTab());
   const [uiTheme, setUiTheme] = useState(() => loadPersistedUiTheme());
   const [dashboardCalendarMonth, setDashboardCalendarMonth] = useState(() => {
@@ -1774,6 +1897,9 @@ export default function App() {
     return Number.isInteger(month) && month >= 1 && month <= 12 ? month : 1;
   });
   const currentCalendarMonth = useMemo(() => new Date().getMonth() + 1, []);
+  const currentCalendarYear = useMemo(() => String(new Date().getFullYear()), []);
+  const [dashboardDelayYear, setDashboardDelayYear] = useState(() => String(new Date().getFullYear()));
+  const [reportYear, setReportYear] = useState(() => String(new Date().getFullYear()));
   const [reportPeriod, setReportPeriod] = useState("annual");
   const [reportFormat, setReportFormat] = useState("html");
   const [reportPreviewOpen, setReportPreviewOpen] = useState(false);
@@ -1859,6 +1985,7 @@ export default function App() {
   const currentAccessRole = normalizeAccessRole(
     memberDirectory.find((person) => person.email === authUser?.email)?.accessRole ?? "viewer",
   );
+  const normalizedAuthEmail = String(authUser?.email ?? "").trim().toLowerCase();
   const sortedMemberDirectory = useMemo(() => {
     const rolePriority = {
       admin: 0,
@@ -1935,10 +2062,22 @@ export default function App() {
   }, [workspace.loginDomains, loginDomains]);
 
   const listPageSize = (isWorkbenchView || currentView === "control-list") ? 15 : 10;
-  const visibleControls =
-    controlUnitFilter === "전체"
-      ? controls
-      : controls.filter((control) => toControlUnitFilterValue(control) === controlUnitFilter);
+  const visibleControls = controls.filter((control) => {
+    const matchesUnit =
+      controlUnitFilter === "전체"
+        ? true
+        : toControlUnitFilterValue(control) === controlUnitFilter;
+    const hasDraft = !control.executionSubmitted && hasExecutionContent(control);
+    const matchesExecutionFilter =
+      controlExecutionFilter === "작성중"
+        ? hasDraft
+        : true;
+
+    return matchesUnit && matchesExecutionFilter;
+  });
+  const controlExecutionDraftCount = controls.filter((control) =>
+    !control.executionSubmitted
+    && hasExecutionContent(control)).length;
   const totalControlPages = Math.max(1, Math.ceil(visibleControls.length / listPageSize));
   const currentControlPage = Math.min(controlListPage, totalControlPages);
   const limitedControls = visibleControls.slice(
@@ -1968,6 +2107,29 @@ export default function App() {
     ?? controls[0]
     ?? null;
   const assignmentStatus = deriveAssignmentStatus(assignmentExecutionNote, assignmentReviewChecked);
+  const executionYearOptions = useMemo(() => buildExecutionYearOptions(), []);
+  const executionPeriodOptions = useMemo(
+    () => buildExecutionPeriodOptions(selectedControl?.frequency),
+    [selectedControl?.frequency],
+  );
+  const canSubmitAssignment =
+    canOperateControl
+    && assignmentExecutionYear.trim().length > 0
+    && assignmentExecutionPeriod.trim().length > 0;
+  const canRecallSelectedExecution =
+    !!selectedControl
+    && normalizedAuthEmail.length > 0
+    && String(selectedControl.executionAuthorEmail ?? "").trim().toLowerCase() === normalizedAuthEmail
+    && Boolean(selectedControl.executionSubmitted)
+    && hasExecutionContent(selectedControl);
+  const dashboardDelayYearOptions = useMemo(
+    () => buildExecutionYearOptions(Number(currentCalendarYear), 7),
+    [currentCalendarYear],
+  );
+  const reportYearOptions = useMemo(
+    () => buildExecutionYearOptions(Number(currentCalendarYear), 7),
+    [currentCalendarYear],
+  );
   const reportPeriodConfig = {
     monthly: { label: "월", frequencies: ["Monthly", "월별"] },
     quarterly: { label: "분기", frequencies: ["Quarterly", "분기별"] },
@@ -1981,7 +2143,10 @@ export default function App() {
     }
 
     return controls
-      .filter((control) => config.frequencies.includes(control.frequency))
+      .filter((control) =>
+        config.frequencies.includes(control.frequency)
+        && String(control.executionYear ?? "").trim() === reportYear,
+      )
       .map((control) => ({
         id: control.id,
         title: control.title,
@@ -1995,7 +2160,7 @@ export default function App() {
         evidenceCount: Array.isArray(control.evidenceFiles) ? control.evidenceFiles.length : 0,
         evidenceFiles: Array.isArray(control.evidenceFiles) ? control.evidenceFiles : [],
       }));
-  }, [controls, reportPeriod]);
+  }, [controls, reportPeriod, reportYear]);
   const reportSummary = useMemo(() => ({
     total: reportControls.length,
     completed: reportControls.filter((item) => item.status === "점검 완료" || item.status === "정상").length,
@@ -2171,6 +2336,44 @@ export default function App() {
   }, [dashboardFilteredControls]);
   const dashboardMonthlyCards =
     dashboardCalendarSummary.find((bucket) => bucket.month === dashboardCalendarMonth)?.items ?? [];
+  const dashboardAnnualDelayBuckets = useMemo(() => {
+    return Object.entries(DASHBOARD_DELAY_BUCKET_CONFIG).map(([key, config]) => {
+      const items = dashboardFilteredControls
+        .flatMap((control) => {
+          const normalizedStatus = deriveAssignmentStatus(control.executionNote ?? "", control.reviewChecked ?? "미검토");
+          if (!config.frequencies.includes(control.frequency) || isCompletedStatus(normalizedStatus)) {
+            return [];
+          }
+
+          const overduePeriods = overduePeriodLabelsForYear(control.frequency, dashboardDelayYear, new Date());
+          return overduePeriods.map((overduePeriod) => ({
+            id: control.id,
+            title: control.title,
+            process: control.process,
+            frequency: frequencyLabelMap[control.frequency] ?? control.frequency ?? "-",
+            status: normalizedStatus,
+            performer: control.performDept ?? control.performer ?? "-",
+            executionYear: control.executionYear ?? "",
+            executionPeriod: control.executionPeriod ?? "",
+            overduePeriod,
+          }));
+        })
+        .sort((left, right) =>
+          left.id.localeCompare(right.id, "ko")
+          || String(left.overduePeriod).localeCompare(String(right.overduePeriod), "ko"),
+        );
+
+      return {
+        key,
+        ...config,
+        items,
+      };
+    });
+  }, [dashboardDelayYear, dashboardFilteredControls]);
+  const selectedDashboardDelayBucket =
+    dashboardAnnualDelayBuckets.find((bucket) => bucket.key === dashboardDelayDetailKey)
+    ?? dashboardAnnualDelayBuckets[0]
+    ?? null;
   const controlProgressGroups = useMemo(() => {
     const grouped = dashboardFilteredControls.reduce((acc, control) => {
       const frequency = control.frequency || "미지정";
@@ -2306,14 +2509,20 @@ export default function App() {
     () =>
       controls.filter(
         (control) =>
-          String(control.executionNote ?? "").trim().length > 0
+          Boolean(control.executionSubmitted)
+          && hasExecutionContent(control)
           && String(control.reviewChecked ?? "미검토") === "미검토",
       ),
     [controls],
   );
   const reviewPendingCount = useMemo(
-    () => reviewQueueControls.length,
-    [reviewQueueControls],
+    () => controls.filter(
+      (control) =>
+        Boolean(control.executionSubmitted)
+        && hasExecutionContent(control)
+        && String(control.reviewChecked ?? "미검토") === "미검토",
+    ).length,
+    [controls],
   );
   const reviewVisibleControls =
     reviewUnitFilter === "전체"
@@ -2329,7 +2538,12 @@ export default function App() {
     reviewVisibleControls.find((control) => control.id === selectedControlId)
     ?? reviewPagedControls[0]
     ?? null;
-
+  const canRecallReviewExecution =
+    !!selectedReviewControl
+    && normalizedAuthEmail.length > 0
+    && String(selectedReviewControl.executionAuthorEmail ?? "").trim().toLowerCase() === normalizedAuthEmail
+    && Boolean(selectedReviewControl.executionSubmitted)
+    && hasExecutionContent(selectedReviewControl);
   const menuItems = [
     { key: "dashboard", label: "대시보드", icon: <DashboardIcon /> },
     { key: "control-list", label: "통제 목록", icon: <ControlIcon /> },
@@ -2340,6 +2554,17 @@ export default function App() {
   ];
 
   function handleViewChange(nextView) {
+    if (nextView === "dashboard") {
+      setDashboardView("category");
+      setDashboardUnitFilter("전체");
+      setDashboardDelayFilter("전체");
+      setDashboardDelayYear(currentCalendarYear);
+    }
+    if (nextView === "control-list") {
+      setRegistrationCategoryFilter("전체");
+      setRegistrationListPage(1);
+      setRegistrationSelectedControlId(controls[0]?.id ?? "");
+    }
     if (nextView === "control-workbench") {
       setWorkbenchTab("register");
       setRegistrationCategoryFilter("전체");
@@ -2348,6 +2573,16 @@ export default function App() {
       setControlListPage(1);
       setRegistrationSelectedControlId(controls[0]?.id ?? "");
       setSelectedControlId(controls[0]?.id ?? "");
+    }
+    if (nextView === "report") {
+      setReportYear(currentCalendarYear);
+      setReportPeriod("annual");
+      setReportFormat("html");
+      setReportPreviewOpen(false);
+    }
+    if (nextView === "audit") {
+      setAuditLogQuery("");
+      setAuditLogPage(1);
     }
     setCurrentView(nextView);
     if (typeof window !== "undefined") {
@@ -2433,6 +2668,19 @@ export default function App() {
       window.scrollTo({ top: 0, behavior: "auto" });
     }
     writeAuditLog("MENU_OPEN", "control-workbench", `통제 관리 열람 · ${controlId || resolvedProcess}`);
+    if (window.matchMedia("(max-width: 960px)").matches) {
+      setIsSidebarOpen(false);
+    }
+  }
+
+  function openDashboardDelayDetail(delayKey) {
+    const resolvedKey = DASHBOARD_DELAY_BUCKET_CONFIG[delayKey] ? delayKey : "monthly";
+    setDashboardDelayDetailKey(resolvedKey);
+    setCurrentView("dashboard-delay-detail");
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
+    writeAuditLog("MENU_OPEN", "dashboard-delay-detail", `${DASHBOARD_DELAY_BUCKET_CONFIG[resolvedKey].label} 상세 열람`);
     if (window.matchMedia("(max-width: 960px)").matches) {
       setIsSidebarOpen(false);
     }
@@ -2584,9 +2832,19 @@ export default function App() {
   useEffect(() => {
     setEvidenceInputCount(1);
     setAssignmentExecutionNote(selectedControl?.executionNote ?? "");
+    setAssignmentExecutionYear(selectedControl?.executionYear ?? "");
+    setAssignmentExecutionPeriod(selectedControl?.executionPeriod ?? "");
     setAssignmentReviewer(selectedControl?.reviewer ?? selectedControl?.reviewDept ?? "");
     setAssignmentReviewChecked(selectedControl?.reviewChecked ?? "미검토");
-  }, [selectedControlId, selectedControl?.executionNote, selectedControl?.reviewChecked, selectedControl?.reviewDept, selectedControl?.reviewer]);
+  }, [
+    selectedControlId,
+    selectedControl?.executionNote,
+    selectedControl?.executionPeriod,
+    selectedControl?.executionYear,
+    selectedControl?.reviewChecked,
+    selectedControl?.reviewDept,
+    selectedControl?.reviewer,
+  ]);
 
   useEffect(() => {
     if (!HAS_REMOTE_BACKEND) {
@@ -2774,6 +3032,7 @@ export default function App() {
 
   function buildReportMarkup() {
     const periodLabel = reportPeriodConfig[reportPeriod]?.label ?? "주기";
+    const reportTitle = `${reportYear}년 ${periodLabel} 수행 리포트`;
     const toMultilineHtml = (value) => {
       const normalized = String(value ?? "").replace(/\r\n/g, "\n");
       if (!normalized.trim()) {
@@ -2813,7 +3072,7 @@ export default function App() {
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
-  <title>${periodLabel} 수행 리포트</title>
+  <title>${reportTitle}</title>
   <style>
     @page { size: A4 landscape; margin: 8mm; }
     * { box-sizing: border-box; }
@@ -2841,7 +3100,7 @@ export default function App() {
   </style>
 </head>
 <body>
-  <h1>${periodLabel} 수행 리포트</h1>
+  <h1>${reportTitle}</h1>
   <p>생성 시각: ${formatSeoulDateTime(new Date())}</p>
   <div class="summary">
     <div><span>전체</span><strong>${reportSummary.total}건</strong></div>
@@ -2919,7 +3178,7 @@ export default function App() {
     const markup = buildReportMarkup();
     setReportPreviewMarkup(markup);
     setReportPreviewOpen(true);
-    writeAuditLog("REPORT_VIEWED", reportPeriod, `${periodLabel} 수행 리포트 미리보기`);
+    writeAuditLog("REPORT_VIEWED", `${reportYear}-${reportPeriod}`, `${reportYear}년 ${periodLabel} 수행 리포트 미리보기`);
   }
 
   function handlePrintReportPreview() {
@@ -2933,8 +3192,8 @@ export default function App() {
     frameWindow.print();
     writeAuditLog(
       reportFormat === "html" ? "REPORT_HTML_EXPORTED" : "REPORT_PDF_PRINTED",
-      reportPeriod,
-      `${periodLabel} 수행 리포트 ${reportFormat === "html" ? "HTML 출력" : "PDF 출력"}`,
+      `${reportYear}-${reportPeriod}`,
+      `${reportYear}년 ${periodLabel} 수행 리포트 ${reportFormat === "html" ? "HTML 출력" : "PDF 출력"}`,
     );
   }
 
@@ -3502,9 +3761,28 @@ export default function App() {
       .getAll("evidenceFiles")
       .filter((value) => value instanceof File && value.size > 0);
     const executionNote = formData.get("executionNote").toString().trim();
+    const executionYear = formData.get("executionYear").toString().trim();
+    const executionPeriod = formData.get("executionPeriod").toString().trim();
+    const executionAuthorName = String(authUser?.name ?? "").trim();
+    const executionAuthorEmail = normalizedAuthEmail;
     const status = executionNote ? "점검 중" : "점검 예정";
     let nextEvidenceFiles = selectedControl.evidenceFiles ?? [];
     let uploaded = false;
+
+    if (!executionAuthorEmail) {
+      showCenterAlert("로그인 계정 정보를 확인할 수 없어 수행 내역을 저장할 수 없습니다.");
+      return;
+    }
+
+    if (!executionYear) {
+      showCenterAlert("년도는 필수입니다.");
+      return;
+    }
+
+    if (!executionPeriod) {
+      showCenterAlert("주기는 필수입니다.");
+      return;
+    }
 
     if (!executionNote && files.length === 0) {
       showCenterAlert("수행 내역 또는 증적 파일을 입력하세요.");
@@ -3554,7 +3832,16 @@ export default function App() {
               ...control,
               status,
               executionNote,
+              executionYear,
+              executionPeriod,
+              executionSubmitted: true,
+              executionAuthorName,
+              executionAuthorEmail,
               reviewChecked: "미검토",
+              note: "",
+              reviewResult: "",
+              reviewAuthorName: "",
+              reviewAuthorEmail: "",
               evidenceFiles: nextEvidenceFiles,
               evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
             }
@@ -3563,6 +3850,48 @@ export default function App() {
     };
     writeAuditLog("EXECUTION_SAVED", selectedControl.id, `${selectedControl.title} 수행 내역 저장`, nextWorkspace);
     setExecutionSavePopupOpen(true);
+  }
+
+  async function handleAssignmentRecall(controlOverride = null) {
+    const targetControl = controlOverride ?? selectedControl;
+    if (!targetControl) {
+      return;
+    }
+    const canRecall =
+      normalizedAuthEmail.length > 0
+      && String(targetControl.executionAuthorEmail ?? "").trim().toLowerCase() === normalizedAuthEmail
+      && Boolean(targetControl.executionSubmitted)
+      && hasExecutionContent(targetControl);
+    if (!canRecall) {
+      showCenterAlert("수행 등록 회수는 해당 수행 등록 작성자만 가능합니다.");
+      return;
+    }
+
+    const confirmed = await showCenterConfirm(`${targetControl.title} 수행 등록을 회수할까요?`);
+    if (!confirmed) {
+      return;
+    }
+
+    const nextWorkspace = {
+      ...workspace,
+      controls: controls.map((control) =>
+        control.id === targetControl.id
+          ? {
+              ...control,
+              status: deriveAssignmentStatus(control.executionNote ?? "", "미검토"),
+              executionSubmitted: false,
+              reviewChecked: "미검토",
+              note: "",
+              reviewResult: "",
+              reviewAuthorName: "",
+              reviewAuthorEmail: "",
+            }
+          : control,
+      ),
+    };
+
+    writeAuditLog("EXECUTION_RECALLED", targetControl.id, `${targetControl.title} 수행 등록 회수`, nextWorkspace);
+    showCenterAlert("수행 등록을 회수했습니다.");
   }
 
   function handleReviewSubmit(event) {
@@ -3578,9 +3907,15 @@ export default function App() {
     const reviewDecision = formData.get("reviewDecision").toString();
     const reviewNote = formData.get("reviewNote").toString().trim();
     const reviewChecked = reviewDecision === "양호" ? "검토 완료" : "반려";
+    const reviewAuthorName = String(authUser?.name ?? "").trim();
+    const reviewAuthorEmail = normalizedAuthEmail;
 
     if (!reviewer) {
       showCenterAlert("검토 부서/검토자를 입력하세요.");
+      return;
+    }
+    if (!reviewAuthorEmail) {
+      showCenterAlert("로그인 계정 정보를 확인할 수 없어 검토를 저장할 수 없습니다.");
       return;
     }
 
@@ -3597,6 +3932,8 @@ export default function App() {
               status,
               note: reviewNote,
               reviewResult: reviewDecision,
+              reviewAuthorName,
+              reviewAuthorEmail,
             }
           : control,
       ),
@@ -3835,7 +4172,7 @@ export default function App() {
             로그아웃
           </button>
         </div>
-        <main className="layout">
+        <main className={isWorkbenchView || currentView === "register" || currentView === "controls" || currentView === "control-review" ? "layout workbench-layout" : "layout"}>
           {currentView === "dashboard" ? (
             <>
               <section className={`dashboard-card control-progress-section dashboard-view-${dashboardView}`}>
@@ -3895,6 +4232,19 @@ export default function App() {
                   <div>
                     <h2>대시보드</h2>
                   </div>
+                </div>
+                <div className="control-progress-summary-grid dashboard-delay-summary-grid">
+                  {dashboardAnnualDelayBuckets.map((bucket) => (
+                    <button
+                      type="button"
+                      className="control-progress-summary-card dashboard-delay-summary-card"
+                      key={bucket.key}
+                      onClick={() => openDashboardDelayDetail(bucket.key)}
+                    >
+                      <span>{bucket.label}</span>
+                      <strong>{bucket.items.length}건</strong>
+                    </button>
+                  ))}
                 </div>
                 <div className="control-progress-summary-grid">
                   {dashboardSummaryCards.map((card) => (
@@ -4061,30 +4411,107 @@ export default function App() {
             </>
           ) : null}
 
+          {currentView === "dashboard-delay-detail" ? (
+            <section className="compact-stack">
+              <article className="panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>연 기준 지연 통제 상세</h2>
+                    <p className="detail-purpose">
+                      {`${dashboardDelayYear}년 기준, 현재 날짜까지 도래했지만 미완료인 지연 항목을 월/분기/반기/연 단위로 표시합니다.`}
+                    </p>
+                  </div>
+                  <div className="execution-filter-actions">
+                    <label className="registration-filter-field">
+                      <span>연도</span>
+                      <select value={dashboardDelayYear} onChange={(event) => setDashboardDelayYear(event.target.value)}>
+                        {dashboardDelayYearOptions.map((year) => (
+                          <option key={year} value={year}>{year}년</option>
+                        ))}
+                      </select>
+                    </label>
+                    <button className="secondary-button slim-button" type="button" onClick={() => setCurrentView("dashboard")}>
+                      대시보드로 돌아가기
+                    </button>
+                  </div>
+                </div>
+                <div className="detail-tabs dashboard-tabs">
+                  {dashboardAnnualDelayBuckets.map((bucket) => (
+                    <button
+                      type="button"
+                      key={bucket.key}
+                      className={dashboardDelayDetailKey === bucket.key ? "tab-button active" : "tab-button"}
+                      onClick={() => setDashboardDelayDetailKey(bucket.key)}
+                    >
+                      {bucket.label}
+                      <span className="tab-pending-badge">{bucket.items.length}</span>
+                    </button>
+                  ))}
+                </div>
+                {selectedDashboardDelayBucket?.items?.length ? (
+                  <div className="control-progress-list dashboard-delay-detail-list">
+                    {selectedDashboardDelayBucket.items.map((item) => (
+                      <button
+                        type="button"
+                        className={`control-progress-card tone-${toDashboardAnchor(selectedDashboardDelayBucket.key)}`}
+                        key={`${selectedDashboardDelayBucket.key}-${item.id}`}
+                        onClick={() => openControlOperation(item.id, item.process)}
+                      >
+                        <div className="control-progress-head">
+                          <strong>{item.id}</strong>
+                          <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
+                        </div>
+                        <p>{item.title}</p>
+                        <small>{item.process} · {item.frequency}</small>
+                        <small>지연 기간 · {item.overduePeriod}</small>
+                        <small>수행 부서 · {item.performer}</small>
+                        <small>
+                          최근 등록 · {item.executionYear ? `${item.executionYear}년` : "-"} {item.executionPeriod || ""}
+                        </small>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="panel empty-selection-panel dashboard-delay-empty">
+                    <p className="eyebrow">{selectedDashboardDelayBucket?.label ?? "지연 상세"}</p>
+                    <h2>해당 조건의 지연 통제가 없습니다.</h2>
+                    <p className="detail-purpose">유닛 필터나 지연 필터 조건을 바꾸면 다시 집계됩니다.</p>
+                  </div>
+                )}
+              </article>
+            </section>
+          ) : null}
+
           {isWorkbenchView ? (
             <section className="panel workbench-tabs-panel">
               <div className="detail-tabs">
                 <button
                   type="button"
-                  className={workbenchTab === "register" ? "tab-button active" : "tab-button"}
+                  className={workbenchTab === "register" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
                   onClick={() => handleWorkbenchTabChange("register")}
                 >
-                  통제 등록/수정
+                  <span className="workbench-tab-label">통제 등록/수정</span>
+                  <span className="workbench-tab-badge-slot" aria-hidden="true" />
                 </button>
                 <button
                   type="button"
-                  className={workbenchTab === "controls" ? "tab-button active" : "tab-button"}
+                  className={workbenchTab === "controls" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
                   onClick={() => handleWorkbenchTabChange("controls")}
                 >
-                  통제 수행 등록
+                  <span className="workbench-tab-label">통제 수행 등록</span>
+                  <span className="workbench-tab-badge-slot">
+                    {controlExecutionDraftCount > 0 ? <span className="tab-pending-badge tab-pending-badge-draft">{controlExecutionDraftCount}</span> : null}
+                  </span>
                 </button>
                 <button
                   type="button"
-                  className={workbenchTab === "control-review" ? "tab-button active" : "tab-button"}
+                  className={workbenchTab === "control-review" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
                   onClick={() => handleWorkbenchTabChange("control-review")}
                 >
-                  통제 검토
-                  {reviewPendingCount > 0 ? <span className="tab-pending-badge">{reviewPendingCount}</span> : null}
+                  <span className="workbench-tab-label">통제 검토</span>
+                  <span className="workbench-tab-badge-slot">
+                    {reviewPendingCount > 0 ? <span className="tab-pending-badge">{reviewPendingCount}</span> : null}
+                  </span>
                 </button>
               </div>
             </section>
@@ -4521,13 +4948,25 @@ export default function App() {
                   <div>
                     <h2>통제 항목 목록</h2>
                   </div>
-                  <label className="filter-label">
-                    <select value={controlUnitFilter} onChange={(event) => { setControlUnitFilter(event.target.value); setControlListPage(1); }}>
-                      {CONTROL_UNIT_FILTER_OPTIONS.map((option) => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
-                  </label>
+                  <div className="execution-filter-actions">
+                    <button
+                      type="button"
+                      className={controlExecutionFilter === "작성중" ? "execution-draft-filter active" : "execution-draft-filter"}
+                      onClick={() => {
+                        setControlExecutionFilter((current) => (current === "작성중" ? "전체" : "작성중"));
+                        setControlListPage(1);
+                      }}
+                    >
+                      작성중 {controlExecutionDraftCount}건
+                    </button>
+                    <label className="filter-label">
+                      <select value={controlUnitFilter} onChange={(event) => { setControlUnitFilter(event.target.value); setControlListPage(1); }}>
+                        {CONTROL_UNIT_FILTER_OPTIONS.map((option) => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
                 </div>
                 <div className="control-list">
                   {limitedControls.map((control) => {
@@ -4547,9 +4986,16 @@ export default function App() {
                     >
                         <div className="registration-example-head">
                           <strong>{control.id}</strong>
-                          <span className={`status-badge ${isKeyControl(control.keyControl) ? "key-badge" : "normal-badge"}`}>
-                            {isKeyControl(control.keyControl) ? "Key" : "Normal"}
-                          </span>
+                          <div className="badge-row">
+                            <span className={`status-badge ${isKeyControl(control.keyControl) ? "key-badge" : "normal-badge"}`}>
+                              {isKeyControl(control.keyControl) ? "Key" : "Normal"}
+                            </span>
+                            {control.reviewAuthorName || control.reviewAuthorEmail ? (
+                              <span className="status-badge normal-badge">
+                                작성자
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                         <p>{control.title}</p>
                       </button>
@@ -4570,18 +5016,20 @@ export default function App() {
                 </div>
               </article>
 
-              <div className="control-main control-execution-panel">
+              <div className="control-main control-execution-panel execution-tight-stack">
                 {selectedControl ? (
                   <>
-                    <article className="panel registration-section-card">
+                    <article className="panel registration-section-card guide-scroll-card">
                       <div className="registration-section-head">
                         <h2>통제 등록 작성 가이드</h2>
                       </div>
-                      <ul className="registration-guide-list">
-                        {registrationWritingGuide.map((item) => (
-                          <li key={item}>{item}</li>
-                        ))}
-                      </ul>
+                      <div className="guide-scroll-body">
+                        <ul className="registration-guide-list">
+                          {registrationWritingGuide.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
                     </article>
                     <article className="panel detail-hero execution-detail-panel">
                       <div className="detail-title-row">
@@ -4590,7 +5038,7 @@ export default function App() {
                         </div>
                         <div className="badge-row">
                           <span className={`status-badge ${statusClass(selectedControl.status)}`}>{selectedControl.status}</span>
-                          <span className={`status-badge ${evidenceClass(selectedControl.evidenceStatus)}`}>{selectedControl.evidenceStatus}</span>
+                          <span className={`status-badge ${evidenceClass(selectedControl.evidenceStatus)}`}>{evidenceBadgeLabel(selectedControl)}</span>
                           <span className="status-badge unit-assignee-badge">
                             수행: {selectedControl.performDept ?? selectedControl.performer ?? "-"}
                           </span>
@@ -4623,6 +5071,34 @@ export default function App() {
                         </div>
                       </div>
                       <form className="stack-form execution-form" onSubmit={handleAssignmentSubmit}>
+                        <div className="execution-form-item execution-inline-select-row">
+                          <div className="execution-inline-select-controls">
+                            <span className="execution-inline-label">년도:</span>
+                            <select
+                              name="executionYear"
+                              value={assignmentExecutionYear}
+                              onChange={(event) => setAssignmentExecutionYear(event.target.value)}
+                              required
+                            >
+                              <option value="">년도 선택</option>
+                              {executionYearOptions.map((year) => (
+                                <option key={year} value={year}>{year}년</option>
+                              ))}
+                            </select>
+                            <span className="execution-inline-label">주기:</span>
+                            <select
+                              name="executionPeriod"
+                              value={assignmentExecutionPeriod}
+                              onChange={(event) => setAssignmentExecutionPeriod(event.target.value)}
+                              required
+                            >
+                              <option value="">주기 선택</option>
+                              {executionPeriodOptions.map((period) => (
+                                <option key={period} value={period}>{period}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
                         <label className="execution-form-item">
                           수행 내역
                           <textarea
@@ -4700,18 +5176,20 @@ export default function App() {
                           <p className="field-help">현재는 업로드 URL 미설정 상태라 파일명이 먼저 저장됩니다.</p>
                         ) : null}
                         <div className="execution-form-item execution-form-action">
-                          <button className="primary-button" type="submit" disabled={!canOperateControl}>수행 내역 저장</button>
+                          <button className="primary-button" type="submit" disabled={!canSubmitAssignment}>수행 내역 저장</button>
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={handleAssignmentRecall}
+                            disabled={!canRecallSelectedExecution}
+                          >
+                            수행 등록 회수
+                          </button>
                         </div>
                       </form>
                     </article>
                   </>
-                ) : (
-                  <article className="panel detail-hero empty-selection-panel">
-                    <p className="eyebrow">Selected Control</p>
-                    <h2>통제 항목을 선택하세요</h2>
-                    <p className="detail-purpose">기본 화면은 등록 상태로 열리고, 목록에서 통제를 선택하면 상세와 처리 플로우가 표시됩니다.</p>
-                  </article>
-                )}
+                ) : null}
               </div>
             </section>
           ) : null}
@@ -4751,9 +5229,16 @@ export default function App() {
                       >
                         <div className="registration-example-head">
                           <strong>{control.id}</strong>
-                          <span className={`status-badge ${isKeyControl(control.keyControl) ? "key-badge" : "normal-badge"}`}>
-                            {isKeyControl(control.keyControl) ? "Key" : "Normal"}
-                          </span>
+                          <div className="badge-row">
+                            <span className={`status-badge ${isKeyControl(control.keyControl) ? "key-badge" : "normal-badge"}`}>
+                              {isKeyControl(control.keyControl) ? "Key" : "Normal"}
+                            </span>
+                            {control.reviewAuthorName || control.reviewAuthorEmail ? (
+                              <span className="status-badge normal-badge">
+                                작성자
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                         <p>{control.title}</p>
                       </button>
@@ -4776,16 +5261,18 @@ export default function App() {
                 ) : null}
               </article>
 
-              <div className="control-main control-execution-panel">
-              <article className="panel registration-section-card">
+              <div className="control-main review-tight-stack">
+              <article className="panel registration-section-card guide-scroll-card review-guide-card">
                 <div className="registration-section-head">
                   <h2>감사 관점의 등록 품질 체크</h2>
                 </div>
-                <ul className="registration-guide-list">
-                  {registrationQualityGuide.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
+                <div className="guide-scroll-body">
+                  <ul className="registration-guide-list">
+                    {registrationQualityGuide.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
               </article>
               <article className="panel detail-hero control-review-panel">
                 {selectedReviewControl ? (
@@ -4796,7 +5283,7 @@ export default function App() {
                       </div>
                       <div className="badge-row">
                         <span className={`status-badge ${statusClass(selectedReviewControl.status)}`}>{selectedReviewControl.status}</span>
-                        <span className={`status-badge ${evidenceClass(selectedReviewControl.evidenceStatus)}`}>{selectedReviewControl.evidenceStatus}</span>
+                        <span className={`status-badge ${evidenceClass(selectedReviewControl.evidenceStatus)}`}>{evidenceBadgeLabel(selectedReviewControl, "review")}</span>
                         <span className="status-badge unit-assignee-badge">
                           수행: {selectedReviewControl.performDept ?? selectedReviewControl.performer ?? "-"}
                         </span>
@@ -4804,6 +5291,15 @@ export default function App() {
                     </div>
                     <p className="detail-purpose">{selectedReviewControl.id} · {selectedReviewControl.title}</p>
                     <div className="detail-meta-grid execution-meta-grid review-detail-grid">
+                      <div className="execution-meta-item review-row-full review-compact-meta-item">
+                        <div className="detail-body-text review-compact-meta-line">
+                          <span className="review-meta-chip review-meta-year">년도: {selectedReviewControl.executionYear ? `${selectedReviewControl.executionYear}년` : "-"}</span>
+                          <span className="review-meta-separator">|</span>
+                          <span className="review-meta-chip review-meta-period">주기: {selectedReviewControl.executionPeriod || "-"}</span>
+                          <span className="review-meta-separator">|</span>
+                          <span className="review-meta-chip review-meta-owner">통제 수행자: {selectedReviewControl.executionAuthorName || selectedReviewControl.executionAuthorEmail || "-"}</span>
+                        </div>
+                      </div>
                       <div className="execution-meta-item">
                         <span>테스트 방법</span>
                         <span className="detail-body-text">
@@ -4874,6 +5370,14 @@ export default function App() {
                         </label>
                       </div>
                       <div className="execution-form-item execution-form-action">
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => handleAssignmentRecall(selectedReviewControl)}
+                          disabled={!canRecallReviewExecution}
+                        >
+                          수행 등록 회수
+                        </button>
                         <button className="primary-button" type="submit" disabled={!canOperateControl}>검토 저장</button>
                       </div>
                     </form>
@@ -5000,6 +5504,14 @@ export default function App() {
                 </div>
 
                 <div className="report-toolbar">
+                  <label className="registration-filter-field">
+                    <span>연도</span>
+                    <select value={reportYear} onChange={(event) => setReportYear(event.target.value)}>
+                      {reportYearOptions.map((year) => (
+                        <option key={year} value={year}>{year}년</option>
+                      ))}
+                    </select>
+                  </label>
                   <label className="registration-filter-field">
                     <span>주기</span>
                     <select value={reportPeriod} onChange={(event) => setReportPeriod(event.target.value)}>

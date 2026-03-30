@@ -52,6 +52,51 @@ function normalizeDate(dateLike) {
   return value.slice(0, 10);
 }
 
+function deriveExecutionYear(dateLike) {
+  const normalized = normalizeDate(dateLike);
+  if (!normalized) {
+    return "";
+  }
+  return normalized.slice(0, 4);
+}
+
+function deriveExecutionPeriod(dateLike, frequency) {
+  const normalized = normalizeDate(dateLike);
+  if (!normalized) {
+    return "";
+  }
+
+  const month = Number(normalized.slice(5, 7));
+  const day = Number(normalized.slice(8, 10));
+  const normalizedFrequency = String(frequency ?? "").trim().toLowerCase();
+
+  if (!Number.isFinite(month) || month < 1 || month > 12) {
+    return "";
+  }
+  if (normalizedFrequency === "monthly" || normalizedFrequency === "월별") {
+    return `${month}월`;
+  }
+  if (normalizedFrequency === "quarterly" || normalizedFrequency === "분기별") {
+    return `${Math.ceil(month / 3)}분기`;
+  }
+  if (normalizedFrequency === "half-bi-annual" || normalizedFrequency === "반기별") {
+    return month <= 6 ? "상반기" : "하반기";
+  }
+  if (normalizedFrequency === "annual" || normalizedFrequency === "연 1회 + 변경 시") {
+    return "연간";
+  }
+  if (normalizedFrequency === "weekly" || normalizedFrequency === "주별") {
+    return `${Math.ceil(day / 7)}주차`;
+  }
+  if (normalizedFrequency === "daily" || normalizedFrequency === "일별") {
+    return `${day}일`;
+  }
+  if (normalizedFrequency === "event driven" || normalizedFrequency === "이벤트 발생 시") {
+    return "수시";
+  }
+  return "";
+}
+
 function normalizeDomainList(raw) {
   const source = Array.isArray(raw) ? raw.join(",") : String(raw ?? "");
   return source
@@ -113,8 +158,15 @@ function mapControlToExecutionRow(control, nowIso) {
     last_updated_at: nowIso,
     execution_payload: {
       executionNote: control.executionNote ?? "",
+      executionYear: control.executionYear ?? "",
+      executionPeriod: control.executionPeriod ?? "",
+      executionSubmitted: Boolean(control.executionSubmitted),
+      executionAuthorName: control.executionAuthorName ?? "",
+      executionAuthorEmail: control.executionAuthorEmail ?? "",
       note: control.note ?? "",
       reviewer: control.reviewer ?? control.reviewDept ?? "",
+      reviewAuthorName: control.reviewAuthorName ?? "",
+      reviewAuthorEmail: control.reviewAuthorEmail ?? "",
     },
     updated_at: nowIso,
   };
@@ -376,6 +428,27 @@ export async function fetchSupabaseWorkspace() {
       population: payload.population ?? row.control_description ?? "",
       note: execution?.review_note ?? payload.note ?? "",
       executionNote: execution?.execution_note ?? payload.executionNote ?? "",
+      executionYear:
+        execution?.execution_payload?.executionYear
+        ?? payload.executionYear
+        ?? deriveExecutionYear(execution?.execution_date),
+      executionPeriod:
+        execution?.execution_payload?.executionPeriod
+        ?? payload.executionPeriod
+        ?? deriveExecutionPeriod(execution?.execution_date, row.frequency),
+      executionSubmitted:
+        typeof (execution?.execution_payload?.executionSubmitted ?? payload.executionSubmitted) === "boolean"
+          ? (execution?.execution_payload?.executionSubmitted ?? payload.executionSubmitted)
+          : undefined,
+      executionAuthorName:
+        execution?.execution_payload?.executionAuthorName
+        ?? payload.executionAuthorName
+        ?? execution?.performed_by
+        ?? row.perform_dept
+        ?? "",
+      executionAuthorEmail: execution?.execution_payload?.executionAuthorEmail ?? payload.executionAuthorEmail ?? "",
+      reviewAuthorName: execution?.execution_payload?.reviewAuthorName ?? payload.reviewAuthorName ?? "",
+      reviewAuthorEmail: execution?.execution_payload?.reviewAuthorEmail ?? payload.reviewAuthorEmail ?? "",
       evidenceFiles: evidenceByControlId.get(row.control_id) ?? payload.evidenceFiles ?? [],
     };
   });
