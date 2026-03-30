@@ -53,7 +53,7 @@ const DATA_BACKEND = (() => {
 
 const HAS_REMOTE_BACKEND = DATA_BACKEND !== "local";
 const VIEW_KEYS = ["dashboard", "dashboard-delay-detail", "control-list", "control-workbench", "report", "people", "audit", "register", "controls", "control-review", "roles"];
-const WORKBENCH_TAB_KEYS = ["register", "controls", "control-review"];
+const WORKBENCH_TAB_KEYS = ["register", "controls", "controls-complete", "control-review"];
 const UI_THEME_OPTIONS = [
   { value: "classic", label: "Classic" },
   { value: "editorial", label: "Editorial White" },
@@ -726,11 +726,194 @@ function buildActivityFromControl(control) {
   ].join("\n");
 }
 
+function executionPeriodSortValue(period) {
+  const value = String(period ?? "").trim();
+  const monthMatch = value.match(/^(\d{1,2})월$/);
+  if (monthMatch) {
+    return Number(monthMatch[1]);
+  }
+  const quarterMatch = value.match(/^(\d)분기$/);
+  if (quarterMatch) {
+    return Number(quarterMatch[1]) * 10;
+  }
+  if (value === "상반기") return 61;
+  if (value === "하반기") return 62;
+  if (value === "연간") return 120;
+  const weekMatch = value.match(/^(\d{1,2})주차$/);
+  if (weekMatch) {
+    return Number(weekMatch[1]);
+  }
+  const dayMatch = value.match(/^(\d{1,2})일$/);
+  if (dayMatch) {
+    return Number(dayMatch[1]);
+  }
+  return 0;
+}
+
+function compareExecutionEntriesDesc(left, right) {
+  const leftYear = Number.parseInt(String(left?.executionYear ?? ""), 10);
+  const rightYear = Number.parseInt(String(right?.executionYear ?? ""), 10);
+  const safeLeftYear = Number.isFinite(leftYear) ? leftYear : 0;
+  const safeRightYear = Number.isFinite(rightYear) ? rightYear : 0;
+  if (safeLeftYear !== safeRightYear) {
+    return safeRightYear - safeLeftYear;
+  }
+
+  const leftPeriod = executionPeriodSortValue(left?.executionPeriod);
+  const rightPeriod = executionPeriodSortValue(right?.executionPeriod);
+  if (leftPeriod !== rightPeriod) {
+    return rightPeriod - leftPeriod;
+  }
+
+  return String(right?.updatedAt ?? right?.createdAt ?? "").localeCompare(String(left?.updatedAt ?? left?.createdAt ?? ""), "ko");
+}
+
+function createExecutionEntryKey(controlId, executionYear, executionPeriod) {
+  return `${String(controlId ?? "").trim()}::${String(executionYear ?? "").trim()}::${String(executionPeriod ?? "").trim()}`;
+}
+
+function normalizeExecutionEntry(entry, fallbackControl = {}) {
+  return {
+    executionId: String(
+      entry?.executionId
+      ?? entry?.id
+      ?? createExecutionEntryKey(fallbackControl?.id, entry?.executionYear, entry?.executionPeriod),
+    ).trim(),
+    executionYear: String(entry?.executionYear ?? "").trim(),
+    executionPeriod: String(entry?.executionPeriod ?? "").trim(),
+    executionNote: String(entry?.executionNote ?? "").trim(),
+    executionSubmitted:
+      typeof entry?.executionSubmitted === "boolean"
+        ? entry.executionSubmitted
+        : hasExecutionEntryContent(entry),
+    executionAuthorName: String(entry?.executionAuthorName ?? "").trim(),
+    executionAuthorEmail: String(entry?.executionAuthorEmail ?? "").trim().toLowerCase(),
+    reviewChecked: String(entry?.reviewChecked ?? "미검토").trim() || "미검토",
+    reviewResult: String(entry?.reviewResult ?? "").trim(),
+    reviewAuthorName: String(entry?.reviewAuthorName ?? "").trim(),
+    reviewAuthorEmail: String(entry?.reviewAuthorEmail ?? "").trim().toLowerCase(),
+    note: String(entry?.note ?? "").trim(),
+    status: String(entry?.status ?? deriveAssignmentStatus(String(entry?.executionNote ?? "").trim(), String(entry?.reviewChecked ?? "미검토").trim() || "미검토")).trim(),
+    evidenceFiles: Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : [],
+    evidenceStatus:
+      String(entry?.evidenceStatus ?? "").trim()
+      || ((Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0 ? "준비 완료" : "미수집"),
+    updatedAt: String(entry?.updatedAt ?? "").trim(),
+    createdAt: String(entry?.createdAt ?? "").trim(),
+  };
+}
+
+function buildLegacyExecutionEntry(control) {
+  if (!hasExecutionEntryContent(control) && !String(control?.executionAuthorEmail ?? "").trim() && !String(control?.reviewAuthorEmail ?? "").trim()) {
+    return null;
+  }
+  return normalizeExecutionEntry({
+    executionId: createExecutionEntryKey(control?.id, control?.executionYear, control?.executionPeriod),
+    executionYear: control?.executionYear,
+    executionPeriod: control?.executionPeriod,
+    executionNote: control?.executionNote,
+    executionSubmitted: control?.executionSubmitted,
+    executionAuthorName: control?.executionAuthorName,
+    executionAuthorEmail: control?.executionAuthorEmail,
+    reviewChecked: control?.reviewChecked,
+    reviewResult: control?.reviewResult,
+    reviewAuthorName: control?.reviewAuthorName,
+    reviewAuthorEmail: control?.reviewAuthorEmail,
+    note: control?.note,
+    status: control?.status,
+    evidenceFiles: control?.evidenceFiles,
+    evidenceStatus: control?.evidenceStatus,
+  }, control);
+}
+
+function getControlExecutionHistory(control) {
+  const source = Array.isArray(control?.executionHistory) ? control.executionHistory : [];
+  const normalized = source
+    .map((entry) => normalizeExecutionEntry(entry, control))
+    .filter((entry) => hasExecutionEntryContent(entry) || entry.executionSubmitted || entry.executionAuthorEmail || entry.reviewAuthorEmail);
+
+  if (normalized.length > 0) {
+    return normalized.sort(compareExecutionEntriesDesc);
+  }
+
+  const legacyEntry = buildLegacyExecutionEntry(control);
+  return legacyEntry ? [legacyEntry] : [];
+}
+
+function hasExecutionEntryContent(entry) {
+  return (
+    String(entry?.executionNote ?? "").trim().length > 0
+    || String(entry?.executionYear ?? "").trim().length > 0
+    || String(entry?.executionPeriod ?? "").trim().length > 0
+    || ((Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0)
+  );
+}
+
+function isExecutionReadyForCompletion(entry) {
+  return (
+    String(entry?.executionNote ?? "").trim().length > 0
+    && (Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0
+  );
+}
+
+function hasDraftExecutionEntry(control) {
+  return getControlExecutionHistory(control).some(
+    (entry) =>
+      !entry?.executionSubmitted
+      && (
+        String(entry?.executionNote ?? "").trim().length > 0
+        || (Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0
+      ),
+  );
+}
+
+function getPreferredExecutionEntry(control, fallbackEntry = null, match = null) {
+  const history = getControlExecutionHistory(control);
+  if (match?.executionYear && match?.executionPeriod) {
+    const matched = history.find((entry) =>
+      entry.executionYear === String(match.executionYear).trim()
+      && entry.executionPeriod === String(match.executionPeriod).trim(),
+    );
+    if (matched) {
+      return matched;
+    }
+  }
+  return history[0] ?? fallbackEntry;
+}
+
+function mergeExecutionHistoryIntoControl(control, nextHistory, preferredMatch = null) {
+  const normalizedHistory = (Array.isArray(nextHistory) ? nextHistory : [])
+    .map((entry) => normalizeExecutionEntry(entry, control))
+    .sort(compareExecutionEntriesDesc);
+  const preferredEntry = getPreferredExecutionEntry({ ...control, executionHistory: normalizedHistory }, normalizedHistory[0] ?? null, preferredMatch);
+
+  return normalizeControl({
+    ...control,
+    executionHistory: normalizedHistory,
+    executionNote: preferredEntry?.executionNote ?? "",
+    executionYear: preferredEntry?.executionYear ?? "",
+    executionPeriod: preferredEntry?.executionPeriod ?? "",
+    executionSubmitted: preferredEntry?.executionSubmitted ?? false,
+    executionAuthorName: preferredEntry?.executionAuthorName ?? "",
+    executionAuthorEmail: preferredEntry?.executionAuthorEmail ?? "",
+    reviewChecked: preferredEntry?.reviewChecked ?? "미검토",
+    reviewResult: preferredEntry?.reviewResult ?? "",
+    reviewAuthorName: preferredEntry?.reviewAuthorName ?? "",
+    reviewAuthorEmail: preferredEntry?.reviewAuthorEmail ?? "",
+    note: preferredEntry?.note ?? "",
+    status: preferredEntry?.status ?? "점검 예정",
+    evidenceFiles: preferredEntry?.evidenceFiles ?? [],
+    evidenceStatus: preferredEntry?.evidenceStatus ?? "미수집",
+  });
+}
+
 function normalizeControl(control) {
   const catalog = controlCatalog[control.id] ?? {};
   const performDept = control.performDept ?? control.performer ?? control.ownerDept ?? "";
   const reviewDept = control.reviewDept ?? control.reviewer ?? "";
-    const hasExecutionContentValue = hasExecutionContent(control);
+  const normalizedHistory = getControlExecutionHistory(control);
+  const activeExecution = getPreferredExecutionEntry(control, normalizedHistory[0] ?? null);
+  const hasExecutionContentValue = normalizedHistory.some((entry) => hasExecutionEntryContent(entry));
   const normalizedSystems =
     uniqueSystems(control.targetSystems ?? catalog.targetSystems).length > 0
       ? uniqueSystems(control.targetSystems ?? catalog.targetSystems)
@@ -769,14 +952,28 @@ function normalizeControl(control) {
     testMethod: control.testMethod ?? "",
     policyReference: control.policyReference ?? "",
     deficiencyImpact: control.deficiencyImpact ?? "",
-    executionYear: String(control.executionYear ?? "").trim(),
-    executionPeriod: String(control.executionPeriod ?? "").trim(),
-    executionSubmitted: typeof control.executionSubmitted === "boolean" ? control.executionSubmitted : hasExecutionContentValue,
-    executionAuthorName: String(control.executionAuthorName ?? "").trim(),
-    executionAuthorEmail: String(control.executionAuthorEmail ?? "").trim().toLowerCase(),
-    reviewAuthorName: String(control.reviewAuthorName ?? "").trim(),
-    reviewAuthorEmail: String(control.reviewAuthorEmail ?? "").trim().toLowerCase(),
-    evidenceFiles: Array.isArray(control.evidenceFiles) ? control.evidenceFiles : [],
+    executionNote: String(activeExecution?.executionNote ?? control.executionNote ?? "").trim(),
+    executionYear: String(activeExecution?.executionYear ?? control.executionYear ?? "").trim(),
+    executionPeriod: String(activeExecution?.executionPeriod ?? control.executionPeriod ?? "").trim(),
+    executionSubmitted:
+      typeof activeExecution?.executionSubmitted === "boolean"
+        ? activeExecution.executionSubmitted
+        : typeof control.executionSubmitted === "boolean"
+          ? control.executionSubmitted
+          : hasExecutionContentValue,
+    executionAuthorName: String(activeExecution?.executionAuthorName ?? control.executionAuthorName ?? "").trim(),
+    executionAuthorEmail: String(activeExecution?.executionAuthorEmail ?? control.executionAuthorEmail ?? "").trim().toLowerCase(),
+    reviewAuthorName: String(activeExecution?.reviewAuthorName ?? control.reviewAuthorName ?? "").trim(),
+    reviewAuthorEmail: String(activeExecution?.reviewAuthorEmail ?? control.reviewAuthorEmail ?? "").trim().toLowerCase(),
+    reviewChecked: String(activeExecution?.reviewChecked ?? control.reviewChecked ?? "미검토").trim() || "미검토",
+    reviewResult: String(activeExecution?.reviewResult ?? control.reviewResult ?? "").trim(),
+    note: String(activeExecution?.note ?? control.note ?? "").trim(),
+    status: String(activeExecution?.status ?? control.status ?? "점검 예정").trim() || "점검 예정",
+    evidenceFiles: Array.isArray(activeExecution?.evidenceFiles) ? activeExecution.evidenceFiles : Array.isArray(control.evidenceFiles) ? control.evidenceFiles : [],
+    evidenceStatus:
+      String(activeExecution?.evidenceStatus ?? control.evidenceStatus ?? "").trim()
+      || ((Array.isArray(activeExecution?.evidenceFiles) ? activeExecution.evidenceFiles : []).length > 0 ? "준비 완료" : "미수집"),
+    executionHistory: normalizedHistory,
     attributes: Array.isArray(control.attributes) ? control.attributes : [],
     evidences: Array.isArray(control.evidences) ? control.evidences.map((item) => convertLeadingNumberBulletsToCircled(item)) : [],
     procedures: Array.isArray(control.procedures) ? control.procedures : [],
@@ -784,12 +981,7 @@ function normalizeControl(control) {
 }
 
 function hasExecutionContent(control) {
-  return (
-    String(control?.executionNote ?? "").trim().length > 0
-    || String(control?.executionYear ?? "").trim().length > 0
-    || String(control?.executionPeriod ?? "").trim().length > 0
-    || ((Array.isArray(control?.evidenceFiles) ? control.evidenceFiles : []).length > 0)
-  );
+  return getControlExecutionHistory(control).some((entry) => hasExecutionEntryContent(entry));
 }
 
 function buildExecutionYearOptions(baseYear = new Date().getFullYear(), span = 5) {
@@ -1862,6 +2054,8 @@ export default function App() {
   const workspaceRef = useRef(workspace);
   const [currentView, setCurrentView] = useState(() => loadPersistedCurrentView());
   const [selectedControlId, setSelectedControlId] = useState("");
+  const [selectedCompletedExecutionKey, setSelectedCompletedExecutionKey] = useState("");
+  const [selectedReviewExecutionKey, setSelectedReviewExecutionKey] = useState("");
   const [processFilter, setProcessFilter] = useState("전체");
   const [controlUnitFilter, setControlUnitFilter] = useState("전체");
   const [controlExecutionFilter, setControlExecutionFilter] = useState("전체");
@@ -1888,7 +2082,13 @@ export default function App() {
   const [assignmentExecutionPeriod, setAssignmentExecutionPeriod] = useState("");
   const [assignmentReviewer, setAssignmentReviewer] = useState("");
   const [assignmentReviewChecked, setAssignmentReviewChecked] = useState("미검토");
+  const [assignmentPendingEvidenceCount, setAssignmentPendingEvidenceCount] = useState(0);
   const [assignmentReviewNote, setAssignmentReviewNote] = useState("");
+  const [completedEditMode, setCompletedEditMode] = useState(false);
+  const [completedEditNote, setCompletedEditNote] = useState("");
+  const [completedEditEvidenceFiles, setCompletedEditEvidenceFiles] = useState([]);
+  const [completedEvidenceInputCount, setCompletedEvidenceInputCount] = useState(1);
+  const [completedPendingEvidenceCount, setCompletedPendingEvidenceCount] = useState(0);
   const [dashboardView, setDashboardView] = useState("category");
   const [dashboardUnitFilter, setDashboardUnitFilter] = useState("전체");
   const [dashboardDelayFilter, setDashboardDelayFilter] = useState("전체");
@@ -1908,7 +2108,7 @@ export default function App() {
   const [reportPreviewOpen, setReportPreviewOpen] = useState(false);
   const [reportPreviewMarkup, setReportPreviewMarkup] = useState("");
   const [evidencePreviewFile, setEvidencePreviewFile] = useState(null);
-  const [executionSavePopupOpen, setExecutionSavePopupOpen] = useState(false);
+  const [executionSavePopupMessage, setExecutionSavePopupMessage] = useState("");
   const [memberSavePopupMessage, setMemberSavePopupMessage] = useState("");
   const [centerAlertMessage, setCenterAlertMessage] = useState("");
   const [centerConfirmMessage, setCenterConfirmMessage] = useState("");
@@ -1921,6 +2121,8 @@ export default function App() {
   }));
   const googleLoginRef = useRef(null);
   const reportPreviewFrameRef = useRef(null);
+  const assignmentFormRef = useRef(null);
+  const completedEditFormRef = useRef(null);
   const confirmResolverRef = useRef(null);
   const deletedMemberEmailSet = useMemo(() => new Set(deletedMemberEmails), [deletedMemberEmails]);
   const effectiveLoginDomains = useMemo(() => {
@@ -1985,6 +2187,22 @@ export default function App() {
       ...syncedPeople,
     ];
   }, [authUser, people, deletedMemberEmailSet]);
+  const memberNameByEmail = useMemo(
+    () =>
+      new Map(
+        memberDirectory
+          .map((person) => [String(person.email ?? "").trim().toLowerCase(), String(person.name ?? "").trim()])
+          .filter(([email, name]) => email && name),
+      ),
+    [memberDirectory],
+  );
+  const resolveExecutionAuthorName = (control) => {
+    const authorEmail = String(control?.executionAuthorEmail ?? "").trim().toLowerCase();
+    if (authorEmail && memberNameByEmail.has(authorEmail)) {
+      return memberNameByEmail.get(authorEmail);
+    }
+    return String(control?.executionAuthorName ?? "").trim() || "-";
+  };
   const currentAccessRole = normalizeAccessRole(
     memberDirectory.find((person) => person.email === authUser?.email)?.accessRole ?? "viewer",
   );
@@ -2070,7 +2288,7 @@ export default function App() {
       controlUnitFilter === "전체"
         ? true
         : toControlUnitFilterValue(control) === controlUnitFilter;
-    const hasDraft = !control.executionSubmitted && hasExecutionContent(control);
+    const hasDraft = hasDraftExecutionEntry(control);
     const matchesExecutionFilter =
       controlExecutionFilter === "작성중"
         ? hasDraft
@@ -2078,9 +2296,7 @@ export default function App() {
 
     return matchesUnit && matchesExecutionFilter;
   });
-  const controlExecutionDraftCount = controls.filter((control) =>
-    !control.executionSubmitted
-    && hasExecutionContent(control)).length;
+  const controlExecutionDraftCount = controls.filter((control) => hasDraftExecutionEntry(control)).length;
   const totalControlPages = Math.max(1, Math.ceil(visibleControls.length / listPageSize));
   const currentControlPage = Math.min(controlListPage, totalControlPages);
   const limitedControls = visibleControls.slice(
@@ -2115,16 +2331,29 @@ export default function App() {
     () => buildExecutionPeriodOptions(selectedControl?.frequency),
     [selectedControl?.frequency],
   );
+  const selectedAssignmentEntry = useMemo(
+    () => getPreferredExecutionEntry(
+      selectedControl,
+      null,
+      {
+        executionYear: assignmentExecutionYear,
+        executionPeriod: assignmentExecutionPeriod,
+      },
+    ),
+    [selectedControl, assignmentExecutionPeriod, assignmentExecutionYear],
+  );
   const canSubmitAssignment =
     canOperateControl
     && assignmentExecutionYear.trim().length > 0
-    && assignmentExecutionPeriod.trim().length > 0;
+    && assignmentExecutionPeriod.trim().length > 0
+    && assignmentExecutionNote.trim().length > 0
+    && assignmentPendingEvidenceCount > 0;
   const canRecallSelectedExecution =
     !!selectedControl
     && normalizedAuthEmail.length > 0
-    && String(selectedControl.executionAuthorEmail ?? "").trim().toLowerCase() === normalizedAuthEmail
-    && Boolean(selectedControl.executionSubmitted)
-    && hasExecutionContent(selectedControl);
+    && (isAdmin || String(selectedAssignmentEntry?.executionAuthorEmail ?? "").trim().toLowerCase() === normalizedAuthEmail)
+    && Boolean(selectedAssignmentEntry?.executionSubmitted)
+    && hasExecutionEntryContent(selectedAssignmentEntry);
   const dashboardDelayYearOptions = useMemo(
     () => buildExecutionYearOptions(Number(currentCalendarYear), 7),
     [currentCalendarYear],
@@ -2146,24 +2375,32 @@ export default function App() {
     }
 
     return controls
-      .filter((control) =>
-        config.frequencies.includes(control.frequency)
-        && String(control.executionYear ?? "").trim() === reportYear,
-      )
-      .map((control) => ({
-        id: control.id,
-        title: control.title,
-        process: control.process,
-        frequency: control.frequency,
-        performer: control.performDept ?? control.performer ?? "-",
-        reviewer: control.reviewDept ?? control.reviewer ?? "-",
-        status: control.status ?? "-",
-        reviewChecked: control.reviewChecked ?? "미검토",
-        executionNote: typeof control.executionNote === "string" ? control.executionNote : "",
-        evidenceCount: Array.isArray(control.evidenceFiles) ? control.evidenceFiles.length : 0,
-        evidenceFiles: Array.isArray(control.evidenceFiles) ? control.evidenceFiles : [],
-      }));
-  }, [controls, reportPeriod, reportYear]);
+      .flatMap((control) =>
+        getControlExecutionHistory(control)
+          .filter((entry) =>
+            config.frequencies.includes(control.frequency)
+            && String(entry.executionYear ?? "").trim() === reportYear,
+          )
+          .map((entry) => ({
+            id: control.id,
+            title: control.title,
+            process: control.process,
+            frequency: control.frequency,
+            performer: (
+              memberNameByEmail.get(String(entry.executionAuthorEmail ?? "").trim().toLowerCase())
+              ?? String(entry.executionAuthorName ?? "").trim()
+            ) || "-",
+            reviewer: control.reviewDept ?? control.reviewer ?? "-",
+            status: entry.status ?? "-",
+            reviewChecked: entry.reviewChecked ?? "미검토",
+            executionNote: typeof entry.executionNote === "string" ? entry.executionNote : "",
+            executionYear: entry.executionYear ?? "",
+            executionPeriod: entry.executionPeriod ?? "",
+            evidenceCount: Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles.length : 0,
+            evidenceFiles: Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles : [],
+          })),
+      );
+  }, [controls, memberNameByEmail, reportPeriod, reportYear]);
   const reportSummary = useMemo(() => ({
     total: reportControls.length,
     completed: reportControls.filter((item) => item.status === "점검 완료" || item.status === "정상").length,
@@ -2510,23 +2747,55 @@ export default function App() {
   }, [controls, workflows]);
   const reviewQueueControls = useMemo(
     () =>
-      controls.filter(
-        (control) =>
-          Boolean(control.executionSubmitted)
-          && hasExecutionContent(control)
-          && String(control.reviewChecked ?? "미검토") === "미검토",
+      controls.flatMap((control) =>
+        getControlExecutionHistory(control)
+          .filter(
+            (entry) =>
+              Boolean(entry.executionSubmitted)
+              && hasExecutionEntryContent(entry)
+              && String(entry.reviewChecked ?? "미검토") === "미검토",
+          )
+          .map((entry) => ({
+            ...mergeExecutionHistoryIntoControl(control, getControlExecutionHistory(control), {
+              executionYear: entry.executionYear,
+              executionPeriod: entry.executionPeriod,
+            }),
+            reviewExecutionKey: createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod),
+          })),
       ),
     [controls],
   );
-  const reviewPendingCount = useMemo(
-    () => controls.filter(
-      (control) =>
-        Boolean(control.executionSubmitted)
-        && hasExecutionContent(control)
-        && String(control.reviewChecked ?? "미검토") === "미검토",
-    ).length,
+  const reviewPendingCount = reviewQueueControls.length;
+  const completedExecutionControls = useMemo(
+    () =>
+      controls.flatMap((control) =>
+        getControlExecutionHistory(control)
+          .filter(
+            (entry) =>
+              Boolean(entry.executionSubmitted)
+              && isExecutionReadyForCompletion(entry),
+          )
+          .map((entry) => ({
+            ...mergeExecutionHistoryIntoControl(control, getControlExecutionHistory(control), {
+              executionYear: entry.executionYear,
+              executionPeriod: entry.executionPeriod,
+            }),
+            completedExecutionKey: createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod),
+          })),
+      ),
     [controls],
   );
+  const completedExecutionCount = completedExecutionControls.length;
+  const totalCompletedPages = Math.max(1, Math.ceil(completedExecutionControls.length / listPageSize));
+  const currentCompletedPage = Math.min(controlListPage, totalCompletedPages);
+  const completedPagedControls = completedExecutionControls.slice(
+    (currentCompletedPage - 1) * listPageSize,
+    currentCompletedPage * listPageSize,
+  );
+  const selectedCompletedControl =
+    completedExecutionControls.find((control) => control.completedExecutionKey === selectedCompletedExecutionKey)
+    ?? completedPagedControls[0]
+    ?? null;
   const reviewVisibleControls =
     reviewUnitFilter === "전체"
       ? reviewQueueControls
@@ -2538,13 +2807,13 @@ export default function App() {
     currentReviewPage * listPageSize,
   );
   const selectedReviewControl =
-    reviewVisibleControls.find((control) => control.id === selectedControlId)
+    reviewVisibleControls.find((control) => control.reviewExecutionKey === selectedReviewExecutionKey)
     ?? reviewPagedControls[0]
     ?? null;
   const canRecallReviewExecution =
     !!selectedReviewControl
     && normalizedAuthEmail.length > 0
-    && String(selectedReviewControl.executionAuthorEmail ?? "").trim().toLowerCase() === normalizedAuthEmail
+    && (isAdmin || String(selectedReviewControl.executionAuthorEmail ?? "").trim().toLowerCase() === normalizedAuthEmail)
     && Boolean(selectedReviewControl.executionSubmitted)
     && hasExecutionContent(selectedReviewControl);
   const menuItems = [
@@ -2576,6 +2845,7 @@ export default function App() {
       setControlListPage(1);
       setRegistrationSelectedControlId(controls[0]?.id ?? "");
       setSelectedControlId(controls[0]?.id ?? "");
+      setSelectedReviewExecutionKey("");
     }
     if (nextView === "report") {
       setReportYear(currentCalendarYear);
@@ -2617,9 +2887,17 @@ export default function App() {
       return;
     }
 
+    if (nextTab === "controls-complete") {
+      setControlListPage(1);
+      setSelectedCompletedExecutionKey(completedExecutionControls[0]?.completedExecutionKey ?? "");
+      setSelectedControlId(completedExecutionControls[0]?.id ?? "");
+      return;
+    }
+
     if (nextTab === "control-review") {
       setReviewUnitFilter("전체");
       setControlListPage(1);
+      setSelectedReviewExecutionKey(reviewQueueControls[0]?.reviewExecutionKey ?? "");
       setSelectedControlId(reviewQueueControls[0]?.id ?? "");
     }
   }
@@ -2832,22 +3110,59 @@ export default function App() {
     };
   }, [authUser, effectiveLoginDomains]);
 
+  function syncAssignmentPendingEvidenceCount() {
+    const evidenceInputs = Array.from(
+      assignmentFormRef.current?.querySelectorAll('input[name="evidenceFiles"]') ?? [],
+    );
+    const nextCount = evidenceInputs.reduce((count, input) => count + (input.files?.length ?? 0), 0);
+    setAssignmentPendingEvidenceCount(nextCount);
+  }
+
   useEffect(() => {
     setEvidenceInputCount(1);
-    setAssignmentExecutionNote(selectedControl?.executionNote ?? "");
-    setAssignmentExecutionYear(selectedControl?.executionYear ?? "");
-    setAssignmentExecutionPeriod(selectedControl?.executionPeriod ?? "");
+    setAssignmentPendingEvidenceCount(0);
+    const nextEntry = getPreferredExecutionEntry(selectedControl);
+    setAssignmentExecutionNote("");
+    setAssignmentExecutionYear("");
+    setAssignmentExecutionPeriod("");
     setAssignmentReviewer(selectedControl?.reviewer ?? selectedControl?.reviewDept ?? "");
-    setAssignmentReviewChecked(selectedControl?.reviewChecked ?? "미검토");
+    setAssignmentReviewChecked(nextEntry?.reviewChecked ?? "미검토");
   }, [
     selectedControlId,
-    selectedControl?.executionNote,
-    selectedControl?.executionPeriod,
-    selectedControl?.executionYear,
-    selectedControl?.reviewChecked,
+    selectedControl?.executionHistory,
     selectedControl?.reviewDept,
     selectedControl?.reviewer,
   ]);
+
+  useEffect(() => {
+    if (!selectedControl || !assignmentExecutionYear || !assignmentExecutionPeriod) {
+      setAssignmentReviewChecked("미검토");
+      return;
+    }
+    const matchedEntry = getPreferredExecutionEntry(selectedControl, null, {
+      executionYear: assignmentExecutionYear,
+      executionPeriod: assignmentExecutionPeriod,
+    });
+    if (!matchedEntry) {
+      setAssignmentExecutionNote("");
+      setAssignmentReviewChecked("미검토");
+      return;
+    }
+    setAssignmentExecutionNote("");
+    setAssignmentReviewChecked(matchedEntry.reviewChecked ?? "미검토");
+  }, [selectedControl, assignmentExecutionYear, assignmentExecutionPeriod]);
+
+  useEffect(() => {
+    syncAssignmentPendingEvidenceCount();
+  }, [evidenceInputCount]);
+
+  useEffect(() => {
+    setCompletedEditMode(false);
+    setCompletedEditNote(selectedCompletedControl?.executionNote ?? "");
+    setCompletedEditEvidenceFiles(Array.isArray(selectedCompletedControl?.evidenceFiles) ? selectedCompletedControl.evidenceFiles : []);
+    setCompletedEvidenceInputCount(1);
+    setCompletedPendingEvidenceCount(0);
+  }, [selectedCompletedControl?.completedExecutionKey]);
 
   useEffect(() => {
     if (!HAS_REMOTE_BACKEND) {
@@ -3128,16 +3443,32 @@ export default function App() {
       return;
     }
 
-    const nextEvidenceFiles = (selectedControl.evidenceFiles ?? []).filter((_, index) => index !== fileIndex);
+    const targetEntry = getPreferredExecutionEntry(selectedControl, null, {
+      executionYear: assignmentExecutionYear,
+      executionPeriod: assignmentExecutionPeriod,
+    });
+    if (!targetEntry) {
+      return;
+    }
+
+    const nextEvidenceFiles = (targetEntry.evidenceFiles ?? []).filter((_, index) => index !== fileIndex);
+    const nextHistory = getControlExecutionHistory(selectedControl).map((entry) =>
+      entry.executionYear === targetEntry.executionYear && entry.executionPeriod === targetEntry.executionPeriod
+        ? {
+            ...entry,
+            evidenceFiles: nextEvidenceFiles,
+            evidenceStatus: nextEvidenceFiles.length > 0 ? (entry.evidenceStatus || "수집 중") : "미수집",
+          }
+        : entry,
+    );
     const nextWorkspace = {
       ...workspace,
       controls: controls.map((control) =>
         control.id === selectedControl.id
-          ? {
-              ...control,
-              evidenceFiles: nextEvidenceFiles,
-              evidenceStatus: nextEvidenceFiles.length > 0 ? control.evidenceStatus || "수집 중" : "미수집",
-            }
+          ? mergeExecutionHistoryIntoControl(control, nextHistory, {
+              executionYear: targetEntry.executionYear,
+              executionPeriod: targetEntry.executionPeriod,
+            })
           : control,
       ),
     };
@@ -3760,6 +4091,7 @@ export default function App() {
     if (!selectedControl) return;
 
     const formData = new FormData(event.currentTarget);
+    const submitMode = "complete";
     const files = formData
       .getAll("evidenceFiles")
       .filter((value) => value instanceof File && value.size > 0);
@@ -3769,11 +4101,15 @@ export default function App() {
     const executionAuthorName = String(authUser?.name ?? "").trim();
     const executionAuthorEmail = normalizedAuthEmail;
     const status = executionNote ? "점검 중" : "점검 예정";
-    let nextEvidenceFiles = selectedControl.evidenceFiles ?? [];
+    const currentExecutionEntry = getPreferredExecutionEntry(selectedControl, null, {
+      executionYear,
+      executionPeriod,
+    });
+    let nextEvidenceFiles = [];
     let uploaded = false;
 
     if (!executionAuthorEmail) {
-      showCenterAlert("로그인 계정 정보를 확인할 수 없어 수행 내역을 저장할 수 없습니다.");
+      showCenterAlert("로그인 계정 정보를 확인할 수 없어 등록 완료를 할 수 없습니다.");
       return;
     }
 
@@ -3787,8 +4123,8 @@ export default function App() {
       return;
     }
 
-    if (!executionNote && files.length === 0) {
-      showCenterAlert("수행 내역 또는 증적 파일을 입력하세요.");
+    if (!executionNote) {
+      showCenterAlert("수행 내역을 입력하세요.");
       return;
     }
 
@@ -3827,46 +4163,83 @@ export default function App() {
       }
     }
 
+    if (submitMode === "complete" && (Array.isArray(nextEvidenceFiles) ? nextEvidenceFiles.length : 0) === 0) {
+      showCenterAlert("증적 파일이 없으면 통제 수행 등록 완료를 할 수 없습니다.");
+      return;
+    }
+
     const nextWorkspace = {
       ...workspace,
-      controls: controls.map((control) =>
-        control.id === selectedControl.id
-          ? {
-              ...control,
-              status,
-              executionNote,
-              executionYear,
-              executionPeriod,
-              executionSubmitted: true,
-              executionAuthorName,
-              executionAuthorEmail,
-              reviewChecked: "미검토",
-              note: "",
-              reviewResult: "",
-              reviewAuthorName: "",
-              reviewAuthorEmail: "",
-              evidenceFiles: nextEvidenceFiles,
-              evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
-            }
-          : control,
-      ),
+      controls: controls.map((control) => {
+        if (control.id !== selectedControl.id) {
+          return control;
+        }
+
+        const nextEntry = {
+          ...(currentExecutionEntry ?? {}),
+          executionId: createExecutionEntryKey(control.id, executionYear, executionPeriod),
+          executionYear,
+          executionPeriod,
+          executionNote,
+          executionSubmitted: submitMode === "complete",
+          executionAuthorName,
+          executionAuthorEmail,
+          reviewChecked: "미검토",
+          note: "",
+          reviewResult: "",
+          reviewAuthorName: "",
+          reviewAuthorEmail: "",
+          status,
+          evidenceFiles: nextEvidenceFiles,
+          evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
+          updatedAt: new Date().toISOString(),
+        };
+        const nextHistory = [
+          ...getControlExecutionHistory(control).filter((entry) =>
+            !(entry.executionYear === executionYear && entry.executionPeriod === executionPeriod),
+          ),
+          nextEntry,
+        ];
+
+        return mergeExecutionHistoryIntoControl(control, nextHistory, { executionYear, executionPeriod });
+      }),
     };
-    writeAuditLog("EXECUTION_SAVED", selectedControl.id, `${selectedControl.title} 수행 내역 저장`, nextWorkspace);
-    setExecutionSavePopupOpen(true);
+    const completedExecutionKey = createExecutionEntryKey(selectedControl.id, executionYear, executionPeriod);
+    writeAuditLog(
+      "EXECUTION_SAVED",
+      selectedControl.id,
+      `${selectedControl.title} 등록 완료`,
+      nextWorkspace,
+    );
+    setAssignmentExecutionNote("");
+    setAssignmentExecutionYear("");
+    setAssignmentExecutionPeriod("");
+    setAssignmentReviewChecked("미검토");
+    setEvidenceInputCount(1);
+    setAssignmentPendingEvidenceCount(0);
+    setWorkbenchTab("controls-complete");
+    setControlListPage(1);
+    setSelectedCompletedExecutionKey(completedExecutionKey);
+    setSelectedControlId(selectedControl.id);
+    setExecutionSavePopupMessage("수행 결과 등록이 완료되었습니다.");
   }
 
   async function handleAssignmentRecall(controlOverride = null) {
     const targetControl = controlOverride ?? selectedControl;
+    const targetEntry = getPreferredExecutionEntry(targetControl, null, {
+      executionYear: assignmentExecutionYear,
+      executionPeriod: assignmentExecutionPeriod,
+    });
     if (!targetControl) {
       return;
     }
     const canRecall =
       normalizedAuthEmail.length > 0
-      && String(targetControl.executionAuthorEmail ?? "").trim().toLowerCase() === normalizedAuthEmail
-      && Boolean(targetControl.executionSubmitted)
-      && hasExecutionContent(targetControl);
+      && (isAdmin || String(targetEntry?.executionAuthorEmail ?? "").trim().toLowerCase() === normalizedAuthEmail)
+      && Boolean(targetEntry?.executionSubmitted)
+      && hasExecutionEntryContent(targetEntry);
     if (!canRecall) {
-      showCenterAlert("수행 등록 회수는 해당 수행 등록 작성자만 가능합니다.");
+      showCenterAlert("수행 등록 회수는 해당 수행 등록 작성자 또는 admin만 가능합니다.");
       return;
     }
 
@@ -3879,22 +4252,181 @@ export default function App() {
       ...workspace,
       controls: controls.map((control) =>
         control.id === targetControl.id
-          ? {
-              ...control,
-              status: deriveAssignmentStatus(control.executionNote ?? "", "미검토"),
-              executionSubmitted: false,
-              reviewChecked: "미검토",
-              note: "",
-              reviewResult: "",
-              reviewAuthorName: "",
-              reviewAuthorEmail: "",
-            }
+          ? mergeExecutionHistoryIntoControl(
+              control,
+              getControlExecutionHistory(control).map((entry) =>
+                entry.executionYear === targetEntry?.executionYear && entry.executionPeriod === targetEntry?.executionPeriod
+                  ? {
+                      ...entry,
+                      executionSubmitted: false,
+                      reviewChecked: "미검토",
+                      note: "",
+                      reviewResult: "",
+                      reviewAuthorName: "",
+                      reviewAuthorEmail: "",
+                      status: deriveAssignmentStatus(entry.executionNote ?? "", "미검토"),
+                    }
+                  : entry,
+              ),
+              {
+                executionYear: targetEntry?.executionYear,
+                executionPeriod: targetEntry?.executionPeriod,
+              },
+            )
           : control,
       ),
     };
 
     writeAuditLog("EXECUTION_RECALLED", targetControl.id, `${targetControl.title} 수행 등록 회수`, nextWorkspace);
     showCenterAlert("수행 등록을 회수했습니다.");
+  }
+
+  function handleRequestReviewFromCompleted() {
+    if (!selectedCompletedControl) {
+      return;
+    }
+
+    const nextWorkspace = {
+      ...workspace,
+      controls: controls.map((control) => {
+        if (control.id !== selectedCompletedControl.id) {
+          return control;
+        }
+
+        const nextHistory = getControlExecutionHistory(control).map((entry) =>
+          createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod) === selectedCompletedControl.completedExecutionKey
+            ? {
+                ...entry,
+                reviewChecked: "미검토",
+                reviewResult: "",
+                note: "",
+                reviewAuthorName: "",
+                reviewAuthorEmail: "",
+                status: deriveAssignmentStatus(entry.executionNote ?? "", "미검토"),
+              }
+            : entry,
+        );
+
+        return mergeExecutionHistoryIntoControl(control, nextHistory, {
+          executionYear: selectedCompletedControl.executionYear,
+          executionPeriod: selectedCompletedControl.executionPeriod,
+        });
+      }),
+    };
+    writeAuditLog("REVIEW_REQUESTED", selectedCompletedControl.id, `${selectedCompletedControl.title} 검토 요청`, nextWorkspace);
+    setCurrentView("control-workbench");
+    setWorkbenchTab("control-review");
+    setReviewUnitFilter("전체");
+    setControlListPage(1);
+    setSelectedReviewExecutionKey(selectedCompletedControl.completedExecutionKey);
+    setSelectedControlId(selectedCompletedControl.id);
+  }
+
+  function handleEditCompletedExecution() {
+    if (!selectedCompletedControl) {
+      return;
+    }
+    setCompletedEditNote(selectedCompletedControl.executionNote ?? "");
+    setCompletedEditEvidenceFiles(Array.isArray(selectedCompletedControl.evidenceFiles) ? selectedCompletedControl.evidenceFiles : []);
+    setCompletedEvidenceInputCount(1);
+    setCompletedPendingEvidenceCount(0);
+    setCompletedEditMode(true);
+  }
+
+  function handleCancelCompletedEdit() {
+    setCompletedEditMode(false);
+    setCompletedEditNote(selectedCompletedControl?.executionNote ?? "");
+    setCompletedEditEvidenceFiles(Array.isArray(selectedCompletedControl?.evidenceFiles) ? selectedCompletedControl.evidenceFiles : []);
+    setCompletedEvidenceInputCount(1);
+    setCompletedPendingEvidenceCount(0);
+  }
+
+  function syncCompletedPendingEvidenceCount() {
+    const evidenceInputs = Array.from(
+      completedEditFormRef.current?.querySelectorAll('input[name="completedEvidenceFiles"]') ?? [],
+    );
+    const nextCount = evidenceInputs.reduce((count, input) => count + (input.files?.length ?? 0), 0);
+    setCompletedPendingEvidenceCount(nextCount);
+  }
+
+  function handleRemoveCompletedEvidenceFile(fileIndex) {
+    setCompletedEditEvidenceFiles((current) => current.filter((_, index) => index !== fileIndex));
+  }
+
+  async function handleCompletedEditSubmit(event) {
+    event.preventDefault();
+    if (!canOperateControl || !selectedCompletedControl) {
+      return;
+    }
+
+    const formData = new FormData(event.currentTarget);
+    const files = formData
+      .getAll("completedEvidenceFiles")
+      .filter((value) => value instanceof File && value.size > 0);
+    const executionNote = completedEditNote.trim();
+    let nextEvidenceFiles = [...completedEditEvidenceFiles];
+    let uploaded = false;
+
+    if (!executionNote) {
+      showCenterAlert("수행 내역을 입력하세요.");
+      return;
+    }
+
+    if (files.length > 0) {
+      try {
+        const uploadResult = await uploadEvidenceFiles(selectedCompletedControl.id, files);
+        nextEvidenceFiles = [...nextEvidenceFiles, ...uploadResult.files];
+        uploaded = uploadResult.uploaded;
+        setIntegrationStatus((current) => ({
+          ...current,
+          drive: uploadResult.uploaded ? "연결됨" : current.drive,
+        }));
+      } catch (error) {
+        const code = String(error?.message ?? "");
+        showCenterAlert(`증적 파일을 Google Drive에 저장하지 못했습니다.\n[debug] ${code || "unknown_error"}`);
+        return;
+      }
+    }
+
+    if (nextEvidenceFiles.length === 0) {
+      showCenterAlert("증적 파일이 없으면 등록 완료를 유지할 수 없습니다.");
+      return;
+    }
+
+    const nextWorkspace = {
+      ...workspace,
+      controls: controls.map((control) => {
+        if (control.id !== selectedCompletedControl.id) {
+          return control;
+        }
+
+        const nextHistory = getControlExecutionHistory(control).map((entry) =>
+          createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod) === selectedCompletedControl.completedExecutionKey
+            ? {
+                ...entry,
+                executionNote,
+                evidenceFiles: nextEvidenceFiles,
+                evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
+                status: deriveAssignmentStatus(executionNote, entry.reviewChecked ?? "미검토"),
+                updatedAt: new Date().toISOString(),
+              }
+            : entry,
+        );
+
+        return mergeExecutionHistoryIntoControl(control, nextHistory, {
+          executionYear: selectedCompletedControl.executionYear,
+          executionPeriod: selectedCompletedControl.executionPeriod,
+        });
+      }),
+    };
+
+    writeAuditLog("EXECUTION_SAVED", selectedCompletedControl.id, `${selectedCompletedControl.title} 등록 완료 수정`, nextWorkspace);
+    setCompletedEditMode(false);
+    setCompletedEditNote(executionNote);
+    setCompletedEditEvidenceFiles(nextEvidenceFiles);
+    setCompletedEvidenceInputCount(1);
+    setCompletedPendingEvidenceCount(0);
+    setExecutionSavePopupMessage("등록 완료 내용이 수정되었습니다.");
   }
 
   function handleReviewSubmit(event) {
@@ -3906,17 +4438,13 @@ export default function App() {
     if (!selectedReviewControl) return;
 
     const formData = new FormData(event.currentTarget);
-    const reviewer = formData.get("reviewer").toString().trim();
     const reviewDecision = formData.get("reviewDecision").toString();
     const reviewNote = formData.get("reviewNote").toString().trim();
     const reviewChecked = reviewDecision === "양호" ? "검토 완료" : "반려";
     const reviewAuthorName = String(authUser?.name ?? "").trim();
     const reviewAuthorEmail = normalizedAuthEmail;
+    const reviewer = reviewAuthorName || reviewAuthorEmail;
 
-    if (!reviewer) {
-      showCenterAlert("검토 부서/검토자를 입력하세요.");
-      return;
-    }
     if (!reviewAuthorEmail) {
       showCenterAlert("로그인 계정 정보를 확인할 수 없어 검토를 저장할 수 없습니다.");
       return;
@@ -3925,21 +4453,38 @@ export default function App() {
     const status = reviewDecision === "양호" ? "점검 완료" : "개선 필요";
     const nextWorkspace = {
       ...workspace,
-      controls: controls.map((control) =>
-        control.id === selectedReviewControl.id
-          ? {
-              ...control,
-              reviewer,
-              reviewDept: reviewer,
-              reviewChecked,
-              status,
-              note: reviewNote,
-              reviewResult: reviewDecision,
-              reviewAuthorName,
-              reviewAuthorEmail,
-            }
-          : control,
-      ),
+      controls: controls.map((control) => {
+        if (control.id !== selectedReviewControl.id) {
+          return control;
+        }
+
+        const nextHistory = getControlExecutionHistory(control).map((entry) =>
+          createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod) === selectedReviewControl.reviewExecutionKey
+            ? {
+                ...entry,
+                reviewChecked,
+                status,
+                note: reviewNote,
+                reviewResult: reviewDecision,
+                reviewAuthorName,
+                reviewAuthorEmail,
+              }
+            : entry,
+        );
+
+        return mergeExecutionHistoryIntoControl(
+          {
+            ...control,
+            reviewer,
+            reviewDept: reviewer,
+          },
+          nextHistory,
+          {
+            executionYear: selectedReviewControl.executionYear,
+            executionPeriod: selectedReviewControl.executionPeriod,
+          },
+        );
+      }),
     };
 
     const loggedWorkspace = writeAuditLog("REVIEW_SAVED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 저장`, nextWorkspace);
@@ -3947,10 +4492,10 @@ export default function App() {
       writeAuditLog("REVIEW_COMPLETED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 완료 · ${reviewer}`, loggedWorkspace);
     } else {
       setCurrentView("control-workbench");
-      setWorkbenchTab("register");
-      setRegistrationCategoryFilter("전체");
-      setRegistrationListPage(1);
-      setRegistrationSelectedControlId(selectedReviewControl.id);
+      setWorkbenchTab("controls-complete");
+      setControlListPage(1);
+      setSelectedCompletedExecutionKey(selectedReviewControl.reviewExecutionKey);
+      setSelectedControlId(selectedReviewControl.id);
     }
     showCenterAlert("검토 결과가 저장되었습니다.");
   }
@@ -4175,7 +4720,7 @@ export default function App() {
             로그아웃
           </button>
         </div>
-        <main className={isWorkbenchView || currentView === "register" || currentView === "controls" || currentView === "control-review" ? "layout workbench-layout" : "layout"}>
+        <main className={isWorkbenchView || currentView === "register" || currentView === "controls" || currentView === "control-review" || currentView === "report" ? "layout workbench-layout" : "layout"}>
           {currentView === "dashboard" ? (
             <>
               <section className={`dashboard-card control-progress-section dashboard-view-${dashboardView}`}>
@@ -4231,23 +4776,31 @@ export default function App() {
                     )}
                   </div>
                 </section>
+                <section className="dashboard-delay-section">
+                  <div className="dashboard-delay-section-head">
+                    <div>
+                      <p className="eyebrow">지연 내역</p>
+                      <h3>연 기준 지연 현황</h3>
+                    </div>
+                  </div>
+                  <div className="control-progress-summary-grid dashboard-delay-summary-grid">
+                    {dashboardAnnualDelayBuckets.map((bucket) => (
+                      <button
+                        type="button"
+                        className="control-progress-summary-card dashboard-delay-summary-card"
+                        key={bucket.key}
+                        onClick={() => openDashboardDelayDetail(bucket.key)}
+                      >
+                        <span>{bucket.label}</span>
+                        <strong>{bucket.items.length}건</strong>
+                      </button>
+                    ))}
+                  </div>
+                </section>
                 <div className="section-heading">
                   <div>
                     <h2>대시보드</h2>
                   </div>
-                </div>
-                <div className="control-progress-summary-grid dashboard-delay-summary-grid">
-                  {dashboardAnnualDelayBuckets.map((bucket) => (
-                    <button
-                      type="button"
-                      className="control-progress-summary-card dashboard-delay-summary-card"
-                      key={bucket.key}
-                      onClick={() => openDashboardDelayDetail(bucket.key)}
-                    >
-                      <span>{bucket.label}</span>
-                      <strong>{bucket.items.length}건</strong>
-                    </button>
-                  ))}
                 </div>
                 <div className="control-progress-summary-grid">
                   {dashboardSummaryCards.map((card) => (
@@ -4493,6 +5046,7 @@ export default function App() {
                   className={workbenchTab === "register" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
                   onClick={() => handleWorkbenchTabChange("register")}
                 >
+                  <span className="workbench-tab-spacer" aria-hidden="true" />
                   <span className="workbench-tab-label">통제 등록/수정</span>
                   <span className="workbench-tab-badge-slot" aria-hidden="true" />
                 </button>
@@ -4501,9 +5055,21 @@ export default function App() {
                   className={workbenchTab === "controls" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
                   onClick={() => handleWorkbenchTabChange("controls")}
                 >
-                  <span className="workbench-tab-label">통제 수행 등록</span>
+                  <span className="workbench-tab-spacer" aria-hidden="true" />
+                  <span className="workbench-tab-label">등록 양식</span>
                   <span className="workbench-tab-badge-slot">
                     {controlExecutionDraftCount > 0 ? <span className="tab-pending-badge tab-pending-badge-draft">{controlExecutionDraftCount}</span> : null}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className={workbenchTab === "controls-complete" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
+                  onClick={() => handleWorkbenchTabChange("controls-complete")}
+                >
+                  <span className="workbench-tab-spacer" aria-hidden="true" />
+                  <span className="workbench-tab-label">등록 완료</span>
+                  <span className="workbench-tab-badge-slot">
+                    {completedExecutionCount > 0 ? <span className="tab-pending-badge tab-pending-badge-draft">{completedExecutionCount}</span> : null}
                   </span>
                 </button>
                 <button
@@ -4511,6 +5077,7 @@ export default function App() {
                   className={workbenchTab === "control-review" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
                   onClick={() => handleWorkbenchTabChange("control-review")}
                 >
+                  <span className="workbench-tab-spacer" aria-hidden="true" />
                   <span className="workbench-tab-label">통제 검토</span>
                   <span className="workbench-tab-badge-slot">
                     {reviewPendingCount > 0 ? <span className="tab-pending-badge">{reviewPendingCount}</span> : null}
@@ -4536,7 +5103,7 @@ export default function App() {
                     {registrationPagedControls.map((control) => (
                       <button
                         type="button"
-                        key={control.id}
+                        key={control.reviewExecutionKey}
                         className={
                           control.id === registrationSelectedControlId
                             ? "registration-example-item registration-control-item control-operation-card active"
@@ -4551,6 +5118,9 @@ export default function App() {
                           </span>
                         </div>
                         <p>{control.title}</p>
+                        <span className="control-item-subtext">
+                          {control.executionYear ? `${control.executionYear}년` : "-"} · {control.executionPeriod || "-"}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -5037,13 +5607,13 @@ export default function App() {
                     <article className="panel detail-hero execution-detail-panel">
                       <div className="detail-title-row">
                         <div className="detail-inline-heading">
-                          <h2>통제 활동 수행 등록</h2>
+                          <h2>통제 수행 등록 양식</h2>
                         </div>
                         <div className="badge-row">
                           <span className={`status-badge ${statusClass(selectedControl.status)}`}>{selectedControl.status}</span>
                           <span className={`status-badge ${evidenceClass(selectedControl.evidenceStatus)}`}>{evidenceBadgeLabel(selectedControl)}</span>
                           <span className="status-badge unit-assignee-badge">
-                            수행: {selectedControl.performDept ?? selectedControl.performer ?? "-"}
+                            수행: {resolveExecutionAuthorName(selectedAssignmentEntry ?? selectedControl)}
                           </span>
                           <span className="status-badge unit-review-badge">
                             검토: {selectedControl.reviewDept ?? selectedControl.reviewer ?? "-"}
@@ -5073,7 +5643,7 @@ export default function App() {
                           <span className="detail-body-text">{preserveDisplayLineBreaks(selectedControl.population) || "-"}</span>
                         </div>
                       </div>
-                      <form className="stack-form execution-form" onSubmit={handleAssignmentSubmit}>
+                      <form ref={assignmentFormRef} className="stack-form execution-form" onSubmit={handleAssignmentSubmit}>
                         <div className="execution-form-item execution-inline-select-row">
                           <div className="execution-inline-select-controls">
                             <span className="execution-inline-label">년도:</span>
@@ -5128,6 +5698,7 @@ export default function App() {
                                     className="file-input"
                                     name="evidenceFiles"
                                     type="file"
+                                    onChange={syncAssignmentPendingEvidenceCount}
                                   />
                                 </div>
                               ))}
@@ -5151,48 +5722,259 @@ export default function App() {
                           </label>
                         </div>
                         <div className="evidence-file-list execution-form-item">
-                          {(selectedControl.evidenceFiles ?? []).length > 0 ? (
-                            (selectedControl.evidenceFiles ?? []).map((file, index) => (
-                              <span className="evidence-file-chip-wrap" key={`${file.name}-${index}`}>
-                                <button
-                                  className="system-chip evidence-file-chip"
-                                  type="button"
-                                  onClick={() => handleOpenEvidencePreview(file)}
-                                >
-                                  {file.url ? file.name : `${file.name} (대기)`}
-                                </button>
-                                <button
-                                  className="evidence-file-delete"
-                                  type="button"
-                                  aria-label={`${file.name} 삭제`}
-                                  onClick={() => handleRemoveEvidenceFile(index)}
-                                >
-                                  X
-                                </button>
-                              </span>
-                            ))
-                          ) : (
-                            <span className="empty-text">첨부된 증적 없음</span>
-                          )}
+                          <span className="empty-text">첨부된 증적 없음</span>
                         </div>
                         {DATA_BACKEND === "local" ? (
                           <p className="field-help">현재는 업로드 URL 미설정 상태라 파일명이 먼저 저장됩니다.</p>
                         ) : null}
                         <div className="execution-form-item execution-form-action">
-                          <button className="primary-button" type="submit" disabled={!canSubmitAssignment}>수행 내역 저장</button>
-                          <button
-                            className="secondary-button"
-                            type="button"
-                            onClick={handleAssignmentRecall}
-                            disabled={!canRecallSelectedExecution}
-                          >
-                            수행 등록 회수
-                          </button>
+                          <button className="primary-button" type="submit" disabled={!canSubmitAssignment}>등록 완료</button>
                         </div>
                       </form>
                     </article>
                   </>
                 ) : null}
+              </div>
+            </section>
+          ) : null}
+
+          {isWorkbenchView && workbenchTab === "controls-complete" ? (
+            <section className="controls-layout align-unified">
+              <article className="panel control-list-panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>등록 완료</h2>
+                  </div>
+                </div>
+                {completedPagedControls.length > 0 ? (
+                  <div className="control-list">
+                    {completedPagedControls.map((control) => (
+                      <button
+                        type="button"
+                        key={control.completedExecutionKey}
+                        className={
+                          control.completedExecutionKey === selectedCompletedControl?.completedExecutionKey
+                            ? "registration-example-item registration-control-item control-operation-card completed-operation-card active"
+                            : "registration-example-item registration-control-item control-operation-card completed-operation-card"
+                        }
+                        onClick={() => {
+                          setSelectedCompletedExecutionKey(control.completedExecutionKey);
+                          setSelectedControlId(control.id);
+                        }}
+                      >
+                        <div className="registration-example-head completed-example-head">
+                          <strong>{control.id}</strong>
+                          <div className="badge-row">
+                            <span className="status-badge unit-assignee-badge">
+                              {resolveExecutionAuthorName(control)}
+                            </span>
+                          </div>
+                        </div>
+                        <p>{control.title}</p>
+                        <span className="control-item-subtext">
+                          {control.executionYear ? `${control.executionYear}년` : "-"} · {control.executionPeriod || "-"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="empty-text">등록 완료된 수행 결과가 없습니다.</p>
+                )}
+                {totalCompletedPages > 1 ? (
+                  <div className="pagination">
+                    {Array.from({ length: totalCompletedPages }, (_, index) => index + 1).map((page) => (
+                      <button
+                        key={page}
+                        type="button"
+                        className={page === currentCompletedPage ? "page-button active" : "page-button"}
+                        onClick={() => setControlListPage(page)}
+                      >
+                        {page}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </article>
+
+              <div className="control-main review-tight-stack">
+                <article className="panel detail-hero control-review-panel">
+                  {selectedCompletedControl ? (
+                    <>
+                      <div className="section-heading">
+                        <div>
+                          <h2>등록 완료</h2>
+                        </div>
+                        <div className="badge-row">
+                          <span className={`status-badge ${statusClass(selectedCompletedControl.status)}`}>{selectedCompletedControl.status}</span>
+                          <span className={`status-badge ${evidenceClass(selectedCompletedControl.evidenceStatus)}`}>{evidenceBadgeLabel(selectedCompletedControl, "review")}</span>
+                          <span className="status-badge unit-assignee-badge">
+                            수행: {resolveExecutionAuthorName(selectedCompletedControl)}
+                          </span>
+                        </div>
+                      </div>
+                      <p className="detail-purpose">{selectedCompletedControl.id} · {selectedCompletedControl.title}</p>
+                      <div className="detail-meta-grid execution-meta-grid review-detail-grid">
+                        <div className="execution-meta-item review-row-full review-compact-meta-item">
+                          <div className="detail-body-text review-compact-meta-line">
+                            <span className="review-meta-chip review-meta-year">년도: {selectedCompletedControl.executionYear ? `${selectedCompletedControl.executionYear}년` : "-"}</span>
+                            <span className="review-meta-separator">|</span>
+                            <span className="review-meta-chip review-meta-period">주기: {selectedCompletedControl.executionPeriod || "-"}</span>
+                            <span className="review-meta-separator">|</span>
+                            <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorName(selectedCompletedControl)}</span>
+                          </div>
+                        </div>
+                        <div className="execution-meta-item">
+                          <span>테스트 방법</span>
+                          <span className="detail-body-text">
+                            {preserveDisplayLineBreaks(selectedCompletedControl.testMethod || (selectedCompletedControl.procedures ?? []).join("\n")) || "-"}
+                          </span>
+                        </div>
+                        <div className="execution-meta-item">
+                          <span>모집단</span>
+                          <span className="detail-body-text">{preserveDisplayLineBreaks(selectedCompletedControl.population) || "-"}</span>
+                        </div>
+                        {!completedEditMode ? (
+                          <>
+                            <div className="execution-meta-item review-row-full">
+                              <span>수행 내역</span>
+                              <span className="detail-body-text">{preserveDisplayLineBreaks(selectedCompletedControl.executionNote) || "-"}</span>
+                            </div>
+                            <div className="execution-meta-item review-row-full">
+                              <span>증적 파일</span>
+                              <div className="evidence-file-list">
+                                {(selectedCompletedControl.evidenceFiles ?? []).length > 0 ? (
+                                  (selectedCompletedControl.evidenceFiles ?? []).map((file, index) => (
+                                    <span className="evidence-file-chip-wrap" key={`${file.name}-${index}`}>
+                                      <button
+                                        className="system-chip evidence-file-chip"
+                                        type="button"
+                                        onClick={() => {
+                                          if (isImageEvidence(file) || isPdfEvidence(file)) {
+                                            handleOpenEvidencePreview(file);
+                                            return;
+                                          }
+                                          handleDownloadEvidence(file);
+                                        }}
+                                      >
+                                        {file.url ? file.name : `${file.name} (대기)`}
+                                      </button>
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span className="empty-text">첨부된 증적 없음</span>
+                                )}
+                              </div>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="review-row-full completed-inline-edit-area">
+                            <form ref={completedEditFormRef} className="stack-form execution-form" onSubmit={handleCompletedEditSubmit}>
+                              <label className="execution-form-item">
+                                수행 내역
+                                <textarea
+                                  name="completedExecutionNote"
+                                  rows="10"
+                                  value={completedEditNote}
+                                  onChange={(event) => setCompletedEditNote(event.target.value)}
+                                  placeholder="수행한 작업 내용을 입력"
+                                />
+                              </label>
+                              <div className="evidence-upload-group execution-form-item">
+                                <label>
+                                  <span className="evidence-upload-label">증적 파일 첨부</span>
+                                  <div className="evidence-input-stack">
+                                    {Array.from({ length: completedEvidenceInputCount }, (_, index) => (
+                                      <div className="evidence-input-row" key={index}>
+                                        <input
+                                          className="file-input"
+                                          name="completedEvidenceFiles"
+                                          type="file"
+                                          onChange={syncCompletedPendingEvidenceCount}
+                                        />
+                                      </div>
+                                    ))}
+                                    <span className="evidence-upload-actions">
+                                      <button
+                                        className="secondary-button evidence-count-button"
+                                        type="button"
+                                        onClick={() => setCompletedEvidenceInputCount((count) => Math.max(1, count - 1))}
+                                      >
+                                        -
+                                      </button>
+                                      <button
+                                        className="secondary-button evidence-count-button"
+                                        type="button"
+                                        onClick={() => setCompletedEvidenceInputCount((count) => Math.min(5, count + 1))}
+                                      >
+                                        +
+                                      </button>
+                                    </span>
+                                  </div>
+                                </label>
+                              </div>
+                              <div className="evidence-file-list execution-form-item">
+                                {completedEditEvidenceFiles.length > 0 ? (
+                                  completedEditEvidenceFiles.map((file, index) => (
+                                    <span className="evidence-file-chip-wrap" key={`${file.name}-${index}`}>
+                                      <button
+                                        className="system-chip evidence-file-chip"
+                                        type="button"
+                                        onClick={() => {
+                                          if (isImageEvidence(file) || isPdfEvidence(file)) {
+                                            handleOpenEvidencePreview(file);
+                                            return;
+                                          }
+                                          handleDownloadEvidence(file);
+                                        }}
+                                      >
+                                        {file.url ? file.name : `${file.name} (대기)`}
+                                      </button>
+                                      <button
+                                        className="evidence-file-delete"
+                                        type="button"
+                                        aria-label={`${file.name} 삭제`}
+                                        onClick={() => handleRemoveCompletedEvidenceFile(index)}
+                                      >
+                                        X
+                                      </button>
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span className="empty-text">첨부된 증적 없음</span>
+                                )}
+                              </div>
+                              <div className="execution-form-action completed-request-action">
+                                <button className="secondary-button completed-edit-button" type="button" onClick={handleCancelCompletedEdit}>
+                                  취소
+                                </button>
+                                <button className="primary-button" type="submit" style={{ color: "#ffffff", WebkitTextFillColor: "#ffffff" }}>
+                                  수정 저장
+                                </button>
+                              </div>
+                            </form>
+                          </div>
+                        )}
+                      </div>
+                      {!completedEditMode ? (
+                        <div className="execution-form-action completed-request-action">
+                          <button className="secondary-button completed-edit-button" type="button" onClick={handleEditCompletedExecution} disabled={!canOperateControl}>
+                            수정
+                          </button>
+                          <button
+                            className="primary-button"
+                            type="button"
+                            onClick={handleRequestReviewFromCompleted}
+                            style={{ color: "#ffffff", WebkitTextFillColor: "#ffffff" }}
+                          >
+                            검토 요청
+                          </button>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="empty-text">등록 완료된 수행 결과가 없습니다.</p>
+                  )}
+                </article>
               </div>
             </section>
           ) : null}
@@ -5221,11 +6003,12 @@ export default function App() {
                         type="button"
                         key={control.id}
                         className={
-                          control.id === selectedReviewControl?.id
+                          control.reviewExecutionKey === selectedReviewControl?.reviewExecutionKey
                             ? "registration-example-item registration-control-item control-operation-card active"
                             : "registration-example-item registration-control-item control-operation-card"
                         }
                         onClick={() => {
+                          setSelectedReviewExecutionKey(control.reviewExecutionKey);
                           setSelectedControlId(control.id);
                           writeAuditLog("REVIEW_VIEWED", control.id, `${control.title} 검토 화면 조회`);
                         }}
@@ -5244,6 +6027,9 @@ export default function App() {
                           </div>
                         </div>
                         <p>{control.title}</p>
+                        <span className="control-item-subtext">
+                          {control.executionYear ? `${control.executionYear}년` : "-"} · {control.executionPeriod || "-"}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -5288,7 +6074,7 @@ export default function App() {
                         <span className={`status-badge ${statusClass(selectedReviewControl.status)}`}>{selectedReviewControl.status}</span>
                         <span className={`status-badge ${evidenceClass(selectedReviewControl.evidenceStatus)}`}>{evidenceBadgeLabel(selectedReviewControl, "review")}</span>
                         <span className="status-badge unit-assignee-badge">
-                          수행: {selectedReviewControl.performDept ?? selectedReviewControl.performer ?? "-"}
+                          수행: {resolveExecutionAuthorName(selectedReviewControl)}
                         </span>
                       </div>
                     </div>
@@ -5300,7 +6086,7 @@ export default function App() {
                           <span className="review-meta-separator">|</span>
                           <span className="review-meta-chip review-meta-period">주기: {selectedReviewControl.executionPeriod || "-"}</span>
                           <span className="review-meta-separator">|</span>
-                          <span className="review-meta-chip review-meta-owner">통제 수행자: {selectedReviewControl.executionAuthorName || selectedReviewControl.executionAuthorEmail || "-"}</span>
+                          <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorName(selectedReviewControl)}</span>
                         </div>
                       </div>
                       <div className="execution-meta-item">
@@ -5362,26 +6148,9 @@ export default function App() {
                             <option value="개선조치">개선조치</option>
                           </select>
                         </label>
-                        <label>
-                          검토 부서/검토자
-                          <input
-                            name="reviewer"
-                            type="text"
-                            defaultValue={selectedReviewControl.reviewer ?? selectedReviewControl.reviewDept ?? ""}
-                            placeholder="검토 부서/검토자 입력"
-                          />
-                        </label>
-                      </div>
-                      <div className="execution-form-item execution-form-action">
-                        <button
-                          className="secondary-button"
-                          type="button"
-                          onClick={() => handleAssignmentRecall(selectedReviewControl)}
-                          disabled={!canRecallReviewExecution}
-                        >
-                          수행 등록 회수
-                        </button>
-                        <button className="primary-button" type="submit" disabled={!canOperateControl}>검토 저장</button>
+                        <div className="review-complete-inline-action">
+                          <button className="primary-button review-complete-submit-button" type="submit" disabled={!canOperateControl}>검토 완료</button>
+                        </div>
                       </div>
                     </form>
                   </>
@@ -5498,8 +6267,8 @@ export default function App() {
           ) : null}
 
           {currentView === "report" ? (
-            <section className="compact-stack">
-              <article className="panel">
+            <section className="compact-stack report-stack">
+              <article className="panel report-panel">
                 <div className="section-heading">
                   <div>
                     <h2>수행 리포트</h2>
@@ -5678,11 +6447,11 @@ export default function App() {
             </div>
           ) : null}
 
-          {executionSavePopupOpen ? (
+          {executionSavePopupMessage ? (
             <div className="center-alert-overlay" role="dialog" aria-modal="true" aria-label="수행 내역 저장 안내">
               <div className="center-alert-modal">
-                <p>수행 내역이 저장되었습니다.</p>
-                <button className="primary-button" type="button" onClick={() => setExecutionSavePopupOpen(false)}>
+                <p>{executionSavePopupMessage}</p>
+                <button className="primary-button" type="button" onClick={() => setExecutionSavePopupMessage("")}>
                   확인
                 </button>
               </div>

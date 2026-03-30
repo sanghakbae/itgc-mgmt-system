@@ -97,6 +97,73 @@ function deriveExecutionPeriod(dateLike, frequency) {
   return "";
 }
 
+function executionHasContent(entry) {
+  return (
+    String(entry?.executionNote ?? "").trim().length > 0
+    || String(entry?.executionYear ?? "").trim().length > 0
+    || String(entry?.executionPeriod ?? "").trim().length > 0
+    || (Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles.length : 0) > 0
+  );
+}
+
+function createExecutionEntryKey(controlId, executionYear, executionPeriod) {
+  return `${String(controlId ?? "").trim()}::${String(executionYear ?? "").trim()}::${String(executionPeriod ?? "").trim()}`;
+}
+
+function normalizeExecutionEntry(entry, control = {}) {
+  return {
+    executionId: String(entry?.executionId ?? createExecutionEntryKey(control.id, entry?.executionYear, entry?.executionPeriod)).trim(),
+    executionYear: String(entry?.executionYear ?? "").trim(),
+    executionPeriod: String(entry?.executionPeriod ?? "").trim(),
+    executionNote: String(entry?.executionNote ?? "").trim(),
+    executionSubmitted:
+      typeof entry?.executionSubmitted === "boolean"
+        ? entry.executionSubmitted
+        : executionHasContent(entry),
+    executionAuthorName: String(entry?.executionAuthorName ?? "").trim(),
+    executionAuthorEmail: String(entry?.executionAuthorEmail ?? "").trim().toLowerCase(),
+    reviewChecked: String(entry?.reviewChecked ?? "미검토").trim() || "미검토",
+    reviewResult: String(entry?.reviewResult ?? "").trim(),
+    reviewAuthorName: String(entry?.reviewAuthorName ?? "").trim(),
+    reviewAuthorEmail: String(entry?.reviewAuthorEmail ?? "").trim().toLowerCase(),
+    note: String(entry?.note ?? "").trim(),
+    status: String(entry?.status ?? "점검 예정").trim() || "점검 예정",
+    evidenceFiles: Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : [],
+    evidenceStatus:
+      String(entry?.evidenceStatus ?? "").trim()
+      || ((Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0 ? "준비 완료" : "미수집"),
+    updatedAt: String(entry?.updatedAt ?? "").trim(),
+  };
+}
+
+function getControlExecutionHistory(control) {
+  const history = Array.isArray(control?.executionHistory)
+    ? control.executionHistory.map((entry) => normalizeExecutionEntry(entry, control))
+    : [];
+  if (history.length > 0) {
+    return history;
+  }
+
+  const legacyEntry = normalizeExecutionEntry({
+    executionId: createExecutionEntryKey(control?.id, control?.executionYear, control?.executionPeriod),
+    executionYear: control?.executionYear,
+    executionPeriod: control?.executionPeriod,
+    executionNote: control?.executionNote,
+    executionSubmitted: control?.executionSubmitted,
+    executionAuthorName: control?.executionAuthorName,
+    executionAuthorEmail: control?.executionAuthorEmail,
+    reviewChecked: control?.reviewChecked,
+    reviewResult: control?.reviewResult,
+    reviewAuthorName: control?.reviewAuthorName,
+    reviewAuthorEmail: control?.reviewAuthorEmail,
+    note: control?.note,
+    status: control?.status,
+    evidenceFiles: control?.evidenceFiles,
+    evidenceStatus: control?.evidenceStatus,
+  }, control);
+  return executionHasContent(legacyEntry) || legacyEntry.executionAuthorEmail || legacyEntry.reviewAuthorEmail ? [legacyEntry] : [];
+}
+
 function normalizeDomainList(raw) {
   const source = Array.isArray(raw) ? raw.join(",") : String(raw ?? "");
   return source
@@ -142,58 +209,70 @@ function mapControlToMasterRow(control, index, nowIso) {
   };
 }
 
-function mapControlToExecutionRow(control, nowIso) {
-  return {
-    execution_id: `EXE-${control.id}`,
+function mapControlToExecutionRows(control, nowIso) {
+  return getControlExecutionHistory(control).map((entry) => ({
+    execution_id: entry.executionId || createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod),
     control_id: control.id,
     execution_date: normalizeDate(control.lastUpdatedAt ?? nowIso),
-    execution_note: control.executionNote ?? "",
-    status: control.status ?? "점검 예정",
-    review_checked: control.reviewChecked ?? "미검토",
-    review_date: control.reviewChecked === "검토 완료" ? normalizeDate(nowIso) : null,
-    review_note: control.note ?? "",
-    performed_by: control.performer ?? control.performDept ?? control.ownerDept ?? "",
+    execution_note: entry.executionNote ?? "",
+    status: entry.status ?? "점검 예정",
+    review_checked: entry.reviewChecked ?? "미검토",
+    review_date: entry.reviewChecked === "검토 완료" ? normalizeDate(nowIso) : null,
+    review_note: entry.note ?? "",
+    performed_by: entry.executionAuthorName ?? control.performer ?? control.performDept ?? control.ownerDept ?? "",
     reviewed_by: control.reviewer ?? control.reviewDept ?? "",
     drive_folder_id: null,
     last_updated_at: nowIso,
     execution_payload: {
-      executionNote: control.executionNote ?? "",
-      executionYear: control.executionYear ?? "",
-      executionPeriod: control.executionPeriod ?? "",
-      executionSubmitted: Boolean(control.executionSubmitted),
-      executionAuthorName: control.executionAuthorName ?? "",
-      executionAuthorEmail: control.executionAuthorEmail ?? "",
-      note: control.note ?? "",
+      executionId: entry.executionId || createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod),
+      executionNote: entry.executionNote ?? "",
+      executionYear: entry.executionYear ?? "",
+      executionPeriod: entry.executionPeriod ?? "",
+      executionSubmitted: Boolean(entry.executionSubmitted),
+      executionAuthorName: entry.executionAuthorName ?? "",
+      executionAuthorEmail: entry.executionAuthorEmail ?? "",
+      note: entry.note ?? "",
       reviewer: control.reviewer ?? control.reviewDept ?? "",
-      reviewAuthorName: control.reviewAuthorName ?? "",
-      reviewAuthorEmail: control.reviewAuthorEmail ?? "",
+      reviewChecked: entry.reviewChecked ?? "미검토",
+      reviewResult: entry.reviewResult ?? "",
+      reviewAuthorName: entry.reviewAuthorName ?? "",
+      reviewAuthorEmail: entry.reviewAuthorEmail ?? "",
+      status: entry.status ?? "점검 예정",
+      evidenceStatus: entry.evidenceStatus ?? "미수집",
     },
     updated_at: nowIso,
-  };
+  }));
 }
 
 function mapControlToEvidenceRows(control, nowIso) {
-  const executionId = `EXE-${control.id}`;
-  const uploader = control.performer ?? control.performDept ?? control.ownerDept ?? "";
-  const evidenceFiles = Array.isArray(control.evidenceFiles) ? control.evidenceFiles : [];
+  return getControlExecutionHistory(control).flatMap((entry) => {
+    const uploader = entry.executionAuthorName ?? control.performer ?? control.performDept ?? control.ownerDept ?? "";
+    const executionId = entry.executionId || createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod);
+    const evidenceFiles = Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles : [];
 
-  return evidenceFiles.map((file, index) => ({
-    evidence_id: file.evidenceId ?? `EVD-${control.id}-${String(index + 1).padStart(3, "0")}`,
-    execution_id: executionId,
-    control_id: control.id,
-    file_name: file.name ?? `evidence-${index + 1}`,
-    drive_file_id: file.driveFileId ?? null,
-    drive_url: file.url ?? null,
-    uploaded_at: file.uploadedAt ?? nowIso,
-    uploaded_by: file.uploadedBy ?? uploader,
-    file_note: file.note ?? null,
-    storage_bucket: ITGC_EVIDENCE_BUCKET,
-    storage_path: file.storagePath ?? null,
-    storage_url: file.url ?? null,
-    provider: file.provider ?? (file.storagePath ? "supabase" : "google"),
-    evidence_payload: file,
-    updated_at: nowIso,
-  }));
+    return evidenceFiles.map((file, index) => ({
+      evidence_id: file.evidenceId ?? `EVD-${executionId}-${String(index + 1).padStart(3, "0")}`,
+      execution_id: executionId,
+      control_id: control.id,
+      file_name: file.name ?? `evidence-${index + 1}`,
+      drive_file_id: file.driveFileId ?? null,
+      drive_url: file.url ?? null,
+      uploaded_at: file.uploadedAt ?? nowIso,
+      uploaded_by: file.uploadedBy ?? uploader,
+      file_note: file.note ?? null,
+      storage_bucket: ITGC_EVIDENCE_BUCKET,
+      storage_path: file.storagePath ?? null,
+      storage_url: file.url ?? null,
+      provider: file.provider ?? (file.storagePath ? "supabase" : "google"),
+      evidence_payload: {
+        ...file,
+        executionId,
+        executionYear: entry.executionYear,
+        executionPeriod: entry.executionPeriod,
+      },
+      updated_at: nowIso,
+    }));
+  });
 }
 
 function mapWorkflowToRow(workflow, nowIso) {
@@ -365,16 +444,16 @@ export async function fetchSupabaseWorkspace() {
     throw new Error(`audit_fetch_failed:${auditError.message}`);
   }
 
-  const latestExecutionByControlId = new Map();
+  const executionRowsByControlId = new Map();
   for (const row of executionRows ?? []) {
-    if (!latestExecutionByControlId.has(row.control_id)) {
-      latestExecutionByControlId.set(row.control_id, row);
-    }
+    const current = executionRowsByControlId.get(row.control_id) ?? [];
+    current.push(row);
+    executionRowsByControlId.set(row.control_id, current);
   }
 
-  const evidenceByControlId = new Map();
+  const evidenceByExecutionId = new Map();
   for (const row of evidenceRows ?? []) {
-    const current = evidenceByControlId.get(row.control_id) ?? [];
+    const current = evidenceByExecutionId.get(row.execution_id) ?? [];
     const payload = typeof row.evidence_payload === "object" && row.evidence_payload ? row.evidence_payload : {};
 
     current.push({
@@ -389,12 +468,41 @@ export async function fetchSupabaseWorkspace() {
       storagePath: row.storage_path,
       provider: row.provider,
     });
-    evidenceByControlId.set(row.control_id, current);
+    evidenceByExecutionId.set(row.execution_id, current);
   }
 
   const controls = (controlRows ?? []).map((row) => {
     const payload = typeof row.control_payload === "object" && row.control_payload ? row.control_payload : {};
-    const execution = latestExecutionByControlId.get(row.control_id);
+    const executions = (executionRowsByControlId.get(row.control_id) ?? []).map((execution) => {
+      const executionPayload = typeof execution.execution_payload === "object" && execution.execution_payload ? execution.execution_payload : {};
+      const executionId = execution.execution_id ?? executionPayload.executionId ?? createExecutionEntryKey(row.control_id, executionPayload.executionYear, executionPayload.executionPeriod);
+      return normalizeExecutionEntry({
+        executionId,
+        executionYear:
+          executionPayload.executionYear
+          ?? deriveExecutionYear(execution.execution_date),
+        executionPeriod:
+          executionPayload.executionPeriod
+          ?? deriveExecutionPeriod(execution.execution_date, row.frequency),
+        executionNote: execution.execution_note ?? executionPayload.executionNote ?? "",
+        executionSubmitted:
+          typeof executionPayload.executionSubmitted === "boolean"
+            ? executionPayload.executionSubmitted
+            : undefined,
+        executionAuthorName: executionPayload.executionAuthorName ?? execution.performed_by ?? row.perform_dept ?? "",
+        executionAuthorEmail: executionPayload.executionAuthorEmail ?? "",
+        reviewChecked: execution.review_checked ?? executionPayload.reviewChecked ?? "미검토",
+        reviewResult: executionPayload.reviewResult ?? "",
+        reviewAuthorName: executionPayload.reviewAuthorName ?? "",
+        reviewAuthorEmail: executionPayload.reviewAuthorEmail ?? "",
+        note: execution.review_note ?? executionPayload.note ?? "",
+        status: execution.status ?? executionPayload.status ?? row.status ?? "점검 예정",
+        evidenceStatus: executionPayload.evidenceStatus ?? row.evidence_status ?? "미수집",
+        evidenceFiles: evidenceByExecutionId.get(executionId) ?? [],
+        updatedAt: execution.last_updated_at ?? execution.updated_at ?? "",
+      }, payload);
+    });
+    const latestExecution = executions[0];
 
     return {
       ...payload,
@@ -421,35 +529,26 @@ export async function fetchSupabaseWorkspace() {
       procedures: payload.procedures ?? parsePipeList(row.test_method ?? row.test_procedure),
       policyReference: row.policy_reference,
       deficiencyImpact: row.deficiency_impact,
-      status: execution?.status ?? row.status,
-      evidenceStatus: row.evidence_status,
-      reviewChecked: execution?.review_checked ?? row.review_checked,
+      status: latestExecution?.status ?? row.status,
+      evidenceStatus: latestExecution?.evidenceStatus ?? row.evidence_status,
+      reviewChecked: latestExecution?.reviewChecked ?? row.review_checked,
       description: row.control_description,
       population: payload.population ?? row.control_description ?? "",
-      note: execution?.review_note ?? payload.note ?? "",
-      executionNote: execution?.execution_note ?? payload.executionNote ?? "",
-      executionYear:
-        execution?.execution_payload?.executionYear
-        ?? payload.executionYear
-        ?? deriveExecutionYear(execution?.execution_date),
-      executionPeriod:
-        execution?.execution_payload?.executionPeriod
-        ?? payload.executionPeriod
-        ?? deriveExecutionPeriod(execution?.execution_date, row.frequency),
+      note: latestExecution?.note ?? payload.note ?? "",
+      executionNote: latestExecution?.executionNote ?? payload.executionNote ?? "",
+      executionYear: latestExecution?.executionYear ?? payload.executionYear ?? "",
+      executionPeriod: latestExecution?.executionPeriod ?? payload.executionPeriod ?? "",
       executionSubmitted:
-        typeof (execution?.execution_payload?.executionSubmitted ?? payload.executionSubmitted) === "boolean"
-          ? (execution?.execution_payload?.executionSubmitted ?? payload.executionSubmitted)
+        typeof (latestExecution?.executionSubmitted ?? payload.executionSubmitted) === "boolean"
+          ? (latestExecution?.executionSubmitted ?? payload.executionSubmitted)
           : undefined,
-      executionAuthorName:
-        execution?.execution_payload?.executionAuthorName
-        ?? payload.executionAuthorName
-        ?? execution?.performed_by
-        ?? row.perform_dept
-        ?? "",
-      executionAuthorEmail: execution?.execution_payload?.executionAuthorEmail ?? payload.executionAuthorEmail ?? "",
-      reviewAuthorName: execution?.execution_payload?.reviewAuthorName ?? payload.reviewAuthorName ?? "",
-      reviewAuthorEmail: execution?.execution_payload?.reviewAuthorEmail ?? payload.reviewAuthorEmail ?? "",
-      evidenceFiles: evidenceByControlId.get(row.control_id) ?? payload.evidenceFiles ?? [],
+      executionAuthorName: latestExecution?.executionAuthorName ?? payload.executionAuthorName ?? row.perform_dept ?? "",
+      executionAuthorEmail: latestExecution?.executionAuthorEmail ?? payload.executionAuthorEmail ?? "",
+      reviewResult: latestExecution?.reviewResult ?? payload.reviewResult ?? "",
+      reviewAuthorName: latestExecution?.reviewAuthorName ?? payload.reviewAuthorName ?? "",
+      reviewAuthorEmail: latestExecution?.reviewAuthorEmail ?? payload.reviewAuthorEmail ?? "",
+      evidenceFiles: latestExecution?.evidenceFiles ?? payload.evidenceFiles ?? [],
+      executionHistory: executions,
     };
   });
 
@@ -531,7 +630,7 @@ export async function syncSupabaseWorkspace(workspace) {
   const auditLogs = Array.isArray(workspace.auditLogs) ? workspace.auditLogs.slice(0, AUDIT_LOG_MAX_ITEMS) : [];
 
   const controlRows = controls.map((control, index) => mapControlToMasterRow(control, index, nowIso));
-  const executionRows = controls.map((control) => mapControlToExecutionRow(control, nowIso));
+  const executionRows = controls.flatMap((control) => mapControlToExecutionRows(control, nowIso));
   const evidenceRows = controls.flatMap((control) => mapControlToEvidenceRows(control, nowIso));
   const workflowRows = workflows.map((workflow) => mapWorkflowToRow(workflow, nowIso));
   const memberRows = [

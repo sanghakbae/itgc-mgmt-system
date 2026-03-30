@@ -746,24 +746,35 @@ textarea {
 }
 
 .workbench-tab-button {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 32px;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
+  justify-items: stretch;
+  gap: 0;
   min-width: 154px;
 }
 
+.workbench-tab-spacer {
+  display: block;
+  width: 24px;
+  min-width: 24px;
+}
+
 .workbench-tab-label {
-  display: inline-block;
+  display: block;
   white-space: nowrap;
+  text-align: center;
+  justify-self: center;
 }
 
 .workbench-tab-badge-slot {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 24px;
+  justify-content: flex-end;
+  width: 32px;
+  min-width: 32px;
   height: 18px;
+  padding-right: 6px;
 }
 
 .tab-button {
@@ -1355,19 +1366,56 @@ textarea {
 
 .control-review-panel .execution-form-action {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
   width: 100%;
-}
-
-.control-review-panel .execution-form-action .secondary-button {
-  min-width: 132px;
 }
 
 .control-review-panel .execution-form-action .primary-button,
 .control-review-panel .execution-form-action .secondary-button {
   width: 100%;
   min-width: 0;
+}
+
+.completed-request-action {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: stretch !important;
+  gap: 0 !important;
+  width: 100% !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.completed-request-action .secondary-button,
+.completed-request-action .primary-button {
+  display: block !important;
+  flex: 1 1 50% !important;
+  width: 50% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  white-space: nowrap !important;
+  border-radius: 0 !important;
+}
+
+.completed-edit-button,
+.completed-edit-button:visited,
+.completed-edit-button:hover,
+.completed-edit-button:active {
+  background: #dc2626 !important;
+  border-color: #dc2626 !important;
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
+
+.review-complete-submit-button,
+.review-complete-submit-button:visited,
+.review-complete-submit-button:hover,
+.review-complete-submit-button:active {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
 }
 
 .execution-filter-actions {
@@ -1460,11 +1508,22 @@ textarea {
 }
 
 .evidence-upload-actions {
-  display: inline-flex;
-  gap: 6px;
+  display: flex;
+  gap: 12px !important;
   justify-content: flex-end;
-  width: 100%;
+  justify-self: end;
+  margin-left: auto;
+  width: auto;
   margin-top: 4px;
+}
+
+.evidence-upload-actions .evidence-count-button + .evidence-count-button {
+  margin-left: 12px;
+}
+
+.evidence-upload-actions .secondary-button {
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff !important;
 }
 
 .secondary-button.evidence-count-button {
@@ -2885,6 +2944,54 @@ th {
   font-size: 0.72rem;
 }
 
+.dashboard-delay-section {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 4px;
+  padding: 6px 8px;
+  border: 1px solid rgba(234, 88, 12, 0.28);
+  border-radius: 10px;
+  background: #ffedd5;
+  box-shadow: 0 6px 14px rgba(234, 88, 12, 0.08);
+}
+
+.dashboard-delay-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dashboard-delay-section-head h3 {
+  margin: 0;
+  font-size: 0.98rem;
+  line-height: 1.25;
+  color: #c62828;
+}
+
+.dashboard-delay-section .eyebrow,
+.dashboard-delay-section span,
+.dashboard-delay-section strong,
+.dashboard-delay-section h3 {
+  color: #c62828;
+}
+
+.dashboard-delay-summary-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.dashboard-delay-summary-card {
+  width: 100%;
+  padding: 4px 8px;
+  border-color: rgba(234, 88, 12, 0.28);
+  background: #ffedd5;
+}
+
+.dashboard-delay-summary-card span,
+.dashboard-delay-summary-card strong {
+  color: #c62828;
+}
+
 .progress-track {
   width: 100%;
   height: 8px;
@@ -3111,6 +3218,24 @@ th {
   flex: 1 1 auto;
 }
 
+.completed-inline-edit-area {
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.completed-inline-edit-area form,
+.completed-inline-edit-area .evidence-input-stack,
+.completed-inline-edit-area .evidence-input-row,
+.completed-inline-edit-area .evidence-upload-actions,
+.completed-inline-edit-area .evidence-file-chip-wrap {
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
 /* 통제 수행 등록: 테스트 방법/증적/모집단 가독성 고정 */
 .control-execution-panel .execution-meta-grid .execution-meta-item {
   background: #ffffff;
@@ -3191,6 +3316,7 @@ th {
 }
 
 .evidence-file-list {
+  margin-top: 0;
   max-height: 132px;
   overflow-y: auto;
   align-content: start;
@@ -3209,6 +3335,15 @@ th {
 
 .review-decision-row {
   gap: 8px;
+}
+
+.review-complete-inline-action {
+  display: flex;
+  align-items: end;
+}
+
+.review-complete-inline-action .primary-button {
+  width: 100%;
 }
 
 .stack-form > label,
@@ -3641,6 +3776,14 @@ th {
   margin-top: 10px;
 }
 
+.registration-action-group .primary-button,
+.registration-action-group .secondary-button {
+  min-height: 40px;
+  height: 40px;
+  font-size: inherit;
+  line-height: inherit;
+}
+
 .registration-delete-button {
   max-width: none;
   background: #dc2626;
@@ -3767,6 +3910,23 @@ th {
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 4px;
+}
+
+.workbench-layout > .report-stack {
+  overflow: hidden;
+  padding-right: 0;
+}
+
+.report-stack .report-panel {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+}
+
+.report-stack .report-table-wrap {
+  min-height: 0;
+  overflow: auto;
 }
 
 .registration-management-layout {
@@ -4003,6 +4163,33 @@ th {
 .control-operation-card .status-badge {
   flex: 0 0 auto;
   align-self: start;
+}
+
+.completed-operation-card .completed-example-head {
+  padding-right: 0;
+  align-items: flex-start;
+}
+
+.completed-operation-card .completed-example-head .badge-row {
+  position: static;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 58%;
+}
+
+.completed-operation-card .completed-example-head .badge-row .status-badge {
+  position: static;
+  top: auto;
+  right: auto;
+  margin: 0;
+}
+
+.registration-control-item .control-item-subtext {
+  font-size: 0.72rem;
+  color: #1d4ed8;
+  font-weight: 700;
 }
 
 .key-badge {
