@@ -2944,52 +2944,35 @@ th {
   font-size: 0.72rem;
 }
 
-.dashboard-delay-section {
+.dashboard-delay-inline-summary {
   display: grid;
-  gap: 6px;
-  margin: 0 0 4px;
-  padding: 6px 8px;
-  border: 1px solid rgba(234, 88, 12, 0.28);
-  border-radius: 10px;
-  background: #ffedd5;
-  box-shadow: 0 6px 14px rgba(234, 88, 12, 0.08);
-}
-
-.dashboard-delay-section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.dashboard-delay-section-head h3 {
-  margin: 0;
-  font-size: 0.98rem;
-  line-height: 1.25;
-  color: #c62828;
-}
-
-.dashboard-delay-section .eyebrow,
-.dashboard-delay-section span,
-.dashboard-delay-section strong,
-.dashboard-delay-section h3 {
-  color: #c62828;
-}
-
-.dashboard-delay-summary-grid {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.dashboard-delay-summary-card {
+  justify-items: start;
+  gap: 2px;
   width: 100%;
-  padding: 4px 8px;
-  border-color: rgba(234, 88, 12, 0.28);
+  margin: 0 0 22px;
+  padding: 12px 14px 14px;
+  border: 1px solid rgba(234, 88, 12, 0.24);
+  border-radius: 12px;
   background: #ffedd5;
+  box-shadow:
+    0 10px 24px rgba(234, 88, 12, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.42);
+  cursor: pointer;
 }
 
-.dashboard-delay-summary-card span,
-.dashboard-delay-summary-card strong {
+.dashboard-delay-inline-summary span,
+.dashboard-delay-inline-summary strong {
   color: #c62828;
+}
+
+.dashboard-delay-inline-summary span {
+  font-size: 0.98rem;
+  font-weight: 700;
+}
+
+.dashboard-delay-inline-summary strong {
+  font-size: 3rem;
+  line-height: 1;
 }
 
 .progress-track {

@@ -33,6 +33,9 @@ const GOOGLE_CHAT_DEDUP_WINDOW_MS = Number.isFinite(GOOGLE_CHAT_DEDUP_MS_ENV) &&
   ? GOOGLE_CHAT_DEDUP_MS_ENV
   : 60000;
 const DATA_BACKEND_ENV = (import.meta.env.VITE_DATA_BACKEND ?? "").trim().toLowerCase();
+const IS_LOCAL_RUNTIME =
+  Boolean(import.meta.env.DEV)
+  || (typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname));
 let googleDriveAccessTokenCache = "";
 let googleDriveAccessTokenExpiresAt = 0;
 const googleChatAlertDedupCache = new Map();
@@ -1559,6 +1562,9 @@ const CONTROL_CHANGE_ALERT_ACTIONS_ALL = new Set([
 ]);
 
 function sendGoogleChatControlAlert({ action, target, detail, actorName, actorEmail, createdAt }) {
+  if (IS_LOCAL_RUNTIME) {
+    return;
+  }
   if (!GOOGLE_CHAT_WEBHOOK_URL || !CONTROL_CHANGE_ALERT_ACTIONS_ALL.has(action) || !CONTROL_CHANGE_ALERT_ACTIONS.has(action)) {
     return;
   }
@@ -2125,6 +2131,7 @@ export default function App() {
   const reportPreviewFrameRef = useRef(null);
   const assignmentFormRef = useRef(null);
   const completedEditFormRef = useRef(null);
+  const pendingAssignmentPresetRef = useRef(null);
   const confirmResolverRef = useRef(null);
   const deletedMemberEmailSet = useMemo(() => new Set(deletedMemberEmails), [deletedMemberEmails]);
   const effectiveLoginDomains = useMemo(() => {
@@ -2936,7 +2943,7 @@ export default function App() {
     });
   }
 
-  function openControlOperation(controlId, nextProcessFilter = "전체") {
+  function openControlOperation(controlId, nextProcessFilter = "전체", options = {}) {
     const targetControl = controls.find((control) => control.id === controlId);
     const resolvedProcess = nextProcessFilter === "전체"
       ? (targetControl?.process ?? "전체")
@@ -2947,6 +2954,10 @@ export default function App() {
     setSelectedControlId(controlId || targetControl?.id || controls[0]?.id || "");
     setCurrentView("control-workbench");
     setWorkbenchTab("controls");
+    pendingAssignmentPresetRef.current = {
+      executionYear: String(options.executionYear ?? "").trim(),
+      executionPeriod: String(options.executionPeriod ?? "").trim(),
+    };
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "auto" });
     }
@@ -3124,11 +3135,13 @@ export default function App() {
     setEvidenceInputCount(1);
     setAssignmentPendingEvidenceCount(0);
     const nextEntry = getPreferredExecutionEntry(selectedControl);
+    const preset = pendingAssignmentPresetRef.current;
     setAssignmentExecutionNote("");
-    setAssignmentExecutionYear("");
-    setAssignmentExecutionPeriod("");
+    setAssignmentExecutionYear(String(preset?.executionYear ?? "").trim());
+    setAssignmentExecutionPeriod(String(preset?.executionPeriod ?? "").trim());
     setAssignmentReviewer(selectedControl?.reviewer ?? selectedControl?.reviewDept ?? "");
     setAssignmentReviewChecked(nextEntry?.reviewChecked ?? "미검토");
+    pendingAssignmentPresetRef.current = null;
   }, [
     selectedControlId,
     selectedControl?.executionHistory,
@@ -4810,27 +4823,17 @@ export default function App() {
                     )}
                   </div>
                 </section>
-                <section className="dashboard-delay-section">
-                  <div className="dashboard-delay-section-head">
-                    <div>
-                      <p className="eyebrow">지연 내역</p>
-                      <h3>연 기준 지연 현황</h3>
-                    </div>
-                  </div>
-                  <div className="control-progress-summary-grid dashboard-delay-summary-grid">
-                    {dashboardAnnualDelayBuckets.map((bucket) => (
-                      <button
-                        type="button"
-                        className="control-progress-summary-card dashboard-delay-summary-card"
-                        key={bucket.key}
-                        onClick={() => openDashboardDelayDetail(bucket.key)}
-                      >
-                        <span>{bucket.label}</span>
-                        <strong>{bucket.items.length}건</strong>
-                      </button>
-                    ))}
-                  </div>
-                </section>
+                {dashboardAnnualDelayBuckets.map((bucket) => (
+                  <button
+                    type="button"
+                    className="dashboard-delay-inline-summary"
+                    key={bucket.key}
+                    onClick={() => openDashboardDelayDetail(bucket.key)}
+                  >
+                    <span>연 기준 지연 현황</span>
+                    <strong>{bucket.items.length}건</strong>
+                  </button>
+                ))}
                 <div className="section-heading">
                   <div>
                     <h2>대시보드</h2>
@@ -5020,9 +5023,6 @@ export default function App() {
                         ))}
                       </select>
                     </label>
-                    <button className="secondary-button slim-button" type="button" onClick={() => setCurrentView("dashboard")}>
-                      대시보드로 돌아가기
-                    </button>
                   </div>
                 </div>
                 <div className="detail-tabs dashboard-tabs">
@@ -5045,7 +5045,12 @@ export default function App() {
                         type="button"
                         className={`control-progress-card tone-${toDashboardAnchor(selectedDashboardDelayBucket.key)}`}
                         key={`${selectedDashboardDelayBucket.key}-${item.id}`}
-                        onClick={() => openControlOperation(item.id, item.process)}
+                        onClick={() =>
+                          openControlOperation(item.id, item.process, {
+                            executionYear: dashboardDelayYear,
+                            executionPeriod: item.overduePeriod,
+                          })
+                        }
                       >
                         <div className="control-progress-head">
                           <strong>{item.id}</strong>
