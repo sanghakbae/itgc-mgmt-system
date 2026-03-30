@@ -2085,6 +2085,8 @@ export default function App() {
   const [assignmentPendingEvidenceCount, setAssignmentPendingEvidenceCount] = useState(0);
   const [assignmentReviewNote, setAssignmentReviewNote] = useState("");
   const [completedEditMode, setCompletedEditMode] = useState(false);
+  const [completedEditYear, setCompletedEditYear] = useState("");
+  const [completedEditPeriod, setCompletedEditPeriod] = useState("");
   const [completedEditNote, setCompletedEditNote] = useState("");
   const [completedEditEvidenceFiles, setCompletedEditEvidenceFiles] = useState([]);
   const [completedEvidenceInputCount, setCompletedEvidenceInputCount] = useState(1);
@@ -3158,6 +3160,8 @@ export default function App() {
 
   useEffect(() => {
     setCompletedEditMode(false);
+    setCompletedEditYear(selectedCompletedControl?.executionYear ?? "");
+    setCompletedEditPeriod(selectedCompletedControl?.executionPeriod ?? "");
     setCompletedEditNote(selectedCompletedControl?.executionNote ?? "");
     setCompletedEditEvidenceFiles(Array.isArray(selectedCompletedControl?.evidenceFiles) ? selectedCompletedControl.evidenceFiles : []);
     setCompletedEvidenceInputCount(1);
@@ -4326,6 +4330,8 @@ export default function App() {
     if (!selectedCompletedControl) {
       return;
     }
+    setCompletedEditYear(selectedCompletedControl.executionYear ?? "");
+    setCompletedEditPeriod(selectedCompletedControl.executionPeriod ?? "");
     setCompletedEditNote(selectedCompletedControl.executionNote ?? "");
     setCompletedEditEvidenceFiles(Array.isArray(selectedCompletedControl.evidenceFiles) ? selectedCompletedControl.evidenceFiles : []);
     setCompletedEvidenceInputCount(1);
@@ -4335,6 +4341,8 @@ export default function App() {
 
   function handleCancelCompletedEdit() {
     setCompletedEditMode(false);
+    setCompletedEditYear(selectedCompletedControl?.executionYear ?? "");
+    setCompletedEditPeriod(selectedCompletedControl?.executionPeriod ?? "");
     setCompletedEditNote(selectedCompletedControl?.executionNote ?? "");
     setCompletedEditEvidenceFiles(Array.isArray(selectedCompletedControl?.evidenceFiles) ? selectedCompletedControl.evidenceFiles : []);
     setCompletedEvidenceInputCount(1);
@@ -4363,9 +4371,21 @@ export default function App() {
     const files = formData
       .getAll("completedEvidenceFiles")
       .filter((value) => value instanceof File && value.size > 0);
+    const executionYear = completedEditYear.trim();
+    const executionPeriod = completedEditPeriod.trim();
     const executionNote = completedEditNote.trim();
     let nextEvidenceFiles = [...completedEditEvidenceFiles];
     let uploaded = false;
+
+    if (!executionYear) {
+      showCenterAlert("년도는 필수입니다.");
+      return;
+    }
+
+    if (!executionPeriod) {
+      showCenterAlert("주기는 필수입니다.");
+      return;
+    }
 
     if (!executionNote) {
       showCenterAlert("수행 내역을 입력하세요.");
@@ -4393,6 +4413,8 @@ export default function App() {
       return;
     }
 
+    const nextExecutionKey = createExecutionEntryKey(selectedCompletedControl.id, executionYear, executionPeriod);
+
     const nextWorkspace = {
       ...workspace,
       controls: controls.map((control) => {
@@ -4400,32 +4422,44 @@ export default function App() {
           return control;
         }
 
-        const nextHistory = getControlExecutionHistory(control).map((entry) =>
-          createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod) === selectedCompletedControl.completedExecutionKey
-            ? {
-                ...entry,
-                executionNote,
-                evidenceFiles: nextEvidenceFiles,
-                evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
-                status: deriveAssignmentStatus(executionNote, entry.reviewChecked ?? "미검토"),
-                updatedAt: new Date().toISOString(),
-              }
-            : entry,
+        const currentHistory = getControlExecutionHistory(control);
+        const currentEntry = currentHistory.find(
+          (entry) => createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod) === selectedCompletedControl.completedExecutionKey,
         );
+        const nextHistory = [
+          ...currentHistory.filter((entry) => {
+            const entryKey = createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod);
+            return entryKey !== selectedCompletedControl.completedExecutionKey && entryKey !== nextExecutionKey;
+          }),
+          {
+            ...(currentEntry ?? {}),
+            executionId: nextExecutionKey,
+            executionYear,
+            executionPeriod,
+            executionNote,
+            evidenceFiles: nextEvidenceFiles,
+            evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
+            status: deriveAssignmentStatus(executionNote, currentEntry?.reviewChecked ?? "미검토"),
+            updatedAt: new Date().toISOString(),
+          },
+        ];
 
         return mergeExecutionHistoryIntoControl(control, nextHistory, {
-          executionYear: selectedCompletedControl.executionYear,
-          executionPeriod: selectedCompletedControl.executionPeriod,
+          executionYear,
+          executionPeriod,
         });
       }),
     };
 
     writeAuditLog("EXECUTION_SAVED", selectedCompletedControl.id, `${selectedCompletedControl.title} 등록 완료 수정`, nextWorkspace);
     setCompletedEditMode(false);
+    setCompletedEditYear(executionYear);
+    setCompletedEditPeriod(executionPeriod);
     setCompletedEditNote(executionNote);
     setCompletedEditEvidenceFiles(nextEvidenceFiles);
     setCompletedEvidenceInputCount(1);
     setCompletedPendingEvidenceCount(0);
+    setSelectedCompletedExecutionKey(nextExecutionKey);
     setExecutionSavePopupMessage("등록 완료 내용이 수정되었습니다.");
   }
 
@@ -5869,6 +5903,34 @@ export default function App() {
                         ) : (
                           <div className="review-row-full completed-inline-edit-area">
                             <form ref={completedEditFormRef} className="stack-form execution-form" onSubmit={handleCompletedEditSubmit}>
+                              <div className="execution-form-item execution-inline-select-row">
+                                <div className="execution-inline-select-controls">
+                                  <span className="execution-inline-label">년도:</span>
+                                  <select
+                                    name="completedExecutionYear"
+                                    value={completedEditYear}
+                                    onChange={(event) => setCompletedEditYear(event.target.value)}
+                                    required
+                                  >
+                                    <option value="">년도 선택</option>
+                                    {executionYearOptions.map((year) => (
+                                      <option key={year} value={year}>{year}년</option>
+                                    ))}
+                                  </select>
+                                  <span className="execution-inline-label">주기:</span>
+                                  <select
+                                    name="completedExecutionPeriod"
+                                    value={completedEditPeriod}
+                                    onChange={(event) => setCompletedEditPeriod(event.target.value)}
+                                    required
+                                  >
+                                    <option value="">주기 선택</option>
+                                    {buildExecutionPeriodOptions(selectedCompletedControl.frequency).map((period) => (
+                                      <option key={period} value={period}>{period}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
                               <label className="execution-form-item">
                                 수행 내역
                                 <textarea
