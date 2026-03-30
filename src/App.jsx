@@ -3043,7 +3043,7 @@ export default function App() {
     if (nextTab === "register") {
       setRegistrationCategoryFilter("전체");
       setRegistrationListPage(1);
-      setRegistrationSelectedControlId(controls[0]?.id ?? "");
+      setRegistrationSelectedControlId(registrationVisibleControls[0]?.id ?? controls[0]?.id ?? "");
       return;
     }
 
@@ -3051,7 +3051,7 @@ export default function App() {
       setProcessFilter("전체");
       setControlUnitFilter("전체");
       setControlListPage(1);
-      setSelectedControlId(controls[0]?.id ?? "");
+      setSelectedControlId(visibleControls[0]?.id ?? controls[0]?.id ?? "");
       return;
     }
 
@@ -3065,8 +3065,8 @@ export default function App() {
     if (nextTab === "control-review") {
       setReviewUnitFilter("전체");
       setControlListPage(1);
-      setSelectedReviewExecutionKey(reviewQueueControls[0]?.reviewExecutionKey ?? "");
-      setSelectedControlId(reviewQueueControls[0]?.id ?? "");
+      setSelectedReviewExecutionKey(reviewVisibleControls[0]?.reviewExecutionKey ?? reviewQueueControls[0]?.reviewExecutionKey ?? "");
+      setSelectedControlId(reviewVisibleControls[0]?.id ?? reviewQueueControls[0]?.id ?? "");
     }
   }
 
@@ -3591,7 +3591,7 @@ export default function App() {
       line-height: 1.2;
     }
     th { background: #f3f4f6; }
-    .execution-note { min-width: 300px; text-align: left; vertical-align: top; white-space: pre-line; line-height: 1.45; word-break: break-word; overflow-wrap: anywhere; }
+    .execution-note { min-width: 300px; padding: 0; margin: 0; background: transparent; border: 0; box-shadow: none; text-align: left; vertical-align: top; white-space: pre-line; line-height: 1.45; word-break: break-word; overflow-wrap: anywhere; }
     .execution-evidence-cell { min-width: 220px; text-align: left; vertical-align: top; }
     .execution-image-list { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 0; width: 100%; }
     .execution-empty { width: 100%; text-align: left; color: #6b7280; }
