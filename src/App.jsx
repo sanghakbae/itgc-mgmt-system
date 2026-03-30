@@ -1526,6 +1526,7 @@ function auditActionLabel(action) {
     EXECUTION_SAVED: "통제 운영 저장",
     EXECUTION_RECALLED: "통제 운영 회수",
     REVIEW_SAVED: "검토 저장",
+    REVIEW_REQUESTED: "검토 요청",
     REVIEW_COMPLETED: "승인 완료",
     REVIEW_RECALLED: "검토 회수",
     REPORT_VIEWED: "리포트 조회",
@@ -1537,8 +1538,7 @@ function auditActionLabel(action) {
 }
 
 const REQUIRED_CONTROL_CHANGE_ALERT_ACTIONS = [
-  "EXECUTION_SAVED",
-  "REVIEW_SAVED",
+  "REVIEW_REQUESTED",
   "REVIEW_COMPLETED",
 ];
 
@@ -1557,11 +1557,12 @@ const CONTROL_CHANGE_ALERT_ACTIONS_ALL = new Set([
   "EXECUTION_SAVED",
   "EXECUTION_RECALLED",
   "REVIEW_SAVED",
+  "REVIEW_REQUESTED",
   "REVIEW_COMPLETED",
   "REVIEW_RECALLED",
 ]);
 
-function sendGoogleChatControlAlert({ action, target, detail, actorName, actorEmail, createdAt }) {
+function sendGoogleChatControlAlert({ action, target, detail, actorName, actorEmail, createdAt, systemUrl }) {
   if (IS_LOCAL_RUNTIME) {
     return;
   }
@@ -1577,9 +1578,9 @@ function sendGoogleChatControlAlert({ action, target, detail, actorName, actorEm
   }
   googleChatAlertDedupCache.set(dedupKey, now);
 
-  const host = typeof window !== "undefined" ? window.location.origin : "";
-  const alertTitle = action === "EXECUTION_SAVED"
-    ? "ITGC 통제 수행 등록 알림"
+  const host = String(systemUrl ?? "").trim() || (typeof window !== "undefined" ? window.location.origin : "");
+  const alertTitle = action === "REVIEW_REQUESTED"
+    ? "ITGC 통제 검토 요청 알림"
     : action === "REVIEW_COMPLETED"
       ? "ITGC 통제 검토 완료 알림"
       : "ITGC 통제 관리 변경 알림";
@@ -2050,7 +2051,63 @@ function loadPersistedUiTheme() {
   return "classic";
 }
 
+function loadNavigationStateFromUrl() {
+  if (typeof window === "undefined") {
+    return {};
+  }
+  try {
+    const url = new URL(window.location.href);
+    const view = url.searchParams.get("view");
+    const tab = url.searchParams.get("tab");
+    return {
+      currentView: view && VIEW_KEYS.includes(view) ? view : "",
+      workbenchTab: tab && WORKBENCH_TAB_KEYS.includes(tab) ? tab : "",
+      selectedControlId: url.searchParams.get("controlId") ?? "",
+      selectedCompletedExecutionKey: url.searchParams.get("completedKey") ?? "",
+      selectedReviewExecutionKey: url.searchParams.get("reviewKey") ?? "",
+    };
+  } catch {
+    return {};
+  }
+}
+
+function buildAppNavigationUrl({
+  currentView,
+  workbenchTab,
+  selectedControlId,
+  selectedCompletedExecutionKey,
+  selectedReviewExecutionKey,
+}) {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.delete("view");
+  url.searchParams.delete("tab");
+  url.searchParams.delete("controlId");
+  url.searchParams.delete("completedKey");
+  url.searchParams.delete("reviewKey");
+
+  if (currentView && VIEW_KEYS.includes(currentView)) {
+    url.searchParams.set("view", currentView);
+  }
+  if (currentView === "control-workbench" && workbenchTab && WORKBENCH_TAB_KEYS.includes(workbenchTab)) {
+    url.searchParams.set("tab", workbenchTab);
+  }
+  if (selectedControlId) {
+    url.searchParams.set("controlId", selectedControlId);
+  }
+  if (selectedCompletedExecutionKey) {
+    url.searchParams.set("completedKey", selectedCompletedExecutionKey);
+  }
+  if (selectedReviewExecutionKey) {
+    url.searchParams.set("reviewKey", selectedReviewExecutionKey);
+  }
+  return url.toString();
+}
+
 export default function App() {
+  const initialNavigationState = loadNavigationStateFromUrl();
   const [authUser, setAuthUser] = useState(() => loadAuthSession());
   const [authError, setAuthError] = useState("");
   const [loginDomains, setLoginDomains] = useState(() => loadLoginDomains());
@@ -2058,10 +2115,10 @@ export default function App() {
   const [deletedMemberEmails, setDeletedMemberEmails] = useState(() => loadDeletedMemberEmails());
   const [workspace, setWorkspace] = useState(() => loadWorkspace());
   const workspaceRef = useRef(workspace);
-  const [currentView, setCurrentView] = useState(() => loadPersistedCurrentView());
-  const [selectedControlId, setSelectedControlId] = useState("");
-  const [selectedCompletedExecutionKey, setSelectedCompletedExecutionKey] = useState("");
-  const [selectedReviewExecutionKey, setSelectedReviewExecutionKey] = useState("");
+  const [currentView, setCurrentView] = useState(() => initialNavigationState.currentView || loadPersistedCurrentView());
+  const [selectedControlId, setSelectedControlId] = useState(() => initialNavigationState.selectedControlId || "");
+  const [selectedCompletedExecutionKey, setSelectedCompletedExecutionKey] = useState(() => initialNavigationState.selectedCompletedExecutionKey || "");
+  const [selectedReviewExecutionKey, setSelectedReviewExecutionKey] = useState(() => initialNavigationState.selectedReviewExecutionKey || "");
   const [processFilter, setProcessFilter] = useState("전체");
   const [controlUnitFilter, setControlUnitFilter] = useState("전체");
   const [controlExecutionFilter, setControlExecutionFilter] = useState("전체");
@@ -2101,7 +2158,7 @@ export default function App() {
   const [dashboardUnitFilter, setDashboardUnitFilter] = useState("전체");
   const [dashboardDelayFilter, setDashboardDelayFilter] = useState("전체");
   const [dashboardDelayDetailKey, setDashboardDelayDetailKey] = useState("monthly");
-  const [workbenchTab, setWorkbenchTab] = useState(() => loadPersistedWorkbenchTab());
+  const [workbenchTab, setWorkbenchTab] = useState(() => initialNavigationState.workbenchTab || loadPersistedWorkbenchTab());
   const [uiTheme, setUiTheme] = useState(() => loadPersistedUiTheme());
   const [dashboardCalendarMonth, setDashboardCalendarMonth] = useState(() => {
     const month = new Date().getMonth() + 1;
@@ -2278,6 +2335,28 @@ export default function App() {
       window.localStorage.setItem(WORKBENCH_TAB_STORAGE_KEY, workbenchTab);
     } catch {}
   }, [workbenchTab]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const nextUrl = buildAppNavigationUrl({
+      currentView,
+      workbenchTab,
+      selectedControlId,
+      selectedCompletedExecutionKey,
+      selectedReviewExecutionKey,
+    });
+    if (nextUrl && nextUrl !== window.location.href) {
+      window.history.replaceState(null, "", nextUrl);
+    }
+  }, [
+    currentView,
+    workbenchTab,
+    selectedControlId,
+    selectedCompletedExecutionKey,
+    selectedReviewExecutionKey,
+  ]);
 
   useEffect(() => {
     try {
@@ -3339,7 +3418,7 @@ export default function App() {
     }
   }
 
-  function writeAuditLog(action, target, detail, baseWorkspace = null, actorOverride = null) {
+  function writeAuditLog(action, target, detail, baseWorkspace = null, actorOverride = null, alertContext = null) {
     const currentWorkspace = baseWorkspace ?? workspaceRef.current;
     const actorName = actorOverride?.actorName ?? authUser?.name ?? "";
     const actorEmail = actorOverride?.actorEmail ?? authUser?.email ?? "";
@@ -3372,6 +3451,7 @@ export default function App() {
       actorName,
       actorEmail,
       createdAt: createdAtTs,
+      systemUrl: alertContext?.systemUrl,
     });
     return nextWorkspace;
   }
@@ -4341,7 +4421,22 @@ export default function App() {
         });
       }),
     };
-    writeAuditLog("REVIEW_REQUESTED", selectedCompletedControl.id, `${selectedCompletedControl.title} 검토 요청`, nextWorkspace);
+    writeAuditLog(
+      "REVIEW_REQUESTED",
+      selectedCompletedControl.id,
+      `${selectedCompletedControl.title} 검토 요청`,
+      nextWorkspace,
+      null,
+      {
+        systemUrl: buildAppNavigationUrl({
+          currentView: "control-workbench",
+          workbenchTab: "control-review",
+          selectedControlId: selectedCompletedControl.id,
+          selectedCompletedExecutionKey: "",
+          selectedReviewExecutionKey: selectedCompletedControl.completedExecutionKey,
+        }),
+      },
+    );
     setCurrentView("control-workbench");
     setWorkbenchTab("control-review");
     setReviewUnitFilter("전체");
@@ -4547,7 +4642,22 @@ export default function App() {
 
     const loggedWorkspace = writeAuditLog("REVIEW_SAVED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 저장`, nextWorkspace);
     if (reviewDecision === "양호") {
-      writeAuditLog("REVIEW_COMPLETED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 완료 · ${reviewer}`, loggedWorkspace);
+      writeAuditLog(
+        "REVIEW_COMPLETED",
+        selectedReviewControl.id,
+        `${selectedReviewControl.title} 검토 완료 · ${reviewer}`,
+        loggedWorkspace,
+        null,
+        {
+          systemUrl: buildAppNavigationUrl({
+            currentView: "control-workbench",
+            workbenchTab: "controls-complete",
+            selectedControlId: selectedReviewControl.id,
+            selectedCompletedExecutionKey: selectedReviewControl.reviewExecutionKey,
+            selectedReviewExecutionKey: "",
+          }),
+        },
+      );
     } else {
       setCurrentView("control-workbench");
       setWorkbenchTab("controls-complete");
