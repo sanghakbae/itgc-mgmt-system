@@ -825,6 +825,10 @@ function compareControlsByRecentExecution(left, right) {
   return compareExecutionEntriesDesc(left, right);
 }
 
+function compareControlsByListOrder(left, right) {
+  return compareControlsByRecentExecution(left, right) || String(left?.id ?? "").localeCompare(String(right?.id ?? ""), "ko");
+}
+
 function createExecutionEntryKey(controlId, executionYear, executionPeriod) {
   return `${String(controlId ?? "").trim()}::${String(executionYear ?? "").trim()}::${String(executionPeriod ?? "").trim()}`;
 }
@@ -1488,16 +1492,40 @@ function controlProgressValue(control) {
     return null;
   }
 
-  const executionStatus = deriveAssignmentStatus(control.executionNote ?? "", control.reviewChecked ?? "미검토");
-
-  let completedCount = 0;
-  if (executionStatus === "점검 완료") {
-    completedCount = 1;
-  } else if (executionStatus === "점검 중") {
-    completedCount = 0.5;
-  }
+  const history = getControlExecutionHistory(control);
+  const completedCount = history.filter((entry) => {
+    if (!hasExecutionEntryContent(entry)) {
+      return false;
+    }
+    return String(entry?.reviewChecked ?? "미검토").trim() === "검토 완료";
+  }).length;
 
   return Math.min(100, Math.round((completedCount / target) * 100));
+}
+
+function matchesDashboardControlStatus(status, focus) {
+  if (focus === "전체") {
+    return true;
+  }
+  if (focus === "완료") {
+    return status === "점검 완료" || status === "정상";
+  }
+  if (focus === "진행 중") {
+    return status === "점검 중";
+  }
+  if (focus === "예정") {
+    return status === "점검 예정";
+  }
+  return true;
+}
+
+function annualPlannedCountByFrequency(frequency) {
+  const normalized = String(frequency ?? "").trim();
+  if (normalized === "Monthly" || normalized === "월별") return 12;
+  if (normalized === "Quarterly" || normalized === "분기별") return 4;
+  if (normalized === "Half-Bi-annual" || normalized === "반기별") return 2;
+  if (normalized === "Annual" || normalized === "연 1회 + 변경 시" || normalized === "연간") return 1;
+  return 0;
 }
 
 const frequencyOrder = [
@@ -2365,6 +2393,8 @@ export default function App() {
   const [selectedReviewExecutionKey, setSelectedReviewExecutionKey] = useState(() => initialNavigationState.selectedReviewExecutionKey || "");
   const [selectedPerformedExecutionKey, setSelectedPerformedExecutionKey] = useState("");
   const [processFilter, setProcessFilter] = useState("전체");
+  const [controlFrequencyFilter, setControlFrequencyFilter] = useState("전체");
+  const [controlIdFilter, setControlIdFilter] = useState("전체");
   const [controlUnitFilter, setControlUnitFilter] = useState("전체");
   const [controlExecutionFilter, setControlExecutionFilter] = useState("전체");
   const [reviewUnitFilter, setReviewUnitFilter] = useState("전체");
@@ -2402,6 +2432,9 @@ export default function App() {
   const [dashboardView, setDashboardView] = useState("category");
   const [dashboardUnitFilter, setDashboardUnitFilter] = useState("전체");
   const [dashboardDelayFilter, setDashboardDelayFilter] = useState("전체");
+  const [dashboardFrequencyFocus, setDashboardFrequencyFocus] = useState("전체");
+  const [dashboardControlStatusFocus, setDashboardControlStatusFocus] = useState("전체");
+  const [dashboardCategoryFocus, setDashboardCategoryFocus] = useState("전체");
   const [dashboardDelayDetailKey, setDashboardDelayDetailKey] = useState("monthly");
   const [workbenchTab, setWorkbenchTab] = useState(() => initialNavigationState.workbenchTab || loadPersistedWorkbenchTab());
   const [uiTheme, setUiTheme] = useState(() => loadPersistedUiTheme());
@@ -2707,6 +2740,18 @@ export default function App() {
 
   const listPageSize = (isWorkbenchView || currentView === "control-list") ? 15 : 10;
   const visibleControls = controls.filter((control) => {
+    const matchesProcess =
+      processFilter === "전체"
+        ? true
+        : String(control.process ?? "").trim() === processFilter;
+    const matchesFrequency =
+      controlFrequencyFilter === "전체"
+        ? true
+        : String(control.frequency ?? "").trim() === controlFrequencyFilter;
+    const matchesControlId =
+      controlIdFilter === "전체"
+        ? true
+        : String(control.id ?? "").trim() === controlIdFilter;
     const matchesUnit =
       controlUnitFilter === "전체"
         ? true
@@ -2717,8 +2762,8 @@ export default function App() {
         ? hasDraft
         : true;
 
-    return matchesUnit && matchesExecutionFilter;
-  });
+    return matchesProcess && matchesFrequency && matchesControlId && matchesUnit && matchesExecutionFilter;
+  }).sort(compareControlsByListOrder);
   const controlExecutionDraftCount = controls.filter((control) => hasDraftExecutionEntry(control)).length;
   const totalControlPages = Math.max(1, Math.ceil(visibleControls.length / listPageSize));
   const currentControlPage = Math.min(controlListPage, totalControlPages);
@@ -2739,8 +2784,10 @@ export default function App() {
   const registrationCategoryOptions = ["전체", ...new Set(controls.map((control) => control.process))];
   const registrationVisibleControls =
     registrationCategoryFilter === "전체"
-      ? controls
-      : controls.filter((control) => control.process === registrationCategoryFilter);
+      ? [...controls]
+      : controls.filter((control) => control.process === registrationCategoryFilter)
+  ;
+  registrationVisibleControls.sort(compareControlsByListOrder);
   const registrationTotalPages = Math.max(1, Math.ceil(registrationVisibleControls.length / listPageSize));
   const registrationCurrentPage = Math.min(registrationListPage, registrationTotalPages);
   const registrationPagedControls = registrationVisibleControls.slice(
@@ -2999,13 +3046,7 @@ export default function App() {
 
     return monthBuckets.map((bucket) => ({
       ...bucket,
-      items: bucket.items.sort((left, right) => {
-        const leftIndex = frequencyOrder.indexOf(left.frequency);
-        const rightIndex = frequencyOrder.indexOf(right.frequency);
-        const safeLeft = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex;
-        const safeRight = rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex;
-        return safeLeft - safeRight || left.id.localeCompare(right.id, "ko");
-      }),
+      items: bucket.items.sort(compareControlsByListOrder),
     }));
   }, [dashboardFilteredControls]);
   const dashboardMonthlyCards =
@@ -3044,6 +3085,28 @@ export default function App() {
       };
     });
   }, [dashboardDelayYear, dashboardFilteredControls]);
+  const dashboardAnnualProgressSummary = useMemo(() => {
+    const summary = dashboardFilteredControls.reduce((acc, control) => {
+      const plannedCount = annualPlannedCountByFrequency(control.frequency);
+      if (plannedCount <= 0) {
+        return acc;
+      }
+
+      const completedCount = getControlExecutionHistory(control).filter((entry) =>
+        String(entry?.executionYear ?? "").trim() === String(dashboardDelayYear).trim()
+        && String(entry?.reviewChecked ?? "미검토").trim() === "검토 완료",
+      ).length;
+
+      acc.planned += plannedCount;
+      acc.completed += Math.min(plannedCount, completedCount);
+      return acc;
+    }, { planned: 0, completed: 0 });
+
+    return {
+      ...summary,
+      progressRate: summary.planned === 0 ? 0 : Math.round((summary.completed / summary.planned) * 100),
+    };
+  }, [dashboardDelayYear, dashboardFilteredControls]);
   const selectedDashboardDelayBucket =
     dashboardAnnualDelayBuckets.find((bucket) => bucket.key === dashboardDelayDetailKey)
     ?? dashboardAnnualDelayBuckets[0]
@@ -3079,9 +3142,17 @@ export default function App() {
       .map(([frequency, items]) => ({
         frequency,
         label: frequencyLabelMap[frequency] ?? frequency,
-        items,
+        items: items.sort(compareControlsByListOrder),
       }));
   }, [dashboardFilteredControls]);
+  const visibleControlProgressGroups = useMemo(
+    () => (
+      dashboardFrequencyFocus === "전체"
+        ? controlProgressGroups
+        : controlProgressGroups.filter((group) => group.frequency === dashboardFrequencyFocus)
+    ),
+    [controlProgressGroups, dashboardFrequencyFocus],
+  );
   const dashboardStatusSummary = useMemo(() => ({
     total: dashboardFilteredControls.length,
     inProgress: dashboardFilteredControls.filter((control) => deriveAssignmentStatus(control.executionNote ?? "", control.reviewChecked ?? "미검토") === "점검 중").length,
@@ -3120,9 +3191,32 @@ export default function App() {
       })
       .map(([group, items]) => ({
         group,
-        items,
+        items: items.sort(compareControlsByListOrder),
       }));
   }, [dashboardControlItems]);
+  const visibleDashboardControlGroups = useMemo(
+    () =>
+      dashboardControlGroups
+        .map((group) => ({
+          ...group,
+          items: group.items.filter((item) => matchesDashboardControlStatus(item.status, dashboardControlStatusFocus)),
+        }))
+        .filter((group) => group.items.length > 0),
+    [dashboardControlGroups, dashboardControlStatusFocus],
+  );
+  const visibleDashboardProcessSummary = useMemo(
+    () =>
+      dashboardProcessSummary.filter((item) => {
+        if (dashboardCategoryFocus === "완료") {
+          return item.pending === 0;
+        }
+        if (dashboardCategoryFocus === "관리 필요") {
+          return item.pending > 0;
+        }
+        return true;
+      }),
+    [dashboardCategoryFocus, dashboardProcessSummary],
+  );
   const dashboardAnchorTargets = useMemo(() => ({
     firstControl: dashboardControlItems[0]?.id ?? "",
     inProgress: dashboardControlItems.find((item) => item.status === "점검 중")?.id ?? "",
@@ -3138,12 +3232,12 @@ export default function App() {
         controlProgressGroups.find((group) => group.frequency === key)?.items.length ?? 0;
 
       return [
-        { label: "월별", value: `${countByFrequency("Monthly")}건`, targetId: "dashboard-frequency-monthly" },
-        { label: "분기별", value: `${countByFrequency("Quarterly")}건`, targetId: "dashboard-frequency-quarterly" },
-        { label: "반기별", value: `${countByFrequency("Half-Bi-annual")}건`, targetId: "dashboard-frequency-half-bi-annual" },
-        { label: "연 1회", value: `${countByFrequency("Annual")}건`, targetId: "dashboard-frequency-annual" },
-        { label: "이벤트 발생 시", value: `${countByFrequency("Event Driven")}건`, targetId: "dashboard-frequency-event-driven" },
-        { label: "필요 시", value: `${countByFrequency("Other")}건`, targetId: "dashboard-frequency-other" },
+        { label: "월별", value: `${countByFrequency("Monthly")}건`, targetId: "dashboard-frequency-monthly", filterValue: "Monthly" },
+        { label: "분기별", value: `${countByFrequency("Quarterly")}건`, targetId: "dashboard-frequency-quarterly", filterValue: "Quarterly" },
+        { label: "반기별", value: `${countByFrequency("Half-Bi-annual")}건`, targetId: "dashboard-frequency-half-bi-annual", filterValue: "Half-Bi-annual" },
+        { label: "연 1회", value: `${countByFrequency("Annual")}건`, targetId: "dashboard-frequency-annual", filterValue: "Annual" },
+        { label: "이벤트 발생 시", value: `${countByFrequency("Event Driven")}건`, targetId: "dashboard-frequency-event-driven", filterValue: "Event Driven" },
+        { label: "필요 시", value: `${countByFrequency("Other")}건`, targetId: "dashboard-frequency-other", filterValue: "Other" },
       ];
     }
 
@@ -3156,18 +3250,18 @@ export default function App() {
           : Math.round(dashboardProcessSummary.reduce((sum, item) => sum + item.progressRate, 0) / dashboardProcessSummary.length);
 
       return [
-        { label: "전체", value: `${dashboardProcessSummary.length}개`, targetId: "dashboard-category-root" },
-        { label: "완료", value: `${completedCategories}개`, targetId: dashboardAnchorTargets.completedCategory ? `dashboard-category-${toDashboardAnchor(dashboardAnchorTargets.completedCategory)}` : "dashboard-category-root" },
-        { label: "관리 필요", value: `${pendingCategories}개`, targetId: dashboardAnchorTargets.pendingCategory ? `dashboard-category-${toDashboardAnchor(dashboardAnchorTargets.pendingCategory)}` : "dashboard-category-root" },
-        { label: "현재 현황 평균", value: `${averageProgress}%`, targetId: "dashboard-category-root" },
+        { label: "전체", value: `${dashboardProcessSummary.length}개`, targetId: "dashboard-category-root", filterValue: "전체" },
+        { label: "완료", value: `${completedCategories}개`, targetId: "dashboard-category-root", filterValue: "완료" },
+        { label: "관리 필요", value: `${pendingCategories}개`, targetId: "dashboard-category-root", filterValue: "관리 필요" },
+        { label: "현재 현황 평균", value: `${averageProgress}%`, targetId: "dashboard-category-root", filterValue: "전체" },
       ];
     }
 
     return [
-      { label: "전체 통제", value: `${dashboardStatusSummary.total}건`, targetId: "dashboard-control-root" },
-      { label: "진행 중", value: `${dashboardStatusSummary.inProgress}건`, targetId: dashboardAnchorTargets.inProgress ? `dashboard-control-${toDashboardAnchor(dashboardAnchorTargets.inProgress)}` : "dashboard-control-root" },
-      { label: "완료", value: `${dashboardStatusSummary.completed}건`, targetId: dashboardAnchorTargets.completed ? `dashboard-control-${toDashboardAnchor(dashboardAnchorTargets.completed)}` : "dashboard-control-root" },
-      { label: "예정", value: `${dashboardStatusSummary.scheduled}건`, targetId: dashboardAnchorTargets.scheduled ? `dashboard-control-${toDashboardAnchor(dashboardAnchorTargets.scheduled)}` : "dashboard-control-root" },
+      { label: "전체 통제", value: `${dashboardStatusSummary.total}건`, targetId: "dashboard-control-root", filterValue: "전체" },
+      { label: "진행 중", value: `${dashboardStatusSummary.inProgress}건`, targetId: "dashboard-control-root", filterValue: "진행 중" },
+      { label: "완료", value: `${dashboardStatusSummary.completed}건`, targetId: "dashboard-control-root", filterValue: "완료" },
+      { label: "예정", value: `${dashboardStatusSummary.scheduled}건`, targetId: "dashboard-control-root", filterValue: "예정" },
     ];
   }, [controlProgressGroups, dashboardAnchorTargets, dashboardProcessSummary, dashboardStatusSummary, dashboardView]);
   const summary = useMemo(() => {
@@ -3299,6 +3393,9 @@ export default function App() {
       setDashboardUnitFilter("전체");
       setDashboardDelayFilter("전체");
       setDashboardDelayYear(currentCalendarYear);
+      setDashboardFrequencyFocus("전체");
+      setDashboardControlStatusFocus("전체");
+      setDashboardCategoryFocus("전체");
     }
     if (nextView === "control-list") {
       setRegistrationCategoryFilter("전체");
@@ -3310,6 +3407,8 @@ export default function App() {
       setRegistrationCategoryFilter("전체");
       setRegistrationListPage(1);
       setProcessFilter("전체");
+      setControlFrequencyFilter("전체");
+      setControlIdFilter("전체");
       setControlListPage(1);
       setRegistrationSelectedControlId(controls[0]?.id ?? "");
       setSelectedControlId(controls[0]?.id ?? "");
@@ -3349,6 +3448,8 @@ export default function App() {
 
     if (nextTab === "controls") {
       setProcessFilter("전체");
+      setControlFrequencyFilter("전체");
+      setControlIdFilter("전체");
       setControlUnitFilter("전체");
       setControlListPage(1);
       setSelectedControlId(visibleControls[0]?.id ?? controls[0]?.id ?? "");
@@ -3409,6 +3510,19 @@ export default function App() {
     });
   }
 
+  function handleDashboardSummaryCardClick(card) {
+    if (dashboardView === "frequency") {
+      setDashboardFrequencyFocus(card.filterValue ?? "전체");
+    }
+    if (dashboardView === "control") {
+      setDashboardControlStatusFocus(card.filterValue ?? "전체");
+    }
+    if (dashboardView === "category") {
+      setDashboardCategoryFocus(card.filterValue ?? "전체");
+    }
+    moveToDashboardTarget(card.targetId);
+  }
+
   function openControlOperation(controlId, nextProcessFilter = "전체", options = {}) {
     const targetControl = controls.find((control) => control.id === controlId);
     const resolvedProcess = nextProcessFilter === "전체"
@@ -3416,6 +3530,9 @@ export default function App() {
       : nextProcessFilter;
 
     setProcessFilter(resolvedProcess);
+    setControlFrequencyFilter("전체");
+    setControlIdFilter(controlId ? String(controlId).trim() : "전체");
+    setControlUnitFilter("전체");
     setControlListPage(1);
     setSelectedControlId(controlId || targetControl?.id || controls[0]?.id || "");
     setCurrentView("control-workbench");
@@ -3428,6 +3545,75 @@ export default function App() {
       window.scrollTo({ top: 0, behavior: "auto" });
     }
     writeAuditLog("MENU_OPEN", "control-workbench", `통제 관리 열람 · ${controlId || resolvedProcess}`);
+    if (window.matchMedia("(max-width: 960px)").matches) {
+      setIsSidebarOpen(false);
+    }
+  }
+
+  function openRegistrationByCategory(category) {
+    const resolvedCategory = String(category ?? "").trim() || "전체";
+    const filteredControls =
+      resolvedCategory === "전체"
+        ? controls
+        : controls.filter((control) => String(control.process ?? "").trim() === resolvedCategory);
+
+    setCurrentView("control-workbench");
+    setWorkbenchTab("register");
+    setRegistrationCategoryFilter(resolvedCategory);
+    setRegistrationListPage(1);
+    setRegistrationSelectedControlId(filteredControls[0]?.id ?? "");
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
+    writeAuditLog("MENU_OPEN", "control-workbench", `등록 양식 열람 · ${resolvedCategory}`);
+    if (window.matchMedia("(max-width: 960px)").matches) {
+      setIsSidebarOpen(false);
+    }
+  }
+
+  function openControlOperationByFrequency(frequency) {
+    const resolvedFrequency = String(frequency ?? "").trim() || "전체";
+    const filteredControls =
+      resolvedFrequency === "전체"
+        ? controls
+        : controls.filter((control) => String(control.frequency ?? "").trim() === resolvedFrequency);
+
+    setCurrentView("control-workbench");
+    setWorkbenchTab("controls");
+    setProcessFilter("전체");
+    setControlFrequencyFilter(resolvedFrequency);
+    setControlIdFilter("전체");
+    setControlUnitFilter("전체");
+    setControlListPage(1);
+    setSelectedControlId(filteredControls[0]?.id ?? "");
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
+    writeAuditLog("MENU_OPEN", "control-workbench", `통제 관리 열람 · 주기 ${resolvedFrequency}`);
+    if (window.matchMedia("(max-width: 960px)").matches) {
+      setIsSidebarOpen(false);
+    }
+  }
+
+  function openControlOperationByGroup(groupKey) {
+    const resolvedGroup = String(groupKey ?? "").trim() || "전체";
+    const filteredControls =
+      resolvedGroup === "전체"
+        ? controls
+        : controls.filter((control) => String(control.id ?? "").trim().split("-")[0] === resolvedGroup);
+
+    setCurrentView("control-workbench");
+    setWorkbenchTab("controls");
+    setProcessFilter("전체");
+    setControlFrequencyFilter("전체");
+    setControlIdFilter("전체");
+    setControlUnitFilter("전체");
+    setControlListPage(1);
+    setSelectedControlId(filteredControls[0]?.id ?? "");
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "auto" });
+    }
+    writeAuditLog("MENU_OPEN", "control-workbench", `통제 관리 열람 · 그룹 ${resolvedGroup}`);
     if (window.matchMedia("(max-width: 960px)").matches) {
       setIsSidebarOpen(false);
     }
@@ -5309,17 +5495,27 @@ export default function App() {
                     )}
                   </div>
                 </section>
-                {dashboardAnnualDelayBuckets.map((bucket) => (
+                <div className="dashboard-delay-inline-row">
+                  {dashboardAnnualDelayBuckets.map((bucket) => (
+                    <button
+                      type="button"
+                      className="dashboard-delay-inline-summary"
+                      key={bucket.key}
+                      onClick={() => openDashboardDelayDetail(bucket.key)}
+                    >
+                      <span>연 기준 지연 현황</span>
+                      <strong>{bucket.items.length}건</strong>
+                    </button>
+                  ))}
                   <button
                     type="button"
-                    className="dashboard-delay-inline-summary"
-                    key={bucket.key}
-                    onClick={() => openDashboardDelayDetail(bucket.key)}
+                    className="dashboard-delay-inline-summary dashboard-progress-inline-summary"
+                    onClick={() => openDashboardDelayDetail(dashboardAnnualDelayBuckets[0]?.key ?? "monthly")}
                   >
-                    <span>연 기준 지연 현황</span>
-                    <strong>{bucket.items.length}건</strong>
+                    <span>{`${dashboardDelayYear}년 진행률`}</span>
+                    <strong>{`${dashboardAnnualProgressSummary.progressRate}%`}</strong>
                   </button>
-                ))}
+                </div>
                 <div className="section-heading">
                   <div>
                     <h2>대시보드</h2>
@@ -5331,7 +5527,7 @@ export default function App() {
                       type="button"
                       className="control-progress-summary-card"
                       key={card.label}
-                      onClick={() => moveToDashboardTarget(card.targetId)}
+                      onClick={() => handleDashboardSummaryCardClick(card)}
                     >
                       <span>{card.label}</span>
                       <strong>{card.value}</strong>
@@ -5342,7 +5538,10 @@ export default function App() {
                   <button
                     type="button"
                     className={dashboardView === "category" ? "tab-button active" : "tab-button"}
-                    onClick={() => setDashboardView("category")}
+                    onClick={() => {
+                      setDashboardView("category");
+                      setDashboardCategoryFocus("전체");
+                    }}
                   >
                     <span className="tab-label-desktop">카테고리 기준</span>
                     <span className="tab-label-mobile">카테고리</span>
@@ -5350,7 +5549,10 @@ export default function App() {
                   <button
                     type="button"
                     className={dashboardView === "frequency" ? "tab-button active" : "tab-button"}
-                    onClick={() => setDashboardView("frequency")}
+                    onClick={() => {
+                      setDashboardView("frequency");
+                      setDashboardFrequencyFocus("전체");
+                    }}
                   >
                     <span className="tab-label-desktop">주기 기준</span>
                     <span className="tab-label-mobile">주기</span>
@@ -5358,7 +5560,10 @@ export default function App() {
                   <button
                     type="button"
                     className={dashboardView === "control" ? "tab-button active" : "tab-button"}
-                    onClick={() => setDashboardView("control")}
+                    onClick={() => {
+                      setDashboardView("control");
+                      setDashboardControlStatusFocus("전체");
+                    }}
                   >
                     <span className="tab-label-desktop">통제 기준</span>
                     <span className="tab-label-mobile">통제</span>
@@ -5384,7 +5589,7 @@ export default function App() {
                 </div>
                 {dashboardView === "frequency" ? (
                   <div className="control-progress-group-list" id="dashboard-frequency-root">
-                    {controlProgressGroups.map((group) => (
+                    {visibleControlProgressGroups.map((group) => (
                       <section
                         className={`control-progress-group tone-${toDashboardAnchor(group.frequency)}`}
                         key={group.frequency}
@@ -5400,7 +5605,7 @@ export default function App() {
                               type="button"
                               className="control-progress-card"
                               key={item.id}
-                              onClick={() => openControlOperation(item.id, item.process)}
+                              onClick={() => openControlOperationByFrequency(group.frequency)}
                             >
                               <div className="control-progress-head">
                                 <strong>{item.id}</strong>
@@ -5423,7 +5628,7 @@ export default function App() {
                 ) : null}
                 {dashboardView === "control" ? (
                   <div className="control-progress-group-list" id="dashboard-control-root">
-                    {dashboardControlGroups.map((group) => (
+                    {visibleDashboardControlGroups.map((group) => (
                       <section className={`control-progress-group tone-${toDashboardAnchor(group.group)}`} key={group.group}>
                         <div className="control-progress-group-head">
                           <strong>{group.group}</strong>
@@ -5436,7 +5641,7 @@ export default function App() {
                               className="control-progress-card"
                               key={item.id}
                               id={`dashboard-control-${toDashboardAnchor(item.id)}`}
-                              onClick={() => openControlOperation(item.id, item.process)}
+                              onClick={() => openControlOperationByGroup(group.group)}
                             >
                               <div className="control-progress-head">
                                 <strong>{item.id}</strong>
@@ -5459,16 +5664,13 @@ export default function App() {
                 ) : null}
                 {dashboardView === "category" ? (
                   <div className="control-progress-list category-progress-list" id="dashboard-category-root">
-                    {dashboardProcessSummary.map((item) => (
+                    {visibleDashboardProcessSummary.map((item) => (
                       <button
                         type="button"
                         className={`control-progress-card category-progress-card tone-${toDashboardAnchor(item.process)}`}
                         key={item.process}
                         id={`dashboard-category-${toDashboardAnchor(item.process)}`}
-                        onClick={() => {
-                          const firstControl = dashboardFilteredControls.find((control) => control.process === item.process);
-                          openControlOperation(firstControl?.id || "", item.process);
-                        }}
+                        onClick={() => openRegistrationByCategory(item.process)}
                       >
                         <div className="control-progress-head">
                           <strong>{item.process}</strong>

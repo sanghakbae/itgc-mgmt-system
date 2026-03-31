@@ -915,6 +915,7 @@ textarea {
 .control-list {
   display: grid;
   gap: 6px;
+  align-content: start;
 }
 
 .control-create-form {
@@ -3049,18 +3050,29 @@ th {
   width: 100%;
   margin: 0 0 22px;
   padding: 12px 14px 14px;
-  border: 1px solid rgba(234, 88, 12, 0.24);
+  border: 1px solid #dc2626;
   border-radius: 12px;
-  background: #ffedd5;
+  background: #ffffff;
   box-shadow:
-    0 10px 24px rgba(234, 88, 12, 0.12),
+    0 10px 24px rgba(220, 38, 38, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.42);
   cursor: pointer;
 }
 
+.dashboard-delay-inline-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 22px;
+}
+
+.dashboard-delay-inline-row .dashboard-delay-inline-summary {
+  margin: 0;
+}
+
 .dashboard-delay-inline-summary span,
 .dashboard-delay-inline-summary strong {
-  color: #c62828;
+  color: #dc2626;
 }
 
 .dashboard-delay-inline-summary span {
