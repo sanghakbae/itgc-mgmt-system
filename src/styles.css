@@ -739,52 +739,187 @@ textarea {
   position: sticky;
   top: 0;
   z-index: 20;
-  padding: 10px 12px;
+  padding: 14px 14px 12px;
   margin-bottom: 4px;
   overflow-anchor: none;
   background: #fffdf9;
 }
 
-.workbench-tabs-panel .detail-tabs {
-  margin-top: 0;
+.workbench-flow-overview {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
-.workbench-tabs-panel .tab-button {
-  font-size: 0.9rem;
+.workbench-flow-overview h2 {
+  margin: 4px 0 0;
+  font-size: 1rem;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+
+.workbench-flow-eyebrow {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.7rem;
   font-weight: 700;
-  min-height: 38px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
-.workbench-tab-button {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) 32px;
-  align-items: center;
-  justify-items: stretch;
-  gap: 0;
-  min-width: 154px;
+.workbench-flow-current {
+  margin: 0;
+  align-self: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
-.workbench-tab-spacer {
+.workbench-flow-current strong {
+  color: var(--text);
+}
+
+.workbench-step-flow {
+  display: flex;
+  align-items: stretch;
+  gap: 24px;
+  width: 100%;
+  overflow: visible;
+  padding-bottom: 2px;
+}
+
+.workbench-step-item {
+  position: relative;
   display: block;
-  width: 24px;
+  min-width: 0;
+  flex: 1 1 20%;
+}
+
+.workbench-step-button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 3px;
+  min-height: 40px;
+  width: 100%;
+  padding: 4px 5px;
+  border-radius: 8px;
+  font-size: 0.865rem;
+  font-weight: 700;
+  text-align: left;
+  color: var(--text);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 242, 235, 0.98));
+  border-color: rgba(15, 23, 42, 0.08);
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.04);
+}
+
+.workbench-step-button:hover {
+  border-color: rgba(15, 23, 42, 0.16);
+  transform: translateY(-1px);
+}
+
+.workbench-step-button.completed {
+  background: linear-gradient(180deg, rgba(238, 246, 240, 0.98), rgba(226, 239, 229, 0.98));
+  border-color: rgba(44, 95, 45, 0.2);
+}
+
+.workbench-step-button.active {
+  background: linear-gradient(135deg, #11284f, #1b4277);
+  border-color: #11284f;
+  box-shadow: 0 14px 28px rgba(17, 40, 79, 0.2);
+}
+
+.workbench-step-button.active .workbench-step-label,
+.workbench-step-button.active .workbench-step-helper {
+  color: #f8fafc;
+}
+
+.workbench-step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(17, 40, 79, 0.08);
+  color: var(--navy);
+  font-size: 0.56rem;
+  font-weight: 800;
+}
+
+.workbench-step-button.completed .workbench-step-index {
+  background: rgba(44, 95, 45, 0.14);
+  color: #2c5f2d;
+}
+
+.workbench-step-button.active .workbench-step-index {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.workbench-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.workbench-step-label {
+  color: var(--text);
+  font-size: 0.805rem;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.workbench-step-helper {
+  color: var(--muted);
+  font-size: 0.54rem;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.workbench-step-badge-slot {
+  display: inline-flex;
+  justify-content: flex-end;
+  align-items: center;
   min-width: 24px;
 }
 
-.workbench-tab-label {
-  display: block;
-  white-space: nowrap;
-  text-align: center;
-  justify-self: center;
-}
-
-.workbench-tab-badge-slot {
+.workbench-step-connector {
+  position: absolute;
+  top: 50%;
+  right: -24px;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
-  width: 32px;
-  min-width: 32px;
-  height: 18px;
-  padding-right: 6px;
+  justify-content: flex-start;
+  gap: 3px;
+  width: 24px;
+  min-width: 24px;
+  height: 16px;
+  pointer-events: none;
+  color: rgba(15, 23, 42, 0.58);
+  z-index: 4;
+}
+
+.workbench-step-connector-line {
+  flex: 1 1 auto;
+  min-width: 10px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.8;
+}
+
+.workbench-step-connector-arrow {
+  display: inline-block;
+  flex: 0 0 auto;
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 1;
+  transform: translateX(-1px);
 }
 
 .tab-button {
@@ -2409,6 +2544,7 @@ th {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  margin-bottom: 8px;
 }
 
 .control-progress-card p,
@@ -4291,6 +4427,7 @@ th {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
   gap: 6px;
+  margin-bottom: 8px;
   padding-right: 0;
   min-height: 18px;
   align-items: flex-start;
@@ -4327,6 +4464,7 @@ th {
   word-break: keep-all;
   overflow-wrap: anywhere;
 }
+
 
 .control-operation-card p {
   margin: 0;
@@ -5868,6 +6006,48 @@ textarea,
   overflow-wrap: anywhere;
 }
 
+@media (max-width: 960px) {
+  .workbench-flow-overview {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .workbench-flow-current {
+    white-space: normal;
+  }
+
+  .workbench-step-flow {
+    flex-direction: column;
+    overflow: visible;
+    gap: 6px;
+  }
+
+  .workbench-step-item {
+    width: 100%;
+  }
+
+  .workbench-step-button {
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+  }
+
+  .workbench-step-connector {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+    position: static;
+    transform: none;
+    gap: 4px;
+    height: 18px;
+    padding: 0 0 0 9px;
+  }
+
+  .workbench-step-connector-line {
+    width: 1px;
+    min-width: 1px;
+    height: 10px;
+  }
+}
+
 .auto-fit-title {
   display: block;
   width: 100%;
@@ -5876,6 +6056,12 @@ textarea,
   white-space: nowrap !important;
   overflow: hidden !important;
   text-overflow: clip;
+}
+
+.control-progress-card .auto-fit-title,
+.control-browser-list .registration-control-item .auto-fit-title,
+.control-operation-card .auto-fit-title {
+  margin-top: 8px !important;
 }
 
 .control-browser-list .registration-control-item .control-item-subtext,

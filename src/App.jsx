@@ -1413,13 +1413,19 @@ function applyWorkspaceDataCorrections(workspace) {
         const isTargetPeriod =
           String(entry?.executionYear ?? "").trim() === "2026"
           && ["1월", "2월", "3월"].includes(String(entry?.executionPeriod ?? "").trim());
+        const completedReview = String(entry?.reviewChecked ?? "").trim() === "검토 완료";
+        const targetReviewNote = "공격 시도 이벤트에 대한 조치 내역 및 위협 보고서 검토 결과 특이사항 없음.";
         if (
           !isTargetPeriod
-          || (
-            String(entry?.executionAuthorName ?? "").trim() === "이치현"
-            && !String(entry?.executionAuthorEmail ?? "").trim()
-          )
+          || !completedReview
         ) {
+          return entry;
+        }
+        const sameAuthor =
+          String(entry?.executionAuthorName ?? "").trim() === "이치현"
+          && !String(entry?.executionAuthorEmail ?? "").trim();
+        const sameNote = String(entry?.note ?? "").trim() === targetReviewNote;
+        if (sameAuthor && sameNote) {
           return entry;
         }
         historyChanged = true;
@@ -1427,6 +1433,7 @@ function applyWorkspaceDataCorrections(workspace) {
           ...entry,
           executionAuthorName: "이치현",
           executionAuthorEmail: "",
+          note: targetReviewNote,
         };
       });
     }
@@ -3346,6 +3353,15 @@ export default function App() {
     [controls],
   );
   const performedExecutionCount = performedExecutionControls.length;
+  const workbenchFlowSteps = [
+    { key: "register", label: "통제 등록/수정", helper: "통제 기준 정보 정리", badgeCount: 0 },
+    { key: "controls", label: "통제 작성", helper: "수행 내용과 증적 작성", badgeCount: controlExecutionDraftCount },
+    { key: "controls-complete", label: "등록 완료", helper: "제출된 작성본 확인", badgeCount: completedExecutionCount },
+    { key: "control-review", label: "통제 검토", helper: "검토 대기 건 처리", badgeCount: reviewPendingCount },
+    { key: "performed-complete", label: "수행 완료", helper: "최종 완료 이력 확인", badgeCount: performedExecutionCount },
+  ];
+  const currentWorkbenchStepIndex = workbenchFlowSteps.findIndex((step) => step.key === workbenchTab);
+  const currentWorkbenchStep = currentWorkbenchStepIndex >= 0 ? workbenchFlowSteps[currentWorkbenchStepIndex] : null;
   const totalCompletedPages = Math.max(1, Math.ceil(completedExecutionControls.length / listPageSize));
   const currentCompletedPage = Math.min(controlListPage, totalCompletedPages);
   const completedPagedControls = completedExecutionControls.slice(
@@ -3565,7 +3581,7 @@ export default function App() {
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "auto" });
     }
-    writeAuditLog("MENU_OPEN", "control-workbench", `등록 양식 열람 · ${resolvedCategory}`);
+    writeAuditLog("MENU_OPEN", "control-workbench", `통제 작성 열람 · ${resolvedCategory}`);
     if (window.matchMedia("(max-width: 960px)").matches) {
       setIsSidebarOpen(false);
     }
@@ -5767,60 +5783,67 @@ export default function App() {
 
           {isWorkbenchView ? (
             <section className="panel workbench-tabs-panel">
-              <div className="detail-tabs">
-                <button
-                  type="button"
-                  className={workbenchTab === "register" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
-                  onClick={() => handleWorkbenchTabChange("register")}
-                >
-                  <span className="workbench-tab-spacer" aria-hidden="true" />
-                  <span className="workbench-tab-label">통제 등록/수정</span>
-                  <span className="workbench-tab-badge-slot" aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className={workbenchTab === "controls" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
-                  onClick={() => handleWorkbenchTabChange("controls")}
-                >
-                  <span className="workbench-tab-spacer" aria-hidden="true" />
-                  <span className="workbench-tab-label">등록 양식</span>
-                  <span className="workbench-tab-badge-slot">
-                    {controlExecutionDraftCount > 0 ? <span className="tab-pending-badge tab-pending-badge-draft">{controlExecutionDraftCount}</span> : null}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className={workbenchTab === "controls-complete" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
-                  onClick={() => handleWorkbenchTabChange("controls-complete")}
-                >
-                  <span className="workbench-tab-spacer" aria-hidden="true" />
-                  <span className="workbench-tab-label">등록 완료</span>
-                  <span className="workbench-tab-badge-slot">
-                    {completedExecutionCount > 0 ? <span className="tab-pending-badge tab-pending-badge-draft">{completedExecutionCount}</span> : null}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className={workbenchTab === "control-review" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
-                  onClick={() => handleWorkbenchTabChange("control-review")}
-                >
-                  <span className="workbench-tab-spacer" aria-hidden="true" />
-                  <span className="workbench-tab-label">통제 검토</span>
-                  <span className="workbench-tab-badge-slot">
-                    {reviewPendingCount > 0 ? <span className="tab-pending-badge">{reviewPendingCount}</span> : null}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className={workbenchTab === "performed-complete" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
-                  onClick={() => handleWorkbenchTabChange("performed-complete")}
-                >
-                  <span className="workbench-tab-spacer" aria-hidden="true" />
-                  <span className="workbench-tab-label">수행 완료</span>
-                  <span className="workbench-tab-badge-slot">
-                    {performedExecutionCount > 0 ? <span className="tab-pending-badge tab-pending-badge-draft">{performedExecutionCount}</span> : null}
-                  </span>
-                </button>
+              <div className="workbench-flow-overview">
+                <div>
+                  <p className="workbench-flow-eyebrow">통제 관리 플로우</p>
+                  <h2>서브 메뉴에서 단계별로 바로 이동할 수 있습니다.</h2>
+                </div>
+                {currentWorkbenchStep ? (
+                  <p className="workbench-flow-current">
+                    현재 단계 <strong>{currentWorkbenchStepIndex + 1}. {currentWorkbenchStep.label}</strong>
+                  </p>
+                ) : null}
+              </div>
+              <div className="workbench-step-flow" role="tablist" aria-label="통제 관리 단계">
+                {workbenchFlowSteps.map((step, index) => {
+                  const isActiveStep = workbenchTab === step.key;
+                  const isCompletedStep = currentWorkbenchStepIndex > index;
+                  const badgeClassName =
+                    step.key === "control-review"
+                      ? "tab-pending-badge"
+                      : "tab-pending-badge tab-pending-badge-draft";
+
+                  return (
+                    <div
+                      key={step.key}
+                      className={
+                        isCompletedStep
+                          ? "workbench-step-item completed"
+                          : isActiveStep
+                            ? "workbench-step-item active"
+                            : "workbench-step-item"
+                      }
+                    >
+                      <button
+                        type="button"
+                        className={
+                          isCompletedStep
+                            ? "tab-button workbench-step-button completed"
+                            : isActiveStep
+                              ? "tab-button active workbench-step-button"
+                              : "tab-button workbench-step-button"
+                        }
+                        onClick={() => handleWorkbenchTabChange(step.key)}
+                        aria-current={isActiveStep ? "step" : undefined}
+                      >
+                        <span className="workbench-step-index" aria-hidden="true">{index + 1}</span>
+                        <span className="workbench-step-body">
+                          <span className="workbench-step-label">{step.label}</span>
+                          <span className="workbench-step-helper">{step.helper}</span>
+                        </span>
+                        <span className="workbench-step-badge-slot">
+                          {step.badgeCount > 0 ? <span className={badgeClassName}>{step.badgeCount}</span> : null}
+                        </span>
+                      </button>
+                      {index < workbenchFlowSteps.length - 1 ? (
+                        <span className="workbench-step-connector" aria-hidden="true">
+                          <span className="workbench-step-connector-line" />
+                          <span className="workbench-step-connector-arrow">→</span>
+                        </span>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </div>
             </section>
           ) : null}
@@ -6299,14 +6322,12 @@ export default function App() {
                         <div className="registration-example-head">
                           <strong>{control.id}</strong>
                           <div className="badge-row">
-                            <span className={`status-badge ${isKeyControl(control.keyControl) ? "key-badge" : "normal-badge"}`}>
-                              {isKeyControl(control.keyControl) ? "Key" : "Normal"}
+                            <span className="status-badge unit-assignee-badge">
+                              수행: {resolveExecutionAuthorDisplay(control)}
                             </span>
-                            {control.reviewAuthorName || control.reviewAuthorEmail ? (
-                              <span className="status-badge normal-badge">
-                                작성자
-                              </span>
-                            ) : null}
+                            <span className="status-badge unit-review-badge">
+                              검토: {control.reviewDept ?? control.reviewer ?? "-"}
+                            </span>
                           </div>
                         </div>
                         <AutoFitTitle>{control.title}</AutoFitTitle>
@@ -6487,7 +6508,7 @@ export default function App() {
               <article className="panel control-list-panel">
                 <div className="section-heading">
                   <div>
-                    <h2>등록 완료</h2>
+                    <h2>등록 완료 목록</h2>
                   </div>
                 </div>
                 {completedPagedControls.length > 0 ? (
@@ -6510,7 +6531,10 @@ export default function App() {
                           <strong>{control.id}</strong>
                           <div className="badge-row">
                             <span className="status-badge unit-assignee-badge">
-                              {resolveExecutionAuthorDisplay(control)}
+                              수행: {resolveExecutionAuthorDisplay(control)}
+                            </span>
+                            <span className="status-badge unit-review-badge">
+                              검토: {control.reviewDept ?? control.reviewer ?? "-"}
                             </span>
                           </div>
                         </div>
@@ -6546,7 +6570,7 @@ export default function App() {
                     <>
                       <div className="section-heading">
                         <div>
-                          <h2>등록 완료</h2>
+                          <h2>등록 완료 상세</h2>
                         </div>
                         <div className="badge-row">
                           <span className={`status-badge ${statusClass(selectedCompletedControl.status)}`}>{selectedCompletedControl.status}</span>
@@ -6790,14 +6814,12 @@ export default function App() {
                         <div className="registration-example-head">
                           <strong>{control.id}</strong>
                           <div className="badge-row">
-                            <span className={`status-badge ${isKeyControl(control.keyControl) ? "key-badge" : "normal-badge"}`}>
-                              {isKeyControl(control.keyControl) ? "Key" : "Normal"}
+                            <span className="status-badge unit-assignee-badge">
+                              수행: {resolveExecutionAuthorDisplay(control)}
                             </span>
-                            {control.reviewAuthorName || control.reviewAuthorEmail ? (
-                              <span className="status-badge normal-badge">
-                                작성자
-                              </span>
-                            ) : null}
+                            <span className="status-badge unit-review-badge">
+                              검토: {control.reviewDept ?? control.reviewer ?? "-"}
+                            </span>
                           </div>
                         </div>
                         <AutoFitTitle>{control.title}</AutoFitTitle>
