@@ -1740,6 +1740,73 @@ function AlertIcon() {
   );
 }
 
+function AutoFitTitle({ children, className = "" }) {
+  const textRef = useRef(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    const node = textRef.current;
+    if (!node) {
+      return undefined;
+    }
+
+    let frameId = 0;
+
+    const fit = () => {
+      cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(() => {
+        const element = textRef.current;
+        if (!element) {
+          return;
+        }
+
+        const computedStyle = window.getComputedStyle(element);
+        const baseFontSize = Number.parseFloat(computedStyle.fontSize) || 12;
+        const minFontSize = Math.max(11, baseFontSize * 0.84);
+        let nextLetterSpacing = 0;
+        let nextFontSize = baseFontSize;
+
+        element.style.letterSpacing = "0em";
+        element.style.fontSize = `${baseFontSize}px`;
+
+        while (element.scrollWidth > element.clientWidth + 1 && nextLetterSpacing > -0.12) {
+          nextLetterSpacing -= 0.01;
+          element.style.letterSpacing = `${nextLetterSpacing}em`;
+        }
+
+        while (element.scrollWidth > element.clientWidth + 1 && nextFontSize > minFontSize) {
+          nextFontSize -= 0.2;
+          element.style.fontSize = `${nextFontSize}px`;
+        }
+      });
+    };
+
+    fit();
+
+    const resizeObserver = new ResizeObserver(() => fit());
+    resizeObserver.observe(node);
+    if (node.parentElement) {
+      resizeObserver.observe(node.parentElement);
+    }
+    window.addEventListener("resize", fit);
+
+    return () => {
+      cancelAnimationFrame(frameId);
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", fit);
+    };
+  }, [children]);
+
+  return (
+    <p ref={textRef} className={className ? `auto-fit-title ${className}` : "auto-fit-title"}>
+      {children}
+    </p>
+  );
+}
+
 function integrationClass(status) {
   if (status === "연결됨") return "status-normal";
   if (status === "미확인") return "status-warning";
@@ -1749,6 +1816,10 @@ function integrationClass(status) {
 function nextWorkflowStatus(status) {
   const index = implementationStatusOrder.indexOf(status);
   return implementationStatusOrder[Math.min(index + 1, implementationStatusOrder.length - 1)];
+}
+
+function normalizeReviewDecisionLabel(value) {
+  return value === "개선조치" ? "개선 필요" : (value || "양호");
 }
 
 function formatDate(value) {
@@ -2173,6 +2244,7 @@ export default function App() {
   const [completedEditEvidenceFiles, setCompletedEditEvidenceFiles] = useState([]);
   const [completedEvidenceInputCount, setCompletedEvidenceInputCount] = useState(1);
   const [completedPendingEvidenceCount, setCompletedPendingEvidenceCount] = useState(0);
+  const [reviewDecisionDraft, setReviewDecisionDraft] = useState("양호");
   const [dashboardView, setDashboardView] = useState("category");
   const [dashboardUnitFilter, setDashboardUnitFilter] = useState("전체");
   const [dashboardDelayFilter, setDashboardDelayFilter] = useState("전체");
@@ -3338,6 +3410,10 @@ export default function App() {
     setCompletedEvidenceInputCount(1);
     setCompletedPendingEvidenceCount(0);
   }, [selectedCompletedControl?.completedExecutionKey]);
+
+  useEffect(() => {
+    setReviewDecisionDraft(normalizeReviewDecisionLabel(selectedReviewControl?.reviewResult ?? "양호"));
+  }, [selectedReviewControl?.reviewExecutionKey, selectedReviewControl?.reviewResult]);
 
   useEffect(() => {
     if (!HAS_REMOTE_BACKEND) {
@@ -4559,7 +4635,7 @@ export default function App() {
     if (!selectedReviewControl) return;
 
     const formData = new FormData(event.currentTarget);
-    const reviewDecision = formData.get("reviewDecision").toString();
+    const reviewDecision = normalizeReviewDecisionLabel(formData.get("reviewDecision").toString());
     const reviewNote = formData.get("reviewNote").toString().trim();
     const reviewChecked = reviewDecision === "양호" ? "검토 완료" : "반려";
     const reviewAuthorName = String(authUser?.name ?? "").trim();
@@ -4856,7 +4932,7 @@ export default function App() {
             로그아웃
           </button>
         </div>
-        <main className={isWorkbenchView || currentView === "register" || currentView === "controls" || currentView === "control-review" || currentView === "report" ? "layout workbench-layout" : "layout"}>
+        <main className={isWorkbenchView || currentView === "register" || currentView === "control-list" || currentView === "controls" || currentView === "control-review" || currentView === "report" || currentView === "people" || currentView === "audit" ? "layout workbench-layout" : "layout"}>
           {currentView === "dashboard" ? (
             <>
               <section className={`dashboard-card control-progress-section dashboard-view-${dashboardView}`}>
@@ -4903,8 +4979,8 @@ export default function App() {
                               {isKeyControl(item.keyControl) ? "Key" : "Normal"}
                             </span>
                           </div>
-                          <p>{item.title}</p>
-                          <small>{item.process} · {frequencyLabelMap[item.frequency] ?? item.frequency ?? "-"}</small>
+                          <AutoFitTitle>{item.title}</AutoFitTitle>
+                          <small>{item.process} · {formatFrequencyLabel(item.frequency) || "-"}</small>
                         </button>
                       ))
                     ) : (
@@ -5009,7 +5085,7 @@ export default function App() {
                                 <strong>{item.id}</strong>
                                 <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
                               </div>
-                              <p>{item.title}</p>
+                              <AutoFitTitle>{item.title}</AutoFitTitle>
                               <div className="progress-track" aria-hidden="true">
                                 <span style={{ width: `${item.progress}%` }} />
                               </div>
@@ -5045,7 +5121,7 @@ export default function App() {
                                 <strong>{item.id}</strong>
                                 <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
                               </div>
-                              <p>{item.title}</p>
+                              <AutoFitTitle>{item.title}</AutoFitTitle>
                               <div className="progress-track" aria-hidden="true">
                                 <span style={{ width: `${item.progress}%` }} />
                               </div>
@@ -5094,8 +5170,8 @@ export default function App() {
           ) : null}
 
           {currentView === "dashboard-delay-detail" ? (
-            <section className="compact-stack">
-              <article className="panel">
+            <section className="compact-stack member-management-stack">
+              <article className="panel member-management-panel">
                 <div className="section-heading">
                   <div>
                     <h2>연 기준 지연 통제 상세</h2>
@@ -5145,7 +5221,7 @@ export default function App() {
                           <strong>{item.id}</strong>
                           <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
                         </div>
-                        <p>{item.title}</p>
+                        <AutoFitTitle>{item.title}</AutoFitTitle>
                         <small>{item.process} · {item.frequency}</small>
                         <small>지연 기간 · {item.overduePeriod}</small>
                         <small>수행 부서 · {item.performer}</small>
@@ -5245,9 +5321,9 @@ export default function App() {
                             {isKeyControl(control.keyControl) ? "Key" : "Normal"}
                           </span>
                         </div>
-                        <p>{control.title}</p>
+                        <AutoFitTitle>{control.title}</AutoFitTitle>
                         <span className="control-item-subtext">
-                          {control.executionYear ? `${control.executionYear}년` : "-"} · {control.executionPeriod || "-"}
+                          주기: {formatFrequencyLabel(control.frequency) || "-"}
                         </span>
                       </button>
                     ))}
@@ -5581,7 +5657,8 @@ export default function App() {
                             {isKeyControl(control.keyControl) ? "Key" : "Normal"}
                           </span>
                         </div>
-                        <p>{control.title}</p>
+                        <AutoFitTitle>{control.title}</AutoFitTitle>
+                        <span className="control-item-subtext">{formatFrequencyLabel(control.frequency) || "-"}</span>
                       </button>
                     ))}
                     </div>
@@ -5622,7 +5699,7 @@ export default function App() {
                     <div><p>통제 활동</p><span>{registrationSelectedControl?.controlActivity || "-"}</span></div>
                     <div><p>상세 설명</p><span>{registrationSelectedControl?.description || registrationSelectedControl?.population || "-"}</span></div>
                     <div><p>핵심통제</p><span>{registrationSelectedControl?.keyControl || "-"}</span></div>
-                    <div><p>주기</p><span>{registrationSelectedControl?.frequency || "-"}</span></div>
+                    <div><p>주기</p><span>{formatFrequencyLabel(registrationSelectedControl?.frequency) || "-"}</span></div>
                     <div><p>통제유형</p><span>{registrationSelectedControl?.controlType || "-"}</span></div>
                     <div><p>자동화 수준</p><span>{registrationSelectedControl?.automationLevel || "-"}</span></div>
                     <div><p>수행부서</p><span>{registrationSelectedControl?.performDept ?? registrationSelectedControl?.performer ?? "-"}</span></div>
@@ -5698,7 +5775,7 @@ export default function App() {
                             ) : null}
                           </div>
                         </div>
-                        <p>{control.title}</p>
+                        <AutoFitTitle>{control.title}</AutoFitTitle>
                         <span className="control-item-subtext">{formatFrequencyLabel(control.frequency) || "-"}</span>
                       </button>
                     );
@@ -5750,6 +5827,7 @@ export default function App() {
                         </div>
                       </div>
                       <p className="detail-purpose">{selectedControl.id} · {selectedControl.title}</p>
+                      <div className="execution-detail-body">
                       <div className="info-block">
                         <span>통제 활동 설명</span>
                         <strong>{selectedControl.purpose || selectedControl.title}</strong>
@@ -5860,6 +5938,7 @@ export default function App() {
                           <button className="primary-button" type="submit" disabled={!canSubmitAssignment}>등록 완료</button>
                         </div>
                       </form>
+                      </div>
                     </article>
                   </>
                 ) : null}
@@ -5899,7 +5978,7 @@ export default function App() {
                             </span>
                           </div>
                         </div>
-                        <p>{control.title}</p>
+                        <AutoFitTitle>{control.title}</AutoFitTitle>
                         <span className="control-item-subtext">
                           {control.executionYear ? `${control.executionYear}년` : "-"} · {control.executionPeriod || "-"}
                         </span>
@@ -5942,6 +6021,7 @@ export default function App() {
                         </div>
                       </div>
                       <p className="detail-purpose">{selectedCompletedControl.id} · {selectedCompletedControl.title}</p>
+                      <div className="review-detail-body">
                       <div className="detail-meta-grid execution-meta-grid review-detail-grid">
                         <div className="execution-meta-item review-row-full review-compact-meta-item">
                           <div className="detail-body-text review-compact-meta-line">
@@ -6127,6 +6207,7 @@ export default function App() {
                           </button>
                         </div>
                       ) : null}
+                      </div>
                     </>
                   ) : (
                     <p className="empty-text">등록 완료된 수행 결과가 없습니다.</p>
@@ -6183,7 +6264,7 @@ export default function App() {
                             ) : null}
                           </div>
                         </div>
-                        <p>{control.title}</p>
+                        <AutoFitTitle>{control.title}</AutoFitTitle>
                         <span className="control-item-subtext">
                           {control.executionYear ? `${control.executionYear}년` : "-"} · {control.executionPeriod || "-"}
                         </span>
@@ -6236,6 +6317,7 @@ export default function App() {
                       </div>
                     </div>
                     <p className="detail-purpose">{selectedReviewControl.id} · {selectedReviewControl.title}</p>
+                    <div className="review-detail-body">
                     <div className="detail-meta-grid execution-meta-grid review-detail-grid">
                       <div className="execution-meta-item review-row-full review-compact-meta-item">
                         <div className="detail-body-text review-compact-meta-line">
@@ -6300,9 +6382,14 @@ export default function App() {
                       <div className="compact-form-grid review-decision-row execution-form-item">
                         <label>
                           검토 결과
-                          <select name="reviewDecision" defaultValue={selectedReviewControl.reviewResult ?? "양호"}>
+                          <select
+                            name="reviewDecision"
+                            className={reviewDecisionDraft === "양호" ? "review-decision-select is-good" : "review-decision-select is-action"}
+                            value={reviewDecisionDraft}
+                            onChange={(event) => setReviewDecisionDraft(normalizeReviewDecisionLabel(event.target.value))}
+                          >
                             <option value="양호">양호</option>
-                            <option value="개선조치">개선조치</option>
+                            <option value="개선 필요">개선 필요</option>
                           </select>
                         </label>
                         <div className="review-complete-inline-action">
@@ -6310,6 +6397,7 @@ export default function App() {
                         </div>
                       </div>
                     </form>
+                    </div>
                   </>
                 ) : null}
               </article>
@@ -6318,8 +6406,8 @@ export default function App() {
           ) : null}
 
           {currentView === "people" ? (
-            <section className="compact-stack">
-              <article className="panel">
+            <section className="compact-stack member-management-stack">
+              <article className="panel member-management-panel">
                 <div className="section-heading">
                   <div>
                     <h2>회원 관리</h2>
@@ -6774,7 +6862,7 @@ export default function App() {
                           {isKeyControl(control.keyControl) ? "Key" : "Normal"}
                         </span>
                       </div>
-                      <p>{control.title}</p>
+                      <AutoFitTitle>{control.title}</AutoFitTitle>
                       <small>{control.performDept ?? control.performer} · {control.reviewDept ?? control.reviewer}</small>
                     </button>
                   ))}
