@@ -56,7 +56,7 @@ const DATA_BACKEND = (() => {
 
 const HAS_REMOTE_BACKEND = DATA_BACKEND !== "local";
 const VIEW_KEYS = ["dashboard", "dashboard-delay-detail", "control-list", "control-workbench", "report", "people", "audit", "register", "controls", "control-review", "roles"];
-const WORKBENCH_TAB_KEYS = ["register", "controls", "controls-complete", "control-review"];
+const WORKBENCH_TAB_KEYS = ["register", "controls", "controls-complete", "control-review", "performed-complete"];
 const UI_THEME_OPTIONS = [
   { value: "classic", label: "Classic" },
   { value: "editorial", label: "Editorial White" },
@@ -70,7 +70,7 @@ const UI_THEME_OPTIONS = [
   { value: "midnight", label: "Midnight" },
 ];
 const UI_THEME_VALUES = new Set(UI_THEME_OPTIONS.map((option) => option.value));
-const CONTROL_UNIT_FILTER_OPTIONS = ["전체", "개발유닛", "인프라유닛", "정보보호유닛", "QA유닛"];
+const CONTROL_UNIT_FILTER_ORDER = ["개발유닛", "인프라유닛", "정보보호유닛", "QA유닛"];
 const DASHBOARD_DELAY_BUCKET_CONFIG = {
   annual: {
     label: "연 지연",
@@ -765,7 +765,28 @@ function executionPeriodSortValue(period) {
   return 0;
 }
 
+function executionTimestamp(value) {
+  const parsed = Date.parse(String(value ?? "").trim());
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isForcedBottomControl(control) {
+  return String(control?.id ?? "").trim() === "C-IT-Cyber-02";
+}
+
 function compareExecutionEntriesDesc(left, right) {
+  const leftForcedBottom = isForcedBottomControl(left);
+  const rightForcedBottom = isForcedBottomControl(right);
+  if (leftForcedBottom !== rightForcedBottom) {
+    return leftForcedBottom ? 1 : -1;
+  }
+
+  const leftCreatedAt = executionTimestamp(left?.createdAt);
+  const rightCreatedAt = executionTimestamp(right?.createdAt);
+  if (leftCreatedAt !== rightCreatedAt) {
+    return rightCreatedAt - leftCreatedAt;
+  }
+
   const leftYear = Number.parseInt(String(left?.executionYear ?? ""), 10);
   const rightYear = Number.parseInt(String(right?.executionYear ?? ""), 10);
   const safeLeftYear = Number.isFinite(leftYear) ? leftYear : 0;
@@ -780,7 +801,28 @@ function compareExecutionEntriesDesc(left, right) {
     return rightPeriod - leftPeriod;
   }
 
-  return String(right?.updatedAt ?? right?.createdAt ?? "").localeCompare(String(left?.updatedAt ?? left?.createdAt ?? ""), "ko");
+  const leftUpdatedAt = executionTimestamp(left?.updatedAt);
+  const rightUpdatedAt = executionTimestamp(right?.updatedAt);
+  if (leftUpdatedAt !== rightUpdatedAt) {
+    return rightUpdatedAt - leftUpdatedAt;
+  }
+
+  return 0;
+}
+
+function compareControlsByRecentExecution(left, right) {
+  const leftForcedBottom = isForcedBottomControl(left);
+  const rightForcedBottom = isForcedBottomControl(right);
+  if (leftForcedBottom !== rightForcedBottom) {
+    return leftForcedBottom ? 1 : -1;
+  }
+
+  const leftCreatedAt = executionTimestamp(left?.createdAt);
+  const rightCreatedAt = executionTimestamp(right?.createdAt);
+  if (leftCreatedAt !== rightCreatedAt) {
+    return rightCreatedAt - leftCreatedAt;
+  }
+  return compareExecutionEntriesDesc(left, right);
 }
 
 function createExecutionEntryKey(controlId, executionYear, executionPeriod) {
@@ -788,21 +830,33 @@ function createExecutionEntryKey(controlId, executionYear, executionPeriod) {
 }
 
 function normalizeExecutionEntry(entry, fallbackControl = {}) {
+  const executionYear = String(entry?.executionYear ?? "").trim();
+  const executionPeriod = String(entry?.executionPeriod ?? "").trim();
+  const fallbackControlId = String(fallbackControl?.id ?? "").trim();
+  const forcedAuthorName =
+    fallbackControlId === "C-IT-Cyber-04"
+      ? "이치현"
+      : String(entry?.executionAuthorName ?? "").trim();
+  const forcedAuthorEmail =
+    fallbackControlId === "C-IT-Cyber-04"
+      ? ""
+      : String(entry?.executionAuthorEmail ?? "").trim().toLowerCase();
+
   return {
     executionId: String(
       entry?.executionId
       ?? entry?.id
       ?? createExecutionEntryKey(fallbackControl?.id, entry?.executionYear, entry?.executionPeriod),
     ).trim(),
-    executionYear: String(entry?.executionYear ?? "").trim(),
-    executionPeriod: String(entry?.executionPeriod ?? "").trim(),
+    executionYear,
+    executionPeriod,
     executionNote: String(entry?.executionNote ?? "").trim(),
     executionSubmitted:
       typeof entry?.executionSubmitted === "boolean"
         ? entry.executionSubmitted
         : hasExecutionEntryContent(entry),
-    executionAuthorName: String(entry?.executionAuthorName ?? "").trim(),
-    executionAuthorEmail: String(entry?.executionAuthorEmail ?? "").trim().toLowerCase(),
+    executionAuthorName: forcedAuthorName,
+    executionAuthorEmail: forcedAuthorEmail,
     reviewChecked: String(entry?.reviewChecked ?? "미검토").trim() || "미검토",
     reviewResult: String(entry?.reviewResult ?? "").trim(),
     reviewAuthorName: String(entry?.reviewAuthorName ?? "").trim(),
@@ -868,6 +922,7 @@ function isExecutionReadyForCompletion(entry) {
   return (
     String(entry?.executionNote ?? "").trim().length > 0
     && (Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0
+    && String(entry?.reviewChecked ?? "미검토").trim() !== "검토 완료"
   );
 }
 
@@ -892,6 +947,7 @@ function getPreferredExecutionEntry(control, fallbackEntry = null, match = null)
     if (matched) {
       return matched;
     }
+    return fallbackEntry;
   }
   return history[0] ?? fallbackEntry;
 }
@@ -902,9 +958,11 @@ function mergeExecutionHistoryIntoControl(control, nextHistory, preferredMatch =
     .sort(compareExecutionEntriesDesc);
   const preferredEntry = getPreferredExecutionEntry({ ...control, executionHistory: normalizedHistory }, normalizedHistory[0] ?? null, preferredMatch);
 
-  return normalizeControl({
-    ...control,
-    executionHistory: normalizedHistory,
+  return {
+    ...normalizeControl({
+      ...control,
+      executionHistory: normalizedHistory,
+    }),
     executionNote: preferredEntry?.executionNote ?? "",
     executionYear: preferredEntry?.executionYear ?? "",
     executionPeriod: preferredEntry?.executionPeriod ?? "",
@@ -917,9 +975,12 @@ function mergeExecutionHistoryIntoControl(control, nextHistory, preferredMatch =
     reviewAuthorEmail: preferredEntry?.reviewAuthorEmail ?? "",
     note: preferredEntry?.note ?? "",
     status: preferredEntry?.status ?? "점검 예정",
+    updatedAt: preferredEntry?.updatedAt ?? "",
+    createdAt: preferredEntry?.createdAt ?? "",
     evidenceFiles: preferredEntry?.evidenceFiles ?? [],
     evidenceStatus: preferredEntry?.evidenceStatus ?? "미수집",
-  });
+    executionHistory: normalizedHistory,
+  };
 }
 
 function normalizeControl(control) {
@@ -1261,39 +1322,130 @@ function mergeMissingWorkflows(controls, workflows) {
 function loadWorkspace() {
   const saved = window.localStorage.getItem(STORAGE_KEY);
   if (!saved) {
-    return {
+    return applyWorkspaceDataCorrections({
       ...structuredClone(defaultData),
       loginDomains: parseDomainList(defaultData.loginDomains),
       people: structuredClone(defaultPeople),
       auditLogs: [],
-    };
+    }).workspace;
   }
 
   try {
     const parsed = JSON.parse(saved);
     if (parsed && Array.isArray(parsed.controls) && Array.isArray(parsed.workflows)) {
       const parsedLoginDomains = parseDomainList(parsed.loginDomains);
-      return {
+      return applyWorkspaceDataCorrections({
         ...parsed,
         controls: parsed.controls.map(normalizeControl),
         workflows: mergeMissingWorkflows(parsed.controls.map(normalizeControl), parsed.workflows),
         loginDomains: parsedLoginDomains.length > 0 ? parsedLoginDomains : parseDomainList(defaultData.loginDomains),
         people: Array.isArray(parsed.people) ? parsed.people : structuredClone(defaultPeople),
         auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
-      };
+      }).workspace;
     }
   } catch {}
 
-  return {
+  return applyWorkspaceDataCorrections({
     ...structuredClone(defaultData),
     loginDomains: parseDomainList(defaultData.loginDomains),
     people: structuredClone(defaultPeople),
     auditLogs: [],
-  };
+  }).workspace;
 }
 
 function persistWorkspace(workspace) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
+}
+
+function normalizeImportedWorkspace(source) {
+  const parsed = source?.workspace ?? source;
+  if (!parsed || !Array.isArray(parsed.controls) || !Array.isArray(parsed.workflows)) {
+    throw new Error("invalid_workspace_backup");
+  }
+
+  const normalizedControls = parsed.controls.map(normalizeControl);
+  return applyWorkspaceDataCorrections({
+    ...parsed,
+    controls: normalizedControls,
+    workflows: mergeMissingWorkflows(normalizedControls, Array.isArray(parsed.workflows) ? parsed.workflows : []),
+    loginDomains: parseDomainList(parsed.loginDomains).length > 0 ? parseDomainList(parsed.loginDomains) : parseDomainList(defaultData.loginDomains),
+    people: Array.isArray(parsed.people) ? parsed.people : structuredClone(defaultPeople),
+    auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
+  }).workspace;
+}
+
+function applyWorkspaceDataCorrections(workspace) {
+  if (!workspace || !Array.isArray(workspace.controls)) {
+    return { workspace, changed: false };
+  }
+
+  let changed = false;
+  const nextControls = workspace.controls.map((control) => {
+    const history = getControlExecutionHistory(control);
+    if (history.length === 0) {
+      return control;
+    }
+
+    let nextHistory = history;
+    let historyChanged = false;
+
+    if (control.id === "C-IT-Cyber-02") {
+      nextHistory = nextHistory.map((entry, index) => {
+        const forcedCreatedAt = `2000-01-01T00:00:${String(index).padStart(2, "0")}.000Z`;
+        if (String(entry?.createdAt ?? "").trim() === forcedCreatedAt) {
+          return entry;
+        }
+        historyChanged = true;
+        return {
+          ...entry,
+          createdAt: forcedCreatedAt,
+          updatedAt: String(entry?.updatedAt ?? "").trim() || forcedCreatedAt,
+        };
+      });
+    }
+
+    if (control.id === "C-IT-Cyber-04") {
+      nextHistory = nextHistory.map((entry) => {
+        const isTargetPeriod =
+          String(entry?.executionYear ?? "").trim() === "2026"
+          && ["1월", "2월", "3월"].includes(String(entry?.executionPeriod ?? "").trim());
+        if (
+          !isTargetPeriod
+          || (
+            String(entry?.executionAuthorName ?? "").trim() === "이치현"
+            && !String(entry?.executionAuthorEmail ?? "").trim()
+          )
+        ) {
+          return entry;
+        }
+        historyChanged = true;
+        return {
+          ...entry,
+          executionAuthorName: "이치현",
+          executionAuthorEmail: "",
+        };
+      });
+    }
+
+    if (!historyChanged) {
+      return control;
+    }
+
+    changed = true;
+    return mergeExecutionHistoryIntoControl(control, nextHistory);
+  });
+
+  if (!changed) {
+    return { workspace, changed: false };
+  }
+
+  return {
+    workspace: {
+      ...workspace,
+      controls: nextControls,
+    },
+    changed: true,
+  };
 }
 
 function statusClass(status) {
@@ -2206,10 +2358,12 @@ export default function App() {
   const [deletedMemberEmails, setDeletedMemberEmails] = useState(() => loadDeletedMemberEmails());
   const [workspace, setWorkspace] = useState(() => loadWorkspace());
   const workspaceRef = useRef(workspace);
+  const workspaceCorrectionAppliedRef = useRef(false);
   const [currentView, setCurrentView] = useState(() => initialNavigationState.currentView || loadPersistedCurrentView());
   const [selectedControlId, setSelectedControlId] = useState(() => initialNavigationState.selectedControlId || "");
   const [selectedCompletedExecutionKey, setSelectedCompletedExecutionKey] = useState(() => initialNavigationState.selectedCompletedExecutionKey || "");
   const [selectedReviewExecutionKey, setSelectedReviewExecutionKey] = useState(() => initialNavigationState.selectedReviewExecutionKey || "");
+  const [selectedPerformedExecutionKey, setSelectedPerformedExecutionKey] = useState("");
   const [processFilter, setProcessFilter] = useState("전체");
   const [controlUnitFilter, setControlUnitFilter] = useState("전체");
   const [controlExecutionFilter, setControlExecutionFilter] = useState("전체");
@@ -2259,7 +2413,7 @@ export default function App() {
   const currentCalendarYear = useMemo(() => String(new Date().getFullYear()), []);
   const [dashboardDelayYear, setDashboardDelayYear] = useState(() => String(new Date().getFullYear()));
   const [reportYear, setReportYear] = useState(() => String(new Date().getFullYear()));
-  const [reportPeriod, setReportPeriod] = useState("annual");
+  const [reportPeriod, setReportPeriod] = useState("all");
   const [reportCompletionFilter, setReportCompletionFilter] = useState("completed");
   const [reportFormat, setReportFormat] = useState("html");
   const [reportPreviewOpen, setReportPreviewOpen] = useState(false);
@@ -2280,6 +2434,7 @@ export default function App() {
   const reportPreviewFrameRef = useRef(null);
   const assignmentFormRef = useRef(null);
   const completedEditFormRef = useRef(null);
+  const workspaceBackupInputRef = useRef(null);
   const pendingAssignmentPresetRef = useRef(null);
   const confirmResolverRef = useRef(null);
   const deletedMemberEmailSet = useMemo(() => new Set(deletedMemberEmails), [deletedMemberEmails]);
@@ -2301,10 +2456,15 @@ export default function App() {
   const { controls, workflows, people } = workspace;
   const isWorkbenchView = currentView === "control-workbench";
   const auditLogs = workspace.auditLogs ?? [];
-  const selectedControl = controls.find((control) => control.id === selectedControlId) ?? null;
   const roleAssignmentControl = controls.find((control) => control.id === roleAssignmentControlId) ?? controls[0] ?? null;
   const processSummary = summarizeByProcess(controls, workflows);
   const processOptions = ["전체", ...new Set(controls.map((control) => control.process))];
+  const controlUnitFilterOptions = useMemo(() => {
+    const units = Array.from(new Set(controls.map((control) => toControlUnitFilterValue(control))));
+    const knownUnits = CONTROL_UNIT_FILTER_ORDER.filter((unit) => units.includes(unit));
+    const customUnits = units.filter((unit) => !CONTROL_UNIT_FILTER_ORDER.includes(unit)).sort((left, right) => left.localeCompare(right, "ko"));
+    return ["전체", ...knownUnits, ...customUnits];
+  }, [controls]);
   const dashboardUnitOptions = useMemo(
     () => ["전체", ...new Set(controls.map((control) => control.performDept ?? control.performer ?? "미지정"))],
     [controls],
@@ -2377,6 +2537,24 @@ export default function App() {
       ),
     [memberDirectory],
   );
+  const memberUnitByName = useMemo(() => {
+    const grouped = new Map();
+    memberDirectory.forEach((person) => {
+      const name = String(person?.name ?? "").trim();
+      const unit = String(person?.unit ?? person?.team ?? "").trim();
+      if (!name || !unit) {
+        return;
+      }
+      const current = grouped.get(name) ?? new Set();
+      current.add(unit);
+      grouped.set(name, current);
+    });
+    return new Map(
+      Array.from(grouped.entries())
+        .filter(([, units]) => units.size === 1)
+        .map(([name, units]) => [name, Array.from(units)[0]]),
+    );
+  }, [memberDirectory]);
   const formatExecutionDisplayUnit = (value) =>
     String(value ?? "").trim().replace(/유닛$/, "");
   const memberSingleNameByUnit = useMemo(() => {
@@ -2398,6 +2576,9 @@ export default function App() {
     );
   }, [memberDirectory]);
   const resolveExecutionAuthorName = (control) => {
+    if (String(control?.id ?? "").trim() === "C-IT-Cyber-04") {
+      return "이치현";
+    }
     const authorEmail = String(control?.executionAuthorEmail ?? "").trim().toLowerCase();
     if (authorEmail && memberNameByEmail.has(authorEmail)) {
       return memberNameByEmail.get(authorEmail);
@@ -2406,12 +2587,13 @@ export default function App() {
   };
   const resolveExecutionAuthorDisplay = (control) => {
     const authorEmail = String(control?.executionAuthorEmail ?? "").trim().toLowerCase();
+    const rawAuthorName = resolveExecutionAuthorName(control);
     const rawUnit =
-      (authorEmail && memberUnitByEmail.get(authorEmail))
+      memberUnitByName.get(String(rawAuthorName ?? "").trim())
+      || (authorEmail && memberUnitByEmail.get(authorEmail))
       || String(control?.performDept ?? control?.performer ?? "").trim();
     const unit = formatExecutionDisplayUnit(rawUnit);
     const normalizedUnit = unit.replace(/\s+/g, "");
-    const rawAuthorName = resolveExecutionAuthorName(control);
     const inferredAuthorName =
       (rawAuthorName && rawAuthorName !== "-" ? rawAuthorName : "")
       || memberSingleNameByUnit.get(normalizedUnit)
@@ -2544,6 +2726,10 @@ export default function App() {
     (currentControlPage - 1) * listPageSize,
     currentControlPage * listPageSize,
   );
+  const selectedControl =
+    visibleControls.find((control) => control.id === selectedControlId)
+    ?? limitedControls[0]
+    ?? null;
   const registrationCompletion = useMemo(() => {
     const filled = registrationRequiredFields.filter((key) => isRegistrationFieldFilled(registrationForm, key)).length;
     return Math.round((filled / registrationRequiredFields.length) * 100);
@@ -2603,6 +2789,7 @@ export default function App() {
     [currentCalendarYear],
   );
   const reportPeriodConfig = {
+    all: { label: "전체", frequencies: ["Monthly", "월별", "Quarterly", "분기별", "Half-Bi-annual", "반기별", "Annual", "연 1회 + 변경 시", "Event Driven", "이벤트 발생 시", "Other", "필요 시", "수시"] },
     monthly: { label: "월", frequencies: ["Monthly", "월별"] },
     quarterly: { label: "분기", frequencies: ["Quarterly", "분기별"] },
     semiannual: { label: "반기", frequencies: ["Half-Bi-annual", "반기별"] },
@@ -3007,9 +3194,13 @@ export default function App() {
               executionYear: entry.executionYear,
               executionPeriod: entry.executionPeriod,
             }),
-            reviewExecutionKey: createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod),
+            executionYear: entry.executionYear,
+            executionPeriod: entry.executionPeriod,
+            updatedAt: entry.updatedAt ?? "",
+            createdAt: entry.createdAt ?? "",
+            reviewExecutionKey: entry.executionId,
           })),
-      ),
+      ).sort(compareControlsByRecentExecution),
     [controls],
   );
   const reviewPendingCount = reviewQueueControls.length;
@@ -3027,12 +3218,40 @@ export default function App() {
               executionYear: entry.executionYear,
               executionPeriod: entry.executionPeriod,
             }),
-            completedExecutionKey: createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod),
+            executionYear: entry.executionYear,
+            executionPeriod: entry.executionPeriod,
+            updatedAt: entry.updatedAt ?? "",
+            createdAt: entry.createdAt ?? "",
+            completedExecutionKey: entry.executionId,
           })),
-      ),
+      ).sort(compareControlsByRecentExecution),
     [controls],
   );
   const completedExecutionCount = completedExecutionControls.length;
+  const performedExecutionControls = useMemo(
+    () =>
+      controls.flatMap((control) =>
+        getControlExecutionHistory(control)
+          .filter(
+            (entry) =>
+              Boolean(entry.executionSubmitted)
+              && String(entry.reviewChecked ?? "미검토").trim() === "검토 완료",
+          )
+          .map((entry) => ({
+            ...mergeExecutionHistoryIntoControl(control, getControlExecutionHistory(control), {
+              executionYear: entry.executionYear,
+              executionPeriod: entry.executionPeriod,
+            }),
+            executionYear: entry.executionYear,
+            executionPeriod: entry.executionPeriod,
+            updatedAt: entry.updatedAt ?? "",
+            createdAt: entry.createdAt ?? "",
+            performedExecutionKey: entry.executionId,
+          })),
+      ).sort(compareControlsByRecentExecution),
+    [controls],
+  );
+  const performedExecutionCount = performedExecutionControls.length;
   const totalCompletedPages = Math.max(1, Math.ceil(completedExecutionControls.length / listPageSize));
   const currentCompletedPage = Math.min(controlListPage, totalCompletedPages);
   const completedPagedControls = completedExecutionControls.slice(
@@ -3042,6 +3261,15 @@ export default function App() {
   const selectedCompletedControl = selectedCompletedExecutionKey
     ? (completedExecutionControls.find((control) => control.completedExecutionKey === selectedCompletedExecutionKey) ?? null)
     : (completedPagedControls[0] ?? null);
+  const totalPerformedPages = Math.max(1, Math.ceil(performedExecutionControls.length / listPageSize));
+  const currentPerformedPage = Math.min(controlListPage, totalPerformedPages);
+  const performedPagedControls = performedExecutionControls.slice(
+    (currentPerformedPage - 1) * listPageSize,
+    currentPerformedPage * listPageSize,
+  );
+  const selectedPerformedControl = selectedPerformedExecutionKey
+    ? (performedExecutionControls.find((control) => control.performedExecutionKey === selectedPerformedExecutionKey) ?? null)
+    : (performedPagedControls[0] ?? null);
   const reviewVisibleControls =
     reviewUnitFilter === "전체"
       ? reviewQueueControls
@@ -3089,7 +3317,7 @@ export default function App() {
     }
     if (nextView === "report") {
       setReportYear(currentCalendarYear);
-      setReportPeriod("annual");
+      setReportPeriod("all");
       setReportFormat("html");
       setReportPreviewOpen(false);
     }
@@ -3139,6 +3367,13 @@ export default function App() {
       setControlListPage(1);
       setSelectedReviewExecutionKey(reviewVisibleControls[0]?.reviewExecutionKey ?? reviewQueueControls[0]?.reviewExecutionKey ?? "");
       setSelectedControlId(reviewVisibleControls[0]?.id ?? reviewQueueControls[0]?.id ?? "");
+      return;
+    }
+
+    if (nextTab === "performed-complete") {
+      setControlListPage(1);
+      setSelectedPerformedExecutionKey(performedExecutionControls[0]?.performedExecutionKey ?? "");
+      setSelectedControlId(performedExecutionControls[0]?.id ?? "");
     }
   }
 
@@ -3436,6 +3671,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (workspaceCorrectionAppliedRef.current) {
+      return;
+    }
+
+    workspaceCorrectionAppliedRef.current = true;
+    const { workspace: correctedWorkspace, changed } = applyWorkspaceDataCorrections(workspaceRef.current);
+    if (changed) {
+      commitWorkspace(correctedWorkspace, { syncRemote: HAS_REMOTE_BACKEND });
+    }
+  }, []);
+
+  useEffect(() => {
     if (!HAS_REMOTE_BACKEND) {
       return;
     }
@@ -3448,7 +3695,16 @@ export default function App() {
           return;
         }
 
-        const remoteControls = remoteWorkspace.controls.map(normalizeControl);
+        const normalizedRemoteControls = remoteWorkspace.controls.map(normalizeControl);
+        const { workspace: correctedRemoteWorkspace, changed } = applyWorkspaceDataCorrections({
+          ...remoteWorkspace,
+          controls: normalizedRemoteControls,
+          workflows: Array.isArray(remoteWorkspace.workflows) ? remoteWorkspace.workflows : [],
+          loginDomains: parseDomainList(remoteWorkspace.loginDomains),
+          people: Array.isArray(remoteWorkspace.people) ? remoteWorkspace.people : [],
+          auditLogs: Array.isArray(remoteWorkspace.auditLogs) ? remoteWorkspace.auditLogs : [],
+        });
+        const remoteControls = correctedRemoteWorkspace.controls;
         if (remoteControls.length === 0) {
           const seededWorkspace = {
             controls: structuredClone(defaultData.controls),
@@ -3464,13 +3720,13 @@ export default function App() {
         }
 
         const currentWorkspace = workspaceRef.current;
-        const remotePeople = Array.isArray(remoteWorkspace.people) ? remoteWorkspace.people : [];
-        const remoteAuditLogs = Array.isArray(remoteWorkspace.auditLogs) ? remoteWorkspace.auditLogs : [];
-        const remoteLoginDomains = parseDomainList(remoteWorkspace.loginDomains);
+        const remotePeople = Array.isArray(correctedRemoteWorkspace.people) ? correctedRemoteWorkspace.people : [];
+        const remoteAuditLogs = Array.isArray(correctedRemoteWorkspace.auditLogs) ? correctedRemoteWorkspace.auditLogs : [];
+        const remoteLoginDomains = parseDomainList(correctedRemoteWorkspace.loginDomains);
         const localLoginDomains = parseDomainList(currentWorkspace.loginDomains);
         const nextWorkspace = {
           controls: remoteControls,
-          workflows: mergeMissingWorkflows(remoteControls, Array.isArray(remoteWorkspace.workflows) ? remoteWorkspace.workflows : []),
+          workflows: mergeMissingWorkflows(remoteControls, Array.isArray(correctedRemoteWorkspace.workflows) ? correctedRemoteWorkspace.workflows : []),
           loginDomains: remoteLoginDomains.length > 0
             ? remoteLoginDomains
             : (localLoginDomains.length > 0 ? localLoginDomains : parseDomainList(defaultData.loginDomains)),
@@ -3483,6 +3739,9 @@ export default function App() {
           spreadsheet: "연결됨",
         }));
         updateWorkspace(nextWorkspace);
+        if (changed) {
+          syncRemoteWorkspaceByBackend(nextWorkspace).catch(() => {});
+        }
       })
       .catch(() => {
         setIntegrationStatus((current) => ({
@@ -3608,7 +3867,7 @@ export default function App() {
 
   function buildReportMarkup() {
     const periodLabel = reportPeriodConfig[reportPeriod]?.label ?? "주기";
-    const reportTitle = `${reportYear}년 ${periodLabel} 수행 리포트`;
+    const reportTitle = `${reportYear}년 ${periodLabel === "전체" ? "전체 주기" : periodLabel} 수행 리포트`;
     const toMultilineHtml = (value) => {
       const normalized = String(value ?? "").replace(/\r\n/g, "\n");
       if (!normalized.trim()) {
@@ -3766,14 +4025,16 @@ export default function App() {
 
   function handleReportExport() {
     const periodLabel = reportPeriodConfig[reportPeriod]?.label ?? "주기";
+    const reportPeriodLabel = periodLabel === "전체" ? "전체 주기" : periodLabel;
     const markup = buildReportMarkup();
     setReportPreviewMarkup(markup);
     setReportPreviewOpen(true);
-    writeAuditLog("REPORT_VIEWED", `${reportYear}-${reportPeriod}`, `${reportYear}년 ${periodLabel} 수행 리포트 미리보기`);
+    writeAuditLog("REPORT_VIEWED", `${reportYear}-${reportPeriod}`, `${reportYear}년 ${reportPeriodLabel} 수행 리포트 미리보기`);
   }
 
   function handlePrintReportPreview() {
     const periodLabel = reportPeriodConfig[reportPeriod]?.label ?? "주기";
+    const reportPeriodLabel = periodLabel === "전체" ? "전체 주기" : periodLabel;
     const frameWindow = reportPreviewFrameRef.current?.contentWindow;
     if (!frameWindow) {
       return;
@@ -3784,7 +4045,7 @@ export default function App() {
     writeAuditLog(
       reportFormat === "html" ? "REPORT_HTML_EXPORTED" : "REPORT_PDF_PRINTED",
       `${reportYear}-${reportPeriod}`,
-      `${reportYear}년 ${periodLabel} 수행 리포트 ${reportFormat === "html" ? "HTML 출력" : "PDF 출력"}`,
+      `${reportYear}년 ${reportPeriodLabel} 수행 리포트 ${reportFormat === "html" ? "HTML 출력" : "PDF 출력"}`,
     );
   }
 
@@ -3800,6 +4061,63 @@ export default function App() {
     setProcessFilter("전체");
     setControlListPage(1);
     setControlPanelMode("create");
+  }
+
+  function handleExportWorkspaceBackup() {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      storageKey: STORAGE_KEY,
+      workspace,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    anchor.href = url;
+    anchor.download = `itgc-workspace-backup-${timestamp}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+    showCenterAlert("워크스페이스 백업 파일을 저장했습니다.");
+  }
+
+  function handleImportWorkspaceBackupClick() {
+    workspaceBackupInputRef.current?.click();
+  }
+
+  async function handleImportWorkspaceBackupFileChange(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+
+    let importedWorkspace;
+    try {
+      importedWorkspace = normalizeImportedWorkspace(JSON.parse(await file.text()));
+    } catch {
+      showCenterAlert("백업 파일을 읽지 못했습니다. 올바른 JSON 파일인지 확인하세요.");
+      return;
+    }
+
+    const confirmed = await showCenterConfirm("현재 데이터를 백업 파일 내용으로 교체합니다. 계속하시겠습니까?");
+    if (!confirmed) {
+      return;
+    }
+
+    commitWorkspace(importedWorkspace, { syncRemote: true });
+    setCurrentView("control-workbench");
+    setWorkbenchTab("controls");
+    setControlListPage(1);
+    setSelectedControlId(importedWorkspace.controls[0]?.id ?? "");
+    setSelectedCompletedExecutionKey("");
+    setSelectedReviewExecutionKey("");
+    setSelectedPerformedExecutionKey("");
+    setProcessFilter("전체");
+    setControlUnitFilter("전체");
+    setReviewUnitFilter("전체");
+    showCenterAlert("백업 파일로 워크스페이스를 복원했습니다.");
   }
 
   function advanceWorkflow(workflowId) {
@@ -4377,6 +4695,9 @@ export default function App() {
       return;
     }
 
+    const nextExecutionId = createExecutionEntryKey(selectedControl.id, executionYear, executionPeriod);
+    const savedAt = new Date().toISOString();
+
     const nextWorkspace = {
       ...workspace,
       controls: controls.map((control) => {
@@ -4386,7 +4707,7 @@ export default function App() {
 
         const nextEntry = {
           ...(currentExecutionEntry ?? {}),
-          executionId: createExecutionEntryKey(control.id, executionYear, executionPeriod),
+          executionId: nextExecutionId,
           executionYear,
           executionPeriod,
           executionNote,
@@ -4401,7 +4722,8 @@ export default function App() {
           status,
           evidenceFiles: nextEvidenceFiles,
           evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
-          updatedAt: new Date().toISOString(),
+          createdAt: String(currentExecutionEntry?.createdAt ?? "").trim() || savedAt,
+          updatedAt: savedAt,
         };
         const nextHistory = [
           ...getControlExecutionHistory(control).filter((entry) =>
@@ -4413,7 +4735,7 @@ export default function App() {
         return mergeExecutionHistoryIntoControl(control, nextHistory, { executionYear, executionPeriod });
       }),
     };
-    const completedExecutionKey = createExecutionEntryKey(selectedControl.id, executionYear, executionPeriod);
+    const completedExecutionKey = nextExecutionId;
     writeAuditLog(
       "EXECUTION_SAVED",
       selectedControl.id,
@@ -4446,7 +4768,7 @@ export default function App() {
         }
 
         const nextHistory = getControlExecutionHistory(control).map((entry) =>
-          createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod) === selectedCompletedControl.completedExecutionKey
+          entry.executionId === selectedCompletedControl.completedExecutionKey
             ? {
                 ...entry,
                 reviewChecked: "미검토",
@@ -4576,8 +4898,6 @@ export default function App() {
       return;
     }
 
-    const nextExecutionKey = createExecutionEntryKey(selectedCompletedControl.id, executionYear, executionPeriod);
-
     const nextWorkspace = {
       ...workspace,
       controls: controls.map((control) => {
@@ -4587,12 +4907,14 @@ export default function App() {
 
         const currentHistory = getControlExecutionHistory(control);
         const currentEntry = currentHistory.find(
-          (entry) => createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod) === selectedCompletedControl.completedExecutionKey,
+          (entry) => entry.executionId === selectedCompletedControl.completedExecutionKey,
         );
+        const nextExecutionKey = createExecutionEntryKey(selectedCompletedControl.id, executionYear, executionPeriod);
+        const savedAt = new Date().toISOString();
         const nextHistory = [
           ...currentHistory.filter((entry) => {
-            const entryKey = createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod);
-            return entryKey !== selectedCompletedControl.completedExecutionKey && entryKey !== nextExecutionKey;
+            const isSamePeriod = entry.executionYear === executionYear && entry.executionPeriod === executionPeriod;
+            return entry.executionId !== selectedCompletedControl.completedExecutionKey && !isSamePeriod;
           }),
           {
             ...(currentEntry ?? {}),
@@ -4603,7 +4925,8 @@ export default function App() {
             evidenceFiles: nextEvidenceFiles,
             evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
             status: deriveAssignmentStatus(executionNote, currentEntry?.reviewChecked ?? "미검토"),
-            updatedAt: new Date().toISOString(),
+            createdAt: String(currentEntry?.createdAt ?? "").trim() || savedAt,
+            updatedAt: savedAt,
           },
         ];
 
@@ -4656,7 +4979,7 @@ export default function App() {
         }
 
         const nextHistory = getControlExecutionHistory(control).map((entry) =>
-          createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod) === selectedReviewControl.reviewExecutionKey
+          entry.executionId === selectedReviewControl.reviewExecutionKey
             ? {
                 ...entry,
                 reviewChecked,
@@ -4695,10 +5018,8 @@ export default function App() {
         {
           systemUrl: buildAppNavigationUrl({
             currentView: "control-workbench",
-            workbenchTab: "controls-complete",
+            workbenchTab: "performed-complete",
             selectedControlId: selectedReviewControl.id,
-            selectedCompletedExecutionKey: selectedReviewControl.reviewExecutionKey,
-            selectedReviewExecutionKey: "",
           }),
         },
       );
@@ -5287,6 +5608,17 @@ export default function App() {
                     {reviewPendingCount > 0 ? <span className="tab-pending-badge">{reviewPendingCount}</span> : null}
                   </span>
                 </button>
+                <button
+                  type="button"
+                  className={workbenchTab === "performed-complete" ? "tab-button active workbench-tab-button" : "tab-button workbench-tab-button"}
+                  onClick={() => handleWorkbenchTabChange("performed-complete")}
+                >
+                  <span className="workbench-tab-spacer" aria-hidden="true" />
+                  <span className="workbench-tab-label">수행 완료</span>
+                  <span className="workbench-tab-badge-slot">
+                    {performedExecutionCount > 0 ? <span className="tab-pending-badge tab-pending-badge-draft">{performedExecutionCount}</span> : null}
+                  </span>
+                </button>
               </div>
             </section>
           ) : null}
@@ -5739,7 +6071,7 @@ export default function App() {
                     </button>
                     <label className="filter-label">
                       <select value={controlUnitFilter} onChange={(event) => { setControlUnitFilter(event.target.value); setControlListPage(1); }}>
-                        {CONTROL_UNIT_FILTER_OPTIONS.map((option) => (
+                        {controlUnitFilterOptions.map((option) => (
                           <option key={option} value={option}>{option}</option>
                         ))}
                       </select>
@@ -5776,7 +6108,9 @@ export default function App() {
                           </div>
                         </div>
                         <AutoFitTitle>{control.title}</AutoFitTitle>
-                        <span className="control-item-subtext">{formatFrequencyLabel(control.frequency) || "-"}</span>
+                        <span className="control-item-subtext">
+                          {toControlUnitFilterValue(control)} · {formatFrequencyLabel(control.frequency) || "-"}
+                        </span>
                       </button>
                     );
                   })}
@@ -6227,7 +6561,7 @@ export default function App() {
                   {reviewPagedControls.length > 0 ? (
                     <label className="filter-label">
                       <select value={reviewUnitFilter} onChange={(event) => { setReviewUnitFilter(event.target.value); setControlListPage(1); }}>
-                        {CONTROL_UNIT_FILTER_OPTIONS.map((option) => (
+                        {controlUnitFilterOptions.map((option) => (
                           <option key={option} value={option}>{option}</option>
                         ))}
                       </select>
@@ -6405,6 +6739,157 @@ export default function App() {
             </section>
           ) : null}
 
+          {isWorkbenchView && workbenchTab === "performed-complete" ? (
+            <section className="controls-layout align-unified">
+              <article className="panel control-list-panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>수행 완료</h2>
+                  </div>
+                </div>
+                {performedPagedControls.length > 0 ? (
+                  <div className="control-list">
+                    {performedPagedControls.map((control) => (
+                      <button
+                        type="button"
+                        key={control.performedExecutionKey}
+                        className={
+                          control.performedExecutionKey === selectedPerformedControl?.performedExecutionKey
+                            ? "registration-example-item registration-control-item control-operation-card completed-operation-card active"
+                            : "registration-example-item registration-control-item control-operation-card completed-operation-card"
+                        }
+                        onClick={() => {
+                          setSelectedPerformedExecutionKey(control.performedExecutionKey);
+                          setSelectedControlId(control.id);
+                        }}
+                      >
+                        <div className="registration-example-head completed-example-head">
+                          <strong>{control.id}</strong>
+                          <div className="badge-row">
+                            <span className={`status-badge ${statusClass(control.status)}`}>{control.status}</span>
+                          </div>
+                        </div>
+                        <AutoFitTitle>{control.title}</AutoFitTitle>
+                        <span className="control-item-subtext">
+                          {control.executionYear ? `${control.executionYear}년` : "-"} · {control.executionPeriod || "-"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="empty-text">검토 완료된 수행 이력이 없습니다.</p>
+                )}
+                {totalPerformedPages > 1 ? (
+                  <div className="pagination">
+                    {Array.from({ length: totalPerformedPages }, (_, index) => index + 1).map((page) => (
+                      <button
+                        key={page}
+                        type="button"
+                        className={page === currentPerformedPage ? "page-button active" : "page-button"}
+                        onClick={() => setControlListPage(page)}
+                      >
+                        {page}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </article>
+
+              <div className="control-main review-tight-stack">
+                <article className="panel detail-hero control-review-panel">
+                  {selectedPerformedControl ? (
+                    <>
+                      <div className="section-heading">
+                        <div>
+                          <h2>수행 완료</h2>
+                        </div>
+                        <div className="badge-row">
+                          <span className={`status-badge ${statusClass(selectedPerformedControl.status)}`}>{selectedPerformedControl.status}</span>
+                          <span className="status-badge normal-badge">{selectedPerformedControl.reviewChecked || "검토 완료"}</span>
+                          <span className="status-badge unit-assignee-badge">
+                            수행: {resolveExecutionAuthorDisplay(selectedPerformedControl)}
+                          </span>
+                        </div>
+                      </div>
+                      <p className="detail-purpose">{selectedPerformedControl.id} · {selectedPerformedControl.title}</p>
+                      <div className="review-detail-body">
+                        <div className="detail-meta-grid execution-meta-grid review-detail-grid">
+                          <div className="execution-meta-item review-row-full review-compact-meta-item">
+                            <div className="detail-body-text review-compact-meta-line">
+                              <span className="review-meta-chip review-meta-year">년도: {selectedPerformedControl.executionYear ? `${selectedPerformedControl.executionYear}년` : "-"}</span>
+                              <span className="review-meta-separator">|</span>
+                              <span className="review-meta-chip review-meta-period">주기: {selectedPerformedControl.executionPeriod || "-"}</span>
+                              <span className="review-meta-separator">|</span>
+                              <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorDisplay(selectedPerformedControl)}</span>
+                            </div>
+                          </div>
+                          <div className="execution-meta-item">
+                            <span>테스트 방법</span>
+                            <span className="detail-body-text">
+                              {preserveDisplayLineBreaks(selectedPerformedControl.testMethod || (selectedPerformedControl.procedures ?? []).join("\n")) || "-"}
+                            </span>
+                          </div>
+                          <div className="execution-meta-item">
+                            <span>모집단</span>
+                            <span className="detail-body-text">{preserveDisplayLineBreaks(selectedPerformedControl.population) || "-"}</span>
+                          </div>
+                          <div className="execution-meta-item review-row-full">
+                            <span>수행 내역</span>
+                            <span className="detail-body-text">{preserveDisplayLineBreaks(selectedPerformedControl.executionNote) || "-"}</span>
+                          </div>
+                          <div className="execution-meta-item review-row-full">
+                            <span>증적 파일</span>
+                            <div className="evidence-file-list">
+                              {(selectedPerformedControl.evidenceFiles ?? []).length > 0 ? (
+                                (selectedPerformedControl.evidenceFiles ?? []).map((file, index) => (
+                                  <span className="evidence-file-chip-wrap" key={`${file.name}-${index}`}>
+                                    <button
+                                      className="system-chip evidence-file-chip"
+                                      type="button"
+                                      onClick={() => {
+                                        if (isImageEvidence(file) || isPdfEvidence(file)) {
+                                          handleOpenEvidencePreview(file);
+                                          return;
+                                        }
+                                        handleDownloadEvidence(file);
+                                      }}
+                                    >
+                                      {file.url ? file.name : `${file.name} (대기)`}
+                                    </button>
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="empty-text">첨부된 증적 없음</span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="execution-meta-item">
+                            <span>검토자</span>
+                            <span className="detail-body-text">
+                              {String(selectedPerformedControl.reviewAuthorName ?? "").trim()
+                                || String(selectedPerformedControl.reviewAuthorEmail ?? "").trim()
+                                || "-"}
+                            </span>
+                          </div>
+                          <div className="execution-meta-item">
+                            <span>검토 결과</span>
+                            <span className="detail-body-text">{selectedPerformedControl.reviewResult || "양호"}</span>
+                          </div>
+                          <div className="execution-meta-item review-row-full">
+                            <span>검토 의견</span>
+                            <span className="detail-body-text">{preserveDisplayLineBreaks(selectedPerformedControl.note) || "-"}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="empty-text">검토 완료된 수행 이력이 없습니다.</p>
+                  )}
+                </article>
+              </div>
+            </section>
+          ) : null}
+
           {currentView === "people" ? (
             <section className="compact-stack member-management-stack">
               <article className="panel member-management-panel">
@@ -6441,6 +6926,19 @@ export default function App() {
                     <button className="secondary-button slim-button no-wrap login-domain-save-button" type="button" onClick={handleLoginDomainSave} disabled={!canManageMembers}>
                       인증 허용 도메인 저장
                     </button>
+                    <button className="secondary-button slim-button no-wrap" type="button" onClick={handleExportWorkspaceBackup}>
+                      백업 내보내기
+                    </button>
+                    <button className="secondary-button slim-button no-wrap" type="button" onClick={handleImportWorkspaceBackupClick}>
+                      백업 불러오기
+                    </button>
+                    <input
+                      ref={workspaceBackupInputRef}
+                      type="file"
+                      accept="application/json,.json"
+                      style={{ display: "none" }}
+                      onChange={handleImportWorkspaceBackupFileChange}
+                    />
                   </div>
                 </div>
                 <div className="table-wrap member-table-wrap">
@@ -6532,6 +7030,7 @@ export default function App() {
                   <label className="registration-filter-field">
                     <span>주기</span>
                     <select value={reportPeriod} onChange={(event) => setReportPeriod(event.target.value)}>
+                      <option value="all">전체</option>
                       <option value="monthly">월</option>
                       <option value="quarterly">분기</option>
                       <option value="semiannual">반기</option>
