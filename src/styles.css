@@ -620,10 +620,20 @@ textarea {
   min-height: calc(100vh - 120px);
 }
 
+.page-shell > .layout {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
 .layout.workbench-layout {
   min-height: calc(100vh - 120px);
   height: 100%;
   grid-template-rows: auto 1fr;
+  overflow: hidden;
+}
+
+.page-shell > .layout.workbench-layout {
   overflow: hidden;
 }
 
@@ -2339,6 +2349,11 @@ th {
   min-height: 340px;
 }
 
+.dashboard-view-category .control-progress-group-list,
+.dashboard-view-category .control-progress-list.category-progress-list {
+  min-height: 0;
+}
+
 .control-progress-group {
   display: grid;
   gap: 8px;
@@ -2759,6 +2774,10 @@ th {
 .dashboard-view-category .control-progress-summary-card {
   background: rgba(183, 121, 31, 0.06);
   border-color: rgba(183, 121, 31, 0.16);
+}
+
+.dashboard-view-category .control-progress-group {
+  padding-bottom: 6px;
 }
 
 .dashboard-view-category .progress-track span {
