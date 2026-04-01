@@ -100,9 +100,16 @@ function deriveExecutionPeriod(dateLike, frequency) {
 function executionHasContent(entry) {
   return (
     String(entry?.executionNote ?? "").trim().length > 0
-    || String(entry?.executionYear ?? "").trim().length > 0
-    || String(entry?.executionPeriod ?? "").trim().length > 0
     || (Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles.length : 0) > 0
+  );
+}
+
+function hasRequiredExecutionFields(entry) {
+  return (
+    String(entry?.executionYear ?? "").trim().length > 0
+    && String(entry?.executionPeriod ?? "").trim().length > 0
+    && String(entry?.executionNote ?? "").trim().length > 0
+    && (Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles.length : 0) > 0
   );
 }
 
@@ -120,6 +127,10 @@ function normalizeExecutionEntry(entry, control = {}) {
       typeof entry?.executionSubmitted === "boolean"
         ? entry.executionSubmitted
         : executionHasContent(entry),
+    reviewRequested:
+      typeof entry?.reviewRequested === "boolean"
+        ? entry.reviewRequested
+        : false,
     executionAuthorName: String(entry?.executionAuthorName ?? "").trim(),
     executionAuthorEmail: String(entry?.executionAuthorEmail ?? "").trim().toLowerCase(),
     reviewChecked: String(entry?.reviewChecked ?? "미검토").trim() || "미검토",
@@ -177,6 +188,36 @@ function normalizeDomainList(raw) {
     .filter(Boolean);
 }
 
+function buildMasterControlPayload(control) {
+  if (!control || typeof control !== "object") {
+    return {};
+  }
+
+  const {
+    executionHistory,
+    executionNote,
+    executionYear,
+    executionPeriod,
+    executionSubmitted,
+    reviewRequested,
+    executionAuthorName,
+    executionAuthorEmail,
+    reviewChecked,
+    reviewResult,
+    reviewAuthorName,
+    reviewAuthorEmail,
+    note,
+    status,
+    evidenceFiles,
+    evidenceStatus,
+    updatedAt,
+    createdAt,
+    ...masterPayload
+  } = control;
+
+  return masterPayload;
+}
+
 function mapControlToMasterRow(control, index, nowIso) {
   return {
     control_id: control.id,
@@ -204,13 +245,14 @@ function mapControlToMasterRow(control, index, nowIso) {
     control_description: control.description ?? control.population ?? "",
     active_yn: "Y",
     sort_order: index + 1,
-    control_payload: control,
+    control_payload: buildMasterControlPayload(control),
     updated_at: nowIso,
   };
 }
 
 function mapControlToExecutionRows(control, nowIso) {
-  return getControlExecutionHistory(control).map((entry) => ({
+  return getControlExecutionHistory(control)
+    .map((entry) => ({
     execution_id: entry.executionId || createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod),
     control_id: control.id,
     execution_date: normalizeDate(control.lastUpdatedAt ?? nowIso),
@@ -219,14 +261,8 @@ function mapControlToExecutionRows(control, nowIso) {
     review_checked: entry.reviewChecked ?? "미검토",
     review_date: entry.reviewChecked === "검토 완료" ? normalizeDate(nowIso) : null,
     review_note: entry.note ?? "",
-    performed_by:
-      String(entry.executionAuthorName ?? "").trim()
-      || String(entry.executionAuthorEmail ?? "").trim().toLowerCase()
-      || control.performer
-      || control.performDept
-      || control.ownerDept
-      || "",
-    reviewed_by: control.reviewer ?? control.reviewDept ?? "",
+    performed_by: control.performDept ?? control.performer ?? control.ownerDept ?? "",
+    reviewed_by: control.reviewDept ?? control.reviewer ?? "",
     drive_folder_id: null,
     last_updated_at: nowIso,
     execution_payload: {
@@ -235,6 +271,7 @@ function mapControlToExecutionRows(control, nowIso) {
       executionYear: entry.executionYear ?? "",
       executionPeriod: entry.executionPeriod ?? "",
       executionSubmitted: Boolean(entry.executionSubmitted),
+      reviewRequested: Boolean(entry.reviewRequested),
       executionAuthorName: entry.executionAuthorName ?? "",
       executionAuthorEmail: entry.executionAuthorEmail ?? "",
       note: entry.note ?? "",
@@ -252,13 +289,7 @@ function mapControlToExecutionRows(control, nowIso) {
 
 function mapControlToEvidenceRows(control, nowIso) {
   return getControlExecutionHistory(control).flatMap((entry) => {
-    const uploader =
-      String(entry.executionAuthorName ?? "").trim()
-      || String(entry.executionAuthorEmail ?? "").trim().toLowerCase()
-      || control.performer
-      || control.performDept
-      || control.ownerDept
-      || "";
+    const uploader = control.performDept ?? control.performer ?? control.ownerDept ?? "";
     const executionId = entry.executionId || createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod);
     const evidenceFiles = Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles : [];
 
@@ -501,6 +532,10 @@ export async function fetchSupabaseWorkspace() {
           typeof executionPayload.executionSubmitted === "boolean"
             ? executionPayload.executionSubmitted
             : undefined,
+        reviewRequested:
+          typeof executionPayload.reviewRequested === "boolean"
+            ? executionPayload.reviewRequested
+            : undefined,
         executionAuthorName: executionPayload.executionAuthorName ?? execution.performed_by ?? row.perform_dept ?? "",
         executionAuthorEmail: executionPayload.executionAuthorEmail ?? "",
         reviewChecked: execution.review_checked ?? executionPayload.reviewChecked ?? "미검토",
@@ -546,20 +581,20 @@ export async function fetchSupabaseWorkspace() {
       reviewChecked: latestExecution?.reviewChecked ?? row.review_checked,
       description: row.control_description,
       population: payload.population ?? row.control_description ?? "",
-      note: latestExecution?.note ?? payload.note ?? "",
-      executionNote: latestExecution?.executionNote ?? payload.executionNote ?? "",
-      executionYear: latestExecution?.executionYear ?? payload.executionYear ?? "",
-      executionPeriod: latestExecution?.executionPeriod ?? payload.executionPeriod ?? "",
+      note: latestExecution?.note ?? "",
+      executionNote: latestExecution?.executionNote ?? "",
+      executionYear: latestExecution?.executionYear ?? "",
+      executionPeriod: latestExecution?.executionPeriod ?? "",
       executionSubmitted:
-        typeof (latestExecution?.executionSubmitted ?? payload.executionSubmitted) === "boolean"
-          ? (latestExecution?.executionSubmitted ?? payload.executionSubmitted)
+        typeof latestExecution?.executionSubmitted === "boolean"
+          ? latestExecution.executionSubmitted
           : undefined,
-      executionAuthorName: latestExecution?.executionAuthorName ?? payload.executionAuthorName ?? row.perform_dept ?? "",
-      executionAuthorEmail: latestExecution?.executionAuthorEmail ?? payload.executionAuthorEmail ?? "",
-      reviewResult: latestExecution?.reviewResult ?? payload.reviewResult ?? "",
-      reviewAuthorName: latestExecution?.reviewAuthorName ?? payload.reviewAuthorName ?? "",
-      reviewAuthorEmail: latestExecution?.reviewAuthorEmail ?? payload.reviewAuthorEmail ?? "",
-      evidenceFiles: latestExecution?.evidenceFiles ?? payload.evidenceFiles ?? [],
+      executionAuthorName: latestExecution?.executionAuthorName ?? row.perform_dept ?? "",
+      executionAuthorEmail: latestExecution?.executionAuthorEmail ?? "",
+      reviewResult: latestExecution?.reviewResult ?? "",
+      reviewAuthorName: latestExecution?.reviewAuthorName ?? "",
+      reviewAuthorEmail: latestExecution?.reviewAuthorEmail ?? "",
+      evidenceFiles: latestExecution?.evidenceFiles ?? [],
       executionHistory: executions,
     };
   });

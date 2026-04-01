@@ -2141,6 +2141,20 @@ th {
   word-break: break-word;
 }
 
+.report-table th:nth-child(9),
+.report-table td:nth-child(9) {
+  width: 72px;
+  min-width: 72px;
+  max-width: 72px;
+  text-align: center;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.report-table th:nth-child(9) {
+  text-align: center;
+}
+
 .report-execution-note {
   width: 100%;
   background: transparent !important;

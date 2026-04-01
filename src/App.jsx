@@ -661,8 +661,12 @@ function normalizeCompactText(value) {
     .trim();
 }
 
+function normalizeUnitLabel(value) {
+  return normalizeCompactText(value).replace(/유닛/g, "").trim();
+}
+
 function normalizeUnitName(value) {
-  return normalizeCompactText(value).toLowerCase();
+  return normalizeUnitLabel(value).toLowerCase();
 }
 
 function toControlUnitFilterValue(control) {
@@ -707,8 +711,8 @@ function buildActivityFromControl(control) {
   if (!normalizedTitle) {
     return "";
   }
-  const performDept = normalizeCompactText(control?.performDept ?? control?.performer ?? control?.ownerDept) || "수행 부서";
-  const reviewDept = normalizeCompactText(control?.reviewDept ?? control?.reviewer) || "검토 부서";
+  const performDept = normalizeUnitLabel(control?.performDept ?? control?.performer ?? control?.ownerDept) || "수행 부서";
+  const reviewDept = normalizeUnitLabel(control?.reviewDept ?? control?.reviewer) || "검토 부서";
   const frequency = formatFrequencyLabel(control?.frequency) || "정기";
   const objective = normalizeCompactText(control?.controlObjective ?? control?.purpose);
 
@@ -858,7 +862,11 @@ function normalizeExecutionEntry(entry, fallbackControl = {}) {
     executionSubmitted:
       typeof entry?.executionSubmitted === "boolean"
         ? entry.executionSubmitted
-        : hasExecutionEntryContent(entry),
+        : hasExecutionSubmissionContent(entry),
+    reviewRequested:
+      typeof entry?.reviewRequested === "boolean"
+        ? entry.reviewRequested
+        : false,
     executionAuthorName: forcedAuthorName,
     executionAuthorEmail: forcedAuthorEmail,
     reviewChecked: String(entry?.reviewChecked ?? "미검토").trim() || "미검토",
@@ -886,6 +894,7 @@ function buildLegacyExecutionEntry(control) {
     executionPeriod: control?.executionPeriod,
     executionNote: control?.executionNote,
     executionSubmitted: control?.executionSubmitted,
+    reviewRequested: control?.reviewRequested,
     executionAuthorName: control?.executionAuthorName,
     executionAuthorEmail: control?.executionAuthorEmail,
     reviewChecked: control?.reviewChecked,
@@ -916,17 +925,36 @@ function getControlExecutionHistory(control) {
 function hasExecutionEntryContent(entry) {
   return (
     String(entry?.executionNote ?? "").trim().length > 0
-    || String(entry?.executionYear ?? "").trim().length > 0
-    || String(entry?.executionPeriod ?? "").trim().length > 0
     || ((Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0)
+  );
+}
+
+function hasExecutionSubmissionContent(entry) {
+  return hasExecutionEntryContent(entry);
+}
+
+function hasExecutionRequiredFields(entry) {
+  return (
+    String(entry?.executionYear ?? "").trim().length > 0
+    && String(entry?.executionPeriod ?? "").trim().length > 0
+    && String(entry?.executionNote ?? "").trim().length > 0
+    && (Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0
   );
 }
 
 function isExecutionReadyForCompletion(entry) {
   return (
-    String(entry?.executionNote ?? "").trim().length > 0
-    && (Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0
+    hasExecutionRequiredFields(entry)
     && String(entry?.reviewChecked ?? "미검토").trim() !== "검토 완료"
+  );
+}
+
+function isExecutionInReviewQueue(entry) {
+  return (
+    Boolean(entry?.executionSubmitted)
+    && Boolean(entry?.reviewRequested)
+    && isExecutionReadyForCompletion(entry)
+    && String(entry?.reviewChecked ?? "미검토").trim() === "미검토"
   );
 }
 
@@ -971,6 +999,7 @@ function mergeExecutionHistoryIntoControl(control, nextHistory, preferredMatch =
     executionYear: preferredEntry?.executionYear ?? "",
     executionPeriod: preferredEntry?.executionPeriod ?? "",
     executionSubmitted: preferredEntry?.executionSubmitted ?? false,
+    reviewRequested: preferredEntry?.reviewRequested ?? false,
     executionAuthorName: preferredEntry?.executionAuthorName ?? "",
     executionAuthorEmail: preferredEntry?.executionAuthorEmail ?? "",
     reviewChecked: preferredEntry?.reviewChecked ?? "미검토",
@@ -989,8 +1018,8 @@ function mergeExecutionHistoryIntoControl(control, nextHistory, preferredMatch =
 
 function normalizeControl(control) {
   const catalog = controlCatalog[control.id] ?? {};
-  const performDept = control.performDept ?? control.performer ?? control.ownerDept ?? "";
-  const reviewDept = control.reviewDept ?? control.reviewer ?? "";
+  const performDept = normalizeUnitLabel(control.performDept ?? control.performer ?? control.ownerDept ?? "");
+  const reviewDept = normalizeUnitLabel(control.reviewDept ?? control.reviewer ?? "");
   const normalizedHistory = getControlExecutionHistory(control);
   const activeExecution = getPreferredExecutionEntry(control, normalizedHistory[0] ?? null);
   const hasExecutionContentValue = normalizedHistory.some((entry) => hasExecutionEntryContent(entry));
@@ -1015,11 +1044,11 @@ function normalizeControl(control) {
     title: normalizedTitle,
     controlType: control.controlType ?? catalog.controlType ?? "예방",
     keyControl: control.keyControl ?? catalog.keyControl ?? "No",
-    ownerDept: performDept || catalog.performDept || "",
-    performer: control.performer ?? control.performDept ?? catalog.performDept ?? "",
-    reviewer: control.reviewer ?? control.reviewDept ?? catalog.reviewDept ?? "",
-    performDept: control.performDept ?? control.performer ?? catalog.performDept ?? "",
-    reviewDept: control.reviewDept ?? control.reviewer ?? catalog.reviewDept ?? "",
+    ownerDept: performDept || normalizeUnitLabel(catalog.performDept) || "",
+    performer: performDept || normalizeUnitLabel(catalog.performDept) || "",
+    reviewer: reviewDept || normalizeUnitLabel(catalog.reviewDept) || "",
+    performDept: performDept || normalizeUnitLabel(catalog.performDept) || "",
+    reviewDept: reviewDept || normalizeUnitLabel(catalog.reviewDept) || "",
     frequency: control.frequency ?? catalog.frequency,
     targetSystems: normalizedSystems,
     riskName: control.riskName ?? "",
@@ -1040,7 +1069,13 @@ function normalizeControl(control) {
         ? activeExecution.executionSubmitted
         : typeof control.executionSubmitted === "boolean"
           ? control.executionSubmitted
-          : hasExecutionContentValue,
+          : hasExecutionSubmissionContent(control),
+    reviewRequested:
+      typeof activeExecution?.reviewRequested === "boolean"
+        ? activeExecution.reviewRequested
+        : typeof control.reviewRequested === "boolean"
+          ? control.reviewRequested
+          : false,
     executionAuthorName: String(activeExecution?.executionAuthorName ?? control.executionAuthorName ?? "").trim(),
     executionAuthorEmail: String(activeExecution?.executionAuthorEmail ?? control.executionAuthorEmail ?? "").trim().toLowerCase(),
     reviewAuthorName: String(activeExecution?.reviewAuthorName ?? control.reviewAuthorName ?? "").trim(),
@@ -1055,6 +1090,50 @@ function normalizeControl(control) {
       || ((Array.isArray(activeExecution?.evidenceFiles) ? activeExecution.evidenceFiles : []).length > 0 ? "준비 완료" : "미수집"),
     executionHistory: normalizedHistory,
     attributes: Array.isArray(control.attributes) ? control.attributes : [],
+    evidences: Array.isArray(control.evidences) ? control.evidences.map((item) => convertLeadingNumberBulletsToCircled(item)) : [],
+    procedures: Array.isArray(control.procedures) ? control.procedures : [],
+  };
+}
+
+function buildControlManagementSnapshot(control) {
+  const catalog = controlCatalog[control.id] ?? {};
+  const performDept = normalizeUnitLabel(control.performDept ?? control.performer ?? control.ownerDept ?? catalog.performDept ?? "");
+  const reviewDept = normalizeUnitLabel(control.reviewDept ?? control.reviewer ?? catalog.reviewDept ?? "");
+  const normalizedSystems =
+    uniqueSystems(control.targetSystems ?? catalog.targetSystems).length > 0
+      ? uniqueSystems(control.targetSystems ?? catalog.targetSystems)
+      : defaultSystemsByCategory[control.process ?? catalog.process] ?? [];
+
+  return {
+    ...catalog,
+    ...control,
+    process: control.process?.trim() ?? catalog.process ?? "",
+    subProcess: control.subProcess?.trim() ?? catalog.subProcess ?? control.process?.trim() ?? catalog.process ?? "",
+    title: control.title?.replace(/\s+/g, " ").trim() ?? catalog.title ?? "",
+    controlType: control.controlType ?? catalog.controlType ?? "예방",
+    keyControl: control.keyControl ?? catalog.keyControl ?? "No",
+    ownerDept: performDept || normalizeUnitLabel(catalog.performDept) || "",
+    performer: performDept || normalizeUnitLabel(catalog.performDept) || "",
+    performDept: performDept || normalizeUnitLabel(catalog.performDept) || "",
+    reviewer: reviewDept || normalizeUnitLabel(catalog.reviewDept) || "",
+    reviewDept: reviewDept || normalizeUnitLabel(catalog.reviewDept) || "",
+    frequency: control.frequency ?? catalog.frequency ?? "",
+    targetSystems: normalizedSystems,
+    riskName: control.riskName ?? "",
+    controlObjective: control.controlObjective ?? control.purpose ?? "",
+    controlActivity: convertLeadingNumberBulletsToCircled(buildActivityFromControl({
+      ...control,
+      ...catalog,
+      title: control.title?.replace(/\s+/g, " ").trim() ?? catalog.title ?? "",
+    })),
+    description: convertLeadingNumberBulletsToCircled(control.description ?? control.population ?? ""),
+    automationLevel: control.automationLevel ?? "",
+    ownerPerson: control.ownerPerson ?? "",
+    evidenceText: convertLeadingNumberBulletsToCircled(control.evidenceText ?? ""),
+    testMethod: control.testMethod ?? "",
+    policyReference: control.policyReference ?? "",
+    deficiencyImpact: control.deficiencyImpact ?? "",
+    population: control.population ?? "",
     evidences: Array.isArray(control.evidences) ? control.evidences.map((item) => convertLeadingNumberBulletsToCircled(item)) : [],
     procedures: Array.isArray(control.procedures) ? control.procedures : [],
   };
@@ -2452,7 +2531,7 @@ export default function App() {
   const currentCalendarMonth = useMemo(() => new Date().getMonth() + 1, []);
   const currentCalendarYear = useMemo(() => String(new Date().getFullYear()), []);
   const [dashboardDelayYear, setDashboardDelayYear] = useState(() => String(new Date().getFullYear()));
-  const [reportYear, setReportYear] = useState(() => String(new Date().getFullYear()));
+  const [reportYear, setReportYear] = useState("all");
   const [reportPeriod, setReportPeriod] = useState("all");
   const [reportCompletionFilter, setReportCompletionFilter] = useState("completed");
   const [reportFormat, setReportFormat] = useState("html");
@@ -2511,6 +2590,16 @@ export default function App() {
   );
   const performerPeople = people.filter((person) => person.role === "performer" || person.role === "both");
   const reviewerPeople = people.filter((person) => person.role === "reviewer" || person.role === "both");
+  const performerUnitOptions = useMemo(() => {
+    const source = performerPeople.length > 0 ? performerPeople : people;
+    return Array.from(new Set(source.map((person) => normalizeUnitLabel(person.unit ?? person.team ?? "")).filter(Boolean)))
+      .sort((left, right) => left.localeCompare(right, "ko"));
+  }, [people, performerPeople]);
+  const reviewerUnitOptions = useMemo(() => {
+    const source = reviewerPeople.length > 0 ? reviewerPeople : people;
+    return Array.from(new Set(source.map((person) => normalizeUnitLabel(person.unit ?? person.team ?? "")).filter(Boolean)))
+      .sort((left, right) => left.localeCompare(right, "ko"));
+  }, [people, reviewerPeople]);
   const memberDirectory = useMemo(() => {
     const seenEmails = new Set();
     const syncedPeople = people.reduce((accumulator, person) => {
@@ -2596,7 +2685,7 @@ export default function App() {
     );
   }, [memberDirectory]);
   const formatExecutionDisplayUnit = (value) =>
-    String(value ?? "").trim().replace(/유닛$/, "");
+    normalizeUnitLabel(value);
   const memberSingleNameByUnit = useMemo(() => {
     const grouped = new Map();
     memberDirectory.forEach((person) => {
@@ -2626,23 +2715,15 @@ export default function App() {
     return String(control?.executionAuthorName ?? "").trim() || "-";
   };
   const resolveExecutionAuthorDisplay = (control) => {
-    const authorEmail = String(control?.executionAuthorEmail ?? "").trim().toLowerCase();
-    const rawAuthorName = resolveExecutionAuthorName(control);
-    const rawUnit =
-      memberUnitByName.get(String(rawAuthorName ?? "").trim())
-      || (authorEmail && memberUnitByEmail.get(authorEmail))
-      || String(control?.performDept ?? control?.performer ?? "").trim();
+    const catalog = controlCatalog[String(control?.id ?? "").trim()] ?? {};
+    const rawUnit = String(control?.performDept ?? catalog.performDept ?? "").trim();
     const unit = formatExecutionDisplayUnit(rawUnit);
-    const normalizedUnit = unit.replace(/\s+/g, "");
-    const inferredAuthorName =
-      (rawAuthorName && rawAuthorName !== "-" ? rawAuthorName : "")
-      || memberSingleNameByUnit.get(normalizedUnit)
-      || "";
-    const normalizedAuthorName = String(inferredAuthorName ?? "").trim().replace(/\s+/g, "").replace(/유닛$/, "");
-    if (unit && inferredAuthorName && normalizedAuthorName && normalizedAuthorName !== normalizedUnit) {
-      return `${unit}(${inferredAuthorName})`;
-    }
-    return unit || inferredAuthorName || rawAuthorName || "-";
+    return unit || rawUnit || "-";
+  };
+  const resolveReviewDeptDisplay = (control) => {
+    const catalog = controlCatalog[String(control?.id ?? "").trim()] ?? {};
+    const rawUnit = String(control?.reviewDept ?? catalog.reviewDept ?? "").trim();
+    return normalizeUnitLabel(rawUnit) || rawUnit || "-";
   };
   const normalizedAuthEmail = String(authUser?.email ?? "").trim().toLowerCase();
   const currentAccessRole = normalizeAccessRole(
@@ -2788,11 +2869,15 @@ export default function App() {
   }, [registrationForm]);
   const registrationMissingFields = registrationRequiredFields.filter((key) => !isRegistrationFieldFilled(registrationForm, key));
   const canSubmitRegistration = registrationMissingFields.length === 0;
-  const registrationCategoryOptions = ["전체", ...new Set(controls.map((control) => control.process))];
+  const controlManagementControls = useMemo(
+    () => controls.map((control) => buildControlManagementSnapshot(control)),
+    [controls],
+  );
+  const registrationCategoryOptions = ["전체", ...new Set(controlManagementControls.map((control) => control.process))];
   const registrationVisibleControls =
     registrationCategoryFilter === "전체"
-      ? [...controls]
-      : controls.filter((control) => control.process === registrationCategoryFilter)
+      ? [...controlManagementControls]
+      : controlManagementControls.filter((control) => control.process === registrationCategoryFilter)
   ;
   registrationVisibleControls.sort(compareControlsByListOrder);
   const registrationTotalPages = Math.max(1, Math.ceil(registrationVisibleControls.length / listPageSize));
@@ -2802,9 +2887,9 @@ export default function App() {
     registrationCurrentPage * listPageSize,
   );
   const registrationSelectedControl =
-    controls.find((control) => control.id === registrationSelectedControlId)
+    controlManagementControls.find((control) => control.id === registrationSelectedControlId)
     ?? registrationPagedControls[0]
-    ?? controls[0]
+    ?? controlManagementControls[0]
     ?? null;
   const executionYearOptions = useMemo(() => buildExecutionYearOptions(), []);
   const executionPeriodOptions = useMemo(
@@ -2839,7 +2924,7 @@ export default function App() {
     [currentCalendarYear],
   );
   const reportYearOptions = useMemo(
-    () => buildExecutionYearOptions(Number(currentCalendarYear), 7),
+    () => ["all", ...buildExecutionYearOptions(Number(currentCalendarYear), 7)],
     [currentCalendarYear],
   );
   const reportPeriodConfig = {
@@ -2860,7 +2945,10 @@ export default function App() {
         getControlExecutionHistory(control)
           .filter((entry) =>
             config.frequencies.includes(control.frequency)
-            && String(entry.executionYear ?? "").trim() === reportYear,
+            && (
+              reportYear === "all"
+              || String(entry.executionYear ?? "").trim() === reportYear
+            ),
           )
           .filter((entry) =>
             Boolean(entry.executionSubmitted)
@@ -2874,21 +2962,19 @@ export default function App() {
             title: control.title,
             process: control.process,
             frequency: control.frequency,
-            performer: (
-              memberNameByEmail.get(String(entry.executionAuthorEmail ?? "").trim().toLowerCase())
-              ?? String(entry.executionAuthorName ?? "").trim()
-            ) || "-",
-            reviewer: control.reviewDept ?? control.reviewer ?? "-",
+            performer: resolveExecutionAuthorDisplay(control),
+            reviewer: resolveReviewDeptDisplay(control),
             status: entry.status ?? "-",
             reviewChecked: entry.reviewChecked ?? "미검토",
             executionNote: typeof entry.executionNote === "string" ? entry.executionNote : "",
+            reviewNote: typeof entry.note === "string" ? entry.note : "",
             executionYear: entry.executionYear ?? "",
             executionPeriod: entry.executionPeriod ?? "",
             evidenceCount: Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles.length : 0,
             evidenceFiles: Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles : [],
           })),
       );
-  }, [controls, memberNameByEmail, reportCompletionFilter, reportPeriod, reportYear]);
+  }, [controls, reportCompletionFilter, reportPeriod, reportYear]);
   const reportSummary = useMemo(() => ({
     total: reportControls.length,
     completed: reportControls.filter((item) => item.status === "점검 완료" || item.status === "정상").length,
@@ -3285,10 +3371,7 @@ export default function App() {
       controls.flatMap((control) =>
         getControlExecutionHistory(control)
           .filter(
-            (entry) =>
-              Boolean(entry.executionSubmitted)
-              && hasExecutionEntryContent(entry)
-              && String(entry.reviewChecked ?? "미검토") === "미검토",
+            (entry) => isExecutionInReviewQueue(entry),
           )
           .map((entry) => ({
             ...mergeExecutionHistoryIntoControl(control, getControlExecutionHistory(control), {
@@ -3312,7 +3395,9 @@ export default function App() {
           .filter(
             (entry) =>
               Boolean(entry.executionSubmitted)
-              && isExecutionReadyForCompletion(entry),
+              && isExecutionReadyForCompletion(entry)
+              && !entry.reviewRequested
+              && String(entry.reviewChecked ?? "미검토").trim() !== "검토 완료",
           )
           .map((entry) => ({
             ...mergeExecutionHistoryIntoControl(control, getControlExecutionHistory(control), {
@@ -3336,6 +3421,7 @@ export default function App() {
           .filter(
             (entry) =>
               Boolean(entry.executionSubmitted)
+              && hasExecutionRequiredFields(entry)
               && String(entry.reviewChecked ?? "미검토").trim() === "검토 완료",
           )
           .map((entry) => ({
@@ -3431,7 +3517,7 @@ export default function App() {
       setSelectedReviewExecutionKey("");
     }
     if (nextView === "report") {
-      setReportYear(currentCalendarYear);
+      setReportYear("all");
       setReportPeriod("all");
       setReportFormat("html");
       setReportPreviewOpen(false);
@@ -4069,7 +4155,8 @@ export default function App() {
 
   function buildReportMarkup() {
     const periodLabel = reportPeriodConfig[reportPeriod]?.label ?? "주기";
-    const reportTitle = `${reportYear}년 ${periodLabel === "전체" ? "전체 주기" : periodLabel} 수행 리포트`;
+    const reportYearLabel = reportYear === "all" ? "전체" : `${reportYear}년`;
+    const reportTitle = `${reportYearLabel} ${periodLabel === "전체" ? "전체 주기" : periodLabel} 수행 리포트`;
     const toMultilineHtml = (value) => {
       const normalized = String(value ?? "").replace(/\r\n/g, "\n");
       if (!normalized.trim()) {
@@ -4086,7 +4173,8 @@ export default function App() {
         <td>${escapeHtml(item.reviewer)}</td>
         <td>${escapeHtml(item.status)}</td>
         <td>${escapeHtml(item.reviewChecked)}</td>
-        <td class="execution-note">${toMultilineHtml(item.executionNote)}</td>
+        <td class="execution-note execution-note-body">${toMultilineHtml(item.executionNote)}</td>
+        <td class="execution-note execution-review-note">${toMultilineHtml(item.reviewNote)}</td>
         <td class="execution-evidence-cell">
           <div class="execution-image-list">
             ${item.evidenceFiles
@@ -4128,7 +4216,9 @@ export default function App() {
       line-height: 1.2;
     }
     th { background: #f3f4f6; }
-    .execution-note { min-width: 300px; background: transparent; box-shadow: none; text-align: left; vertical-align: top; white-space: pre-line; line-height: 1.45; word-break: break-word; overflow-wrap: anywhere; }
+    .execution-note { background: transparent; box-shadow: none; text-align: left; vertical-align: top; white-space: pre-line; line-height: 1.45; word-break: break-word; overflow-wrap: anywhere; }
+    .execution-note-body { min-width: 300px; }
+    .execution-review-note { min-width: 72px; max-width: 72px; width: 72px; text-align: center; }
     .execution-evidence-cell { min-width: 220px; text-align: left; vertical-align: top; }
     .execution-image-list { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 0; width: 100%; }
     .execution-empty { width: 100%; text-align: left; color: #6b7280; }
@@ -4147,10 +4237,10 @@ export default function App() {
   <table>
     <thead>
       <tr>
-        <th>ID</th><th>통제명</th><th>카테고리</th><th>수행자</th><th>검토자</th><th>상태</th><th>승인</th><th>수행 내역</th><th>증적</th>
+        <th>ID</th><th>통제명</th><th>카테고리</th><th>수행자</th><th>검토자</th><th>상태</th><th>승인</th><th>수행 내역</th><th>검토 의견</th><th>증적</th>
       </tr>
     </thead>
-    <tbody>${rows || '<tr><td colspan="9">대상 통제가 없습니다.</td></tr>'}</tbody>
+    <tbody>${rows || '<tr><td colspan="10">대상 통제가 없습니다.</td></tr>'}</tbody>
   </table>
 </body>
 </html>`;
@@ -4228,15 +4318,17 @@ export default function App() {
   function handleReportExport() {
     const periodLabel = reportPeriodConfig[reportPeriod]?.label ?? "주기";
     const reportPeriodLabel = periodLabel === "전체" ? "전체 주기" : periodLabel;
+    const reportYearLabel = reportYear === "all" ? "전체" : `${reportYear}년`;
     const markup = buildReportMarkup();
     setReportPreviewMarkup(markup);
     setReportPreviewOpen(true);
-    writeAuditLog("REPORT_VIEWED", `${reportYear}-${reportPeriod}`, `${reportYear}년 ${reportPeriodLabel} 수행 리포트 미리보기`);
+    writeAuditLog("REPORT_VIEWED", `${reportYear}-${reportPeriod}`, `${reportYearLabel} ${reportPeriodLabel} 수행 리포트 미리보기`);
   }
 
   function handlePrintReportPreview() {
     const periodLabel = reportPeriodConfig[reportPeriod]?.label ?? "주기";
     const reportPeriodLabel = periodLabel === "전체" ? "전체 주기" : periodLabel;
+    const reportYearLabel = reportYear === "all" ? "전체" : `${reportYear}년`;
     const frameWindow = reportPreviewFrameRef.current?.contentWindow;
     if (!frameWindow) {
       return;
@@ -4247,7 +4339,7 @@ export default function App() {
     writeAuditLog(
       reportFormat === "html" ? "REPORT_HTML_EXPORTED" : "REPORT_PDF_PRINTED",
       `${reportYear}-${reportPeriod}`,
-      `${reportYear}년 ${reportPeriodLabel} 수행 리포트 ${reportFormat === "html" ? "HTML 출력" : "PDF 출력"}`,
+      `${reportYearLabel} ${reportPeriodLabel} 수행 리포트 ${reportFormat === "html" ? "HTML 출력" : "PDF 출력"}`,
     );
   }
 
@@ -4374,8 +4466,8 @@ export default function App() {
       controlType: control.controlType ?? "예방",
       automationLevel: control.automationLevel ?? "수동",
       keyControl: isKeyControl(control.keyControl),
-      ownerDept: control.performDept ?? control.performer ?? "",
-      reviewDept: control.reviewDept ?? control.reviewer ?? "",
+      ownerDept: normalizeUnitLabel(control.performDept ?? control.performer ?? ""),
+      reviewDept: normalizeUnitLabel(control.reviewDept ?? control.reviewer ?? ""),
       evidence: resolveControlEvidenceText(control),
       testMethod: resolveControlTestMethod(control),
       population: control.population ?? "",
@@ -4409,9 +4501,9 @@ export default function App() {
     }
 
     const editingControl = controls.find((control) => control.id === registrationSelectedControlId) ?? null;
-    const preservedReviewer = editingControl?.reviewer ?? editingControl?.reviewDept ?? "";
+    const preservedReviewer = normalizeUnitLabel(editingControl?.reviewer ?? editingControl?.reviewDept ?? "");
     const preservedOwnerPerson = editingControl?.ownerPerson ?? "";
-    const resolvedReviewDept = registrationForm.reviewDept.trim() || preservedReviewer;
+    const resolvedReviewDept = normalizeUnitLabel(registrationForm.reviewDept) || preservedReviewer;
 
     const nextControl = normalizeControl({
       id: registrationForm.controlId.trim(),
@@ -4430,10 +4522,10 @@ export default function App() {
       keyControl: registrationForm.keyControl ? "Yes" : "No",
       status: "점검 예정",
       evidenceStatus: "미수집",
-      ownerDept: registrationForm.ownerDept.trim(),
-      performer: registrationForm.ownerDept.trim(),
+      ownerDept: normalizeUnitLabel(registrationForm.ownerDept),
+      performer: normalizeUnitLabel(registrationForm.ownerDept),
       reviewer: resolvedReviewDept,
-      performDept: registrationForm.ownerDept.trim(),
+      performDept: normalizeUnitLabel(registrationForm.ownerDept),
       reviewDept: resolvedReviewDept,
       ownerPerson: preservedOwnerPerson,
       targetSystems: registrationForm.targetSystems ?? [],
@@ -4594,7 +4686,8 @@ export default function App() {
     }));
   }
 
-  async function handleMemberSave(personId, overrideDraft = null) {
+  async function handleMemberSave(personId, overrideDraft = null, options = {}) {
+    const { suppressPopup = false } = options;
     if (!canManageMembers) {
       return;
     }
@@ -4662,10 +4755,33 @@ export default function App() {
     );
     const synced = await ensureRemoteSync(loggedWorkspace);
     if (!HAS_REMOTE_BACKEND || synced) {
-      setMemberSavePopupMessage("회원 정보가 저장되었습니다.");
+      if (!suppressPopup) {
+        setMemberSavePopupMessage("회원 정보가 저장되었습니다.");
+      }
       return;
     }
     showCenterAlert("회원 정보 저장은 되었지만 원격 동기화에 실패했습니다.");
+  }
+
+  async function handleSaveAllMemberDrafts() {
+    if (!canManageMembers) {
+      return;
+    }
+
+    const draftEntries = Object.entries(memberDrafts).filter(([, draft]) => draft && typeof draft === "object");
+    if (draftEntries.length === 0) {
+      showCenterAlert("저장할 회원 변경 내역이 없습니다.");
+      return;
+    }
+
+    for (const [personId, draft] of draftEntries) {
+      // Save sequentially so each write applies on the latest workspace state.
+      // This avoids dropping prior changes when remote sync is enabled.
+      // eslint-disable-next-line no-await-in-loop
+      await handleMemberSave(personId, draft, { suppressPopup: true });
+    }
+
+    setMemberSavePopupMessage("회원 정보가 저장되었습니다.");
   }
 
   async function handleMemberDelete(personId) {
@@ -4769,8 +4885,8 @@ export default function App() {
     if (!roleAssignmentControl) return;
 
     const formData = new FormData(event.currentTarget);
-    const performer = formData.get("performer").toString().trim();
-    const reviewer = formData.get("reviewer").toString().trim();
+    const performer = normalizeUnitLabel(formData.get("performer").toString());
+    const reviewer = normalizeUnitLabel(formData.get("reviewer").toString());
 
     updateWorkspace({
       ...workspace,
@@ -4914,6 +5030,7 @@ export default function App() {
           executionPeriod,
           executionNote,
           executionSubmitted: submitMode === "complete",
+          reviewRequested: false,
           executionAuthorName,
           executionAuthorEmail,
           reviewChecked: "미검토",
@@ -4973,6 +5090,7 @@ export default function App() {
           entry.executionId === selectedCompletedControl.completedExecutionKey
             ? {
                 ...entry,
+                reviewRequested: true,
                 reviewChecked: "미검토",
                 reviewResult: "",
                 note: "",
@@ -5124,6 +5242,8 @@ export default function App() {
             executionYear,
             executionPeriod,
             executionNote,
+            executionSubmitted: true,
+            reviewRequested: false,
             evidenceFiles: nextEvidenceFiles,
             evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
             status: deriveAssignmentStatus(executionNote, currentEntry?.reviewChecked ?? "미검토"),
@@ -5184,6 +5304,7 @@ export default function App() {
           entry.executionId === selectedReviewControl.reviewExecutionKey
             ? {
                 ...entry,
+                reviewRequested: false,
                 reviewChecked,
                 status,
                 note: reviewNote,
@@ -5197,8 +5318,8 @@ export default function App() {
         return mergeExecutionHistoryIntoControl(
           {
             ...control,
-            reviewer,
-            reviewDept: reviewer,
+            reviewer: control.reviewer ?? control.reviewDept ?? "",
+            reviewDept: control.reviewDept ?? control.reviewer ?? "",
           },
           nextHistory,
           {
@@ -5274,11 +5395,11 @@ export default function App() {
       keyControl: formData.get("keyControl").toString(),
       status: "점검 예정",
       evidenceStatus: "수집 중",
-      ownerDept: formData.get("performDept").toString().trim(),
-      performer: formData.get("performDept").toString().trim(),
-      reviewer: formData.get("reviewDept").toString().trim(),
-      performDept: formData.get("performDept").toString().trim(),
-      reviewDept: formData.get("reviewDept").toString().trim(),
+      ownerDept: normalizeUnitLabel(formData.get("performDept").toString()),
+      performer: normalizeUnitLabel(formData.get("performDept").toString()),
+      reviewer: normalizeUnitLabel(formData.get("reviewDept").toString()),
+      performDept: normalizeUnitLabel(formData.get("performDept").toString()),
+      reviewDept: normalizeUnitLabel(formData.get("reviewDept").toString()),
       targetSystems,
       note: "",
       population: "",
@@ -5315,8 +5436,8 @@ export default function App() {
 
     const formData = new FormData(event.currentTarget);
     const targetSystems = formData.getAll("targetSystems").map((value) => value.toString());
-    const performDept = formData.get("performDept").toString().trim();
-    const reviewDept = formData.get("reviewDept").toString().trim();
+    const performDept = normalizeUnitLabel(formData.get("performDept").toString());
+    const reviewDept = normalizeUnitLabel(formData.get("reviewDept").toString());
 
     updateWorkspace({
       ...workspace,
@@ -6259,9 +6380,9 @@ export default function App() {
                     <div><p>주기</p><span>{formatFrequencyLabel(registrationSelectedControl?.frequency) || "-"}</span></div>
                     <div><p>통제유형</p><span>{registrationSelectedControl?.controlType || "-"}</span></div>
                     <div><p>자동화 수준</p><span>{registrationSelectedControl?.automationLevel || "-"}</span></div>
-                    <div><p>수행부서</p><span>{registrationSelectedControl?.performDept ?? registrationSelectedControl?.performer ?? "-"}</span></div>
+                    <div><p>수행부서</p><span>{resolveExecutionAuthorDisplay(registrationSelectedControl)}</span></div>
                     <div><p>담당자</p><span>{registrationSelectedControl?.ownerPerson || "-"}</span></div>
-                    <div><p>검토부서</p><span>{registrationSelectedControl?.reviewDept ?? registrationSelectedControl?.reviewer ?? "-"}</span></div>
+                    <div><p>검토부서</p><span>{resolveReviewDeptDisplay(registrationSelectedControl)}</span></div>
                     <div>
                       <p>관련 시스템</p>
                       {renderSystemChips(registrationSelectedControl?.targetSystems)}
@@ -6326,7 +6447,7 @@ export default function App() {
                               수행: {resolveExecutionAuthorDisplay(control)}
                             </span>
                             <span className="status-badge unit-review-badge">
-                              검토: {control.reviewDept ?? control.reviewer ?? "-"}
+                              검토: {resolveReviewDeptDisplay(control)}
                             </span>
                           </div>
                         </div>
@@ -6379,7 +6500,7 @@ export default function App() {
                             수행: {resolveExecutionAuthorDisplay(selectedAssignmentEntry ?? selectedControl)}
                           </span>
                           <span className="status-badge unit-review-badge">
-                            검토: {selectedControl.reviewDept ?? selectedControl.reviewer ?? "-"}
+                            검토: {resolveReviewDeptDisplay(selectedControl)}
                           </span>
                         </div>
                       </div>
@@ -6534,7 +6655,7 @@ export default function App() {
                               수행: {resolveExecutionAuthorDisplay(control)}
                             </span>
                             <span className="status-badge unit-review-badge">
-                              검토: {control.reviewDept ?? control.reviewer ?? "-"}
+                              검토: {resolveReviewDeptDisplay(control)}
                             </span>
                           </div>
                         </div>
@@ -6818,7 +6939,7 @@ export default function App() {
                               수행: {resolveExecutionAuthorDisplay(control)}
                             </span>
                             <span className="status-badge unit-review-badge">
-                              검토: {control.reviewDept ?? control.reviewer ?? "-"}
+                              검토: {resolveReviewDeptDisplay(control)}
                             </span>
                           </div>
                         </div>
@@ -7150,6 +7271,9 @@ export default function App() {
                     <button className="secondary-button slim-button no-wrap login-domain-save-button" type="button" onClick={handleLoginDomainSave} disabled={!canManageMembers}>
                       인증 허용 도메인 저장
                     </button>
+                    <button className="secondary-button slim-button no-wrap" type="button" onClick={handleSaveAllMemberDrafts} disabled={!canManageMembers}>
+                      회원 정보 저장
+                    </button>
                     <button className="secondary-button slim-button no-wrap" type="button" onClick={handleExportWorkspaceBackup}>
                       백업 내보내기
                     </button>
@@ -7174,7 +7298,6 @@ export default function App() {
                         <th>이메일</th>
                         <th>유닛</th>
                         <th>권한</th>
-                        <th>저장</th>
                         <th>삭제</th>
                       </tr>
                     </thead>
@@ -7203,16 +7326,6 @@ export default function App() {
                               <option value="reviewer">reviewer</option>
                               <option value="viewer">viewer</option>
                             </select>
-                          </td>
-                          <td>
-                            <button
-                              className="secondary-button slim-button"
-                              type="button"
-                              onClick={() => handleMemberSave(person.id)}
-                              disabled={!canManageMembers}
-                            >
-                              저장
-                            </button>
                           </td>
                           <td>
                             <button
@@ -7247,7 +7360,7 @@ export default function App() {
                     <span>연도</span>
                     <select value={reportYear} onChange={(event) => setReportYear(event.target.value)}>
                       {reportYearOptions.map((year) => (
-                        <option key={year} value={year}>{year}년</option>
+                        <option key={year} value={year}>{year === "all" ? "전체" : `${year}년`}</option>
                       ))}
                     </select>
                   </label>
@@ -7325,6 +7438,7 @@ export default function App() {
                         <th>상태</th>
                         <th>승인</th>
                         <th>수행 내역</th>
+                        <th>검토 의견</th>
                         <th>증적</th>
                       </tr>
                     </thead>
@@ -7339,7 +7453,8 @@ export default function App() {
                             <td>{item.reviewer}</td>
                             <td>{item.status}</td>
                             <td>{item.reviewChecked}</td>
-                            <td className="report-execution-note">{preserveDisplayLineBreaks(item.executionNote) || "-"}</td>
+                            <td className="report-execution-note report-execution-note-body">{preserveDisplayLineBreaks(item.executionNote) || "-"}</td>
+                            <td className="report-execution-note report-review-note">{preserveDisplayLineBreaks(item.reviewNote) || "-"}</td>
                             <td className="report-evidence-cell">
                               <div className="report-execution-image-list">
                                 {(item.evidenceFiles ?? [])
@@ -7371,7 +7486,7 @@ export default function App() {
                         ))
                       ) : (
                         <tr>
-                          <td colSpan="9">선택한 주기에 해당하는 수행 대상이 없습니다.</td>
+                          <td colSpan="10">선택한 주기에 해당하는 수행 대상이 없습니다.</td>
                         </tr>
                       )}
                     </tbody>
@@ -7586,7 +7701,7 @@ export default function App() {
                         </span>
                       </div>
                       <AutoFitTitle>{control.title}</AutoFitTitle>
-                      <small>{control.performDept ?? control.performer} · {control.reviewDept ?? control.reviewer}</small>
+                      <small>{resolveExecutionAuthorDisplay(control)} · {resolveReviewDeptDisplay(control)}</small>
                     </button>
                   ))}
                 </div>
@@ -7609,7 +7724,7 @@ export default function App() {
                       </div>
                       <div className="execution-meta-item">
                         <span>현재 검토 부서/검토자</span>
-                        <span className="detail-body-text">{roleAssignmentControl.reviewDept ?? roleAssignmentControl.reviewer ?? "-"}</span>
+                        <span className="detail-body-text">{resolveReviewDeptDisplay(roleAssignmentControl)}</span>
                       </div>
                       <div className="execution-meta-item">
                         <span>프로세스</span>
@@ -7618,18 +7733,24 @@ export default function App() {
                     </div>
                     <form className="stack-form execution-form" onSubmit={handleRoleAssignmentSubmit}>
                       <label className="execution-form-item">
-                        수행자
+                        수행 부서
                         <select name="performer" defaultValue={roleAssignmentControl.performDept ?? roleAssignmentControl.performer ?? ""}>
-                          {(performerPeople.length > 0 ? performerPeople : people).map((person) => (
-                            <option key={person.id} value={person.name}>{person.name}</option>
+                          {roleAssignmentControl.performDept && !performerUnitOptions.includes(roleAssignmentControl.performDept) ? (
+                            <option value={roleAssignmentControl.performDept}>{roleAssignmentControl.performDept}</option>
+                          ) : null}
+                          {performerUnitOptions.map((unit) => (
+                            <option key={unit} value={unit}>{unit}</option>
                           ))}
                         </select>
                       </label>
                       <label className="execution-form-item">
-                        검토 부서/검토자
+                        검토 부서
                         <select name="reviewer" defaultValue={roleAssignmentControl.reviewDept ?? roleAssignmentControl.reviewer ?? ""}>
-                          {(reviewerPeople.length > 0 ? reviewerPeople : people).map((person) => (
-                            <option key={person.id} value={person.name}>{person.name}</option>
+                          {roleAssignmentControl.reviewDept && !reviewerUnitOptions.includes(roleAssignmentControl.reviewDept) ? (
+                            <option value={roleAssignmentControl.reviewDept}>{roleAssignmentControl.reviewDept}</option>
+                          ) : null}
+                          {reviewerUnitOptions.map((unit) => (
+                            <option key={unit} value={unit}>{unit}</option>
                           ))}
                         </select>
                       </label>
