@@ -4007,6 +4007,16 @@ th {
   margin-top: 4px;
 }
 
+.field-help {
+  font-size: 0.72rem;
+  line-height: 1.3;
+}
+
+.control-execution-panel .evidence-file-list .empty-text {
+  font-size: 0.72rem;
+  line-height: 1.3;
+}
+
 .evidence-file-list {
   margin-top: 0;
   padding-top: 5px;
