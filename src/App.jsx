@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchSupabaseIntegrationStatus,
+  fetchSupabaseAuditLogsPage,
   fetchSupabaseWorkspace,
   syncSupabaseWorkspace,
+  createSupabaseAuditLog,
+  deleteSupabaseControl,
   deleteSupabaseMember,
 } from "./supabaseApi";
 import { defaultControls30 } from "./defaultControls30";
@@ -19,14 +22,11 @@ const AUDIT_LOG_MAX_ITEMS = 3000;
 const AUDIT_LOG_PAGE_SIZE = 30;
 const LOGIN_DOMAIN_ERROR_MESSAGE = "허용된 도메인만 로그인할 수 있습니다.";
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
-const GOOGLE_DRIVE_FOLDER_ID = (import.meta.env.VITE_GOOGLE_DRIVE_FOLDER_ID ?? "").trim() || "1ZxNyDTkjD3G9Ju_7x0MTSEiBxyTNnEmg";
+const GOOGLE_DRIVE_FOLDER_ID = (import.meta.env.VITE_GOOGLE_DRIVE_FOLDER_ID ?? "").trim();
 const ALLOWED_DOMAIN_ENV = (import.meta.env.VITE_ALLOWED_DOMAIN ?? "").trim() || "muhayu.com";
-const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL ?? "").trim() || "https://gfybyxbrmkwbzuyhyqiv.supabase.co";
-const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY ?? "").trim() || "sb_publishable_Cd-7SADAjF_J5vEo9QkmAA_Jz2_diWz";
-const GOOGLE_CHAT_WEBHOOK_URL_DEFAULT =
-  "https://chat.googleapis.com/v1/spaces/AAQA_aatXEI/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=E6FuzUKxH0u5DAzMDpNWAXmkBUoaCcR6oWjTSfmqZY4";
-const GOOGLE_CHAT_WEBHOOK_URL =
-  (import.meta.env.VITE_GOOGLE_CHAT_WEBHOOK_URL ?? "").trim() || GOOGLE_CHAT_WEBHOOK_URL_DEFAULT;
+const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL ?? "").trim();
+const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY ?? "").trim();
+const GOOGLE_CHAT_WEBHOOK_URL = (import.meta.env.VITE_GOOGLE_CHAT_WEBHOOK_URL ?? "").trim();
 const GOOGLE_CHAT_ALERT_ACTIONS_ENV = (import.meta.env.VITE_GOOGLE_CHAT_ALERT_ACTIONS ?? "").trim();
 const GOOGLE_CHAT_DEDUP_MS_ENV = Number(import.meta.env.VITE_GOOGLE_CHAT_DEDUP_MS ?? 60000);
 const GOOGLE_CHAT_DEDUP_WINDOW_MS = Number.isFinite(GOOGLE_CHAT_DEDUP_MS_ENV) && GOOGLE_CHAT_DEDUP_MS_ENV >= 0
@@ -43,6 +43,8 @@ const ALLOWED_EMAIL_DOMAINS = ALLOWED_DOMAIN_ENV
   .split(",")
   .map((domain) => domain.trim().toLowerCase())
   .filter(Boolean);
+const DEV_LOCAL_LOGIN_ENABLED = Boolean(import.meta.env.DEV);
+const DEFAULT_DEV_LOGIN_EMAIL = `shbae@${ALLOWED_EMAIL_DOMAINS[0] ?? "muhayu.com"}`;
 
 const DATA_BACKEND = (() => {
   if (DATA_BACKEND_ENV === "supabase") {
@@ -385,7 +387,7 @@ const controlCatalog = {
     keyControl: "Yes",
     frequency: "Annual",
     performDept: "정보보호유닛",
-    reviewDept: "TA유닛",
+    reviewDept: "이광주",
     targetSystems: ["BI"],
   },
   "C-IT-Cyber-02": {
@@ -395,7 +397,7 @@ const controlCatalog = {
     keyControl: "Yes",
     frequency: "Annual",
     performDept: "정보보호유닛",
-    reviewDept: "TA유닛",
+    reviewDept: "이광주",
     targetSystems: ["BI"],
   },
   "C-IT-Cyber-03": {
@@ -405,7 +407,7 @@ const controlCatalog = {
     keyControl: "Yes",
     frequency: "Annual",
     performDept: "인프라유닛",
-    reviewDept: "정보보호유닛",
+    reviewDept: "이광주",
     targetSystems: ["BI"],
   },
   "C-IT-Cyber-04": {
@@ -497,6 +499,7 @@ const registrationRequiredFields = [
   "frequency",
   "controlType",
   "ownerDept",
+  "reviewDept",
   "evidence",
   "targetSystems",
 ];
@@ -769,6 +772,27 @@ function executionPeriodSortValue(period) {
   return 0;
 }
 
+function resolveReviewActorDisplay(control) {
+  const reviewAuthorName = String(control?.reviewAuthorName ?? "").trim();
+  const reviewAuthorEmail = String(control?.reviewAuthorEmail ?? "").trim();
+  if (reviewAuthorName) {
+    return reviewAuthorName;
+  }
+  if (reviewAuthorEmail) {
+    return reviewAuthorEmail;
+  }
+  return resolveReviewDeptDisplay(control);
+}
+
+function resolveExecutionDetailTestMethod(control) {
+  return String(control?.executionTestMethod ?? control?.testMethod ?? "").trim()
+    || (Array.isArray(control?.procedures) ? control.procedures.join("\n") : "");
+}
+
+function resolveExecutionDetailPopulation(control) {
+  return String(control?.executionPopulation ?? control?.population ?? "").trim();
+}
+
 function executionTimestamp(value) {
   const parsed = Date.parse(String(value ?? "").trim());
   return Number.isFinite(parsed) ? parsed : 0;
@@ -837,6 +861,17 @@ function createExecutionEntryKey(controlId, executionYear, executionPeriod) {
   return `${String(controlId ?? "").trim()}::${String(executionYear ?? "").trim()}::${String(executionPeriod ?? "").trim()}`;
 }
 
+function normalizeExecutionId(value, controlId, executionYear, executionPeriod) {
+  const rawId = String(value ?? "").trim();
+  const canonicalId = createExecutionEntryKey(controlId, executionYear, executionPeriod);
+  if (String(controlId ?? "").trim() && String(executionYear ?? "").trim() && String(executionPeriod ?? "").trim()) {
+    if (!rawId || rawId.startsWith("EXE-")) {
+      return canonicalId;
+    }
+  }
+  return rawId || canonicalId;
+}
+
 function normalizeExecutionEntry(entry, fallbackControl = {}) {
   const executionYear = String(entry?.executionYear ?? "").trim();
   const executionPeriod = String(entry?.executionPeriod ?? "").trim();
@@ -851,14 +886,18 @@ function normalizeExecutionEntry(entry, fallbackControl = {}) {
       : String(entry?.executionAuthorEmail ?? "").trim().toLowerCase();
 
   return {
-    executionId: String(
-      entry?.executionId
-      ?? entry?.id
-      ?? createExecutionEntryKey(fallbackControl?.id, entry?.executionYear, entry?.executionPeriod),
-    ).trim(),
+    executionId: normalizeExecutionId(
+      entry?.executionId ?? entry?.id,
+      fallbackControl?.id,
+      executionYear,
+      executionPeriod,
+    ),
     executionYear,
     executionPeriod,
     executionNote: String(entry?.executionNote ?? "").trim(),
+    testMethodSnapshot: String(entry?.testMethodSnapshot ?? fallbackControl?.testMethod ?? "").trim(),
+    populationSnapshot: String(entry?.populationSnapshot ?? fallbackControl?.population ?? "").trim(),
+    evidenceTextSnapshot: String(entry?.evidenceTextSnapshot ?? fallbackControl?.evidenceText ?? "").trim(),
     executionSubmitted:
       typeof entry?.executionSubmitted === "boolean"
         ? entry.executionSubmitted
@@ -869,16 +908,19 @@ function normalizeExecutionEntry(entry, fallbackControl = {}) {
         : false,
     executionAuthorName: forcedAuthorName,
     executionAuthorEmail: forcedAuthorEmail,
+    executionAuthorUnit: String(entry?.executionAuthorUnit ?? fallbackControl?.performDept ?? fallbackControl?.performer ?? fallbackControl?.ownerDept ?? "").trim(),
     reviewChecked: String(entry?.reviewChecked ?? "미검토").trim() || "미검토",
     reviewResult: String(entry?.reviewResult ?? "").trim(),
     reviewAuthorName: String(entry?.reviewAuthorName ?? "").trim(),
     reviewAuthorEmail: String(entry?.reviewAuthorEmail ?? "").trim().toLowerCase(),
+    reviewAuthorUnit: String(entry?.reviewAuthorUnit ?? fallbackControl?.reviewDept ?? fallbackControl?.reviewer ?? "").trim(),
     note: String(entry?.note ?? "").trim(),
     status: String(entry?.status ?? deriveAssignmentStatus(String(entry?.executionNote ?? "").trim(), String(entry?.reviewChecked ?? "미검토").trim() || "미검토")).trim(),
     evidenceFiles: Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : [],
     evidenceStatus:
       String(entry?.evidenceStatus ?? "").trim()
       || ((Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0 ? "준비 완료" : "미수집"),
+    reviewDate: String(entry?.reviewDate ?? "").trim(),
     updatedAt: String(entry?.updatedAt ?? "").trim(),
     createdAt: String(entry?.createdAt ?? "").trim(),
   };
@@ -893,18 +935,24 @@ function buildLegacyExecutionEntry(control) {
     executionYear: control?.executionYear,
     executionPeriod: control?.executionPeriod,
     executionNote: control?.executionNote,
+    testMethodSnapshot: control?.testMethod,
+    populationSnapshot: control?.population,
+    evidenceTextSnapshot: control?.evidenceText,
     executionSubmitted: control?.executionSubmitted,
     reviewRequested: control?.reviewRequested,
     executionAuthorName: control?.executionAuthorName,
     executionAuthorEmail: control?.executionAuthorEmail,
+    executionAuthorUnit: control?.performDept ?? control?.performer ?? control?.ownerDept,
     reviewChecked: control?.reviewChecked,
     reviewResult: control?.reviewResult,
     reviewAuthorName: control?.reviewAuthorName,
     reviewAuthorEmail: control?.reviewAuthorEmail,
+    reviewAuthorUnit: control?.reviewDept ?? control?.reviewer,
     note: control?.note,
     status: control?.status,
     evidenceFiles: control?.evidenceFiles,
     evidenceStatus: control?.evidenceStatus,
+    reviewDate: control?.reviewDate,
   }, control);
 }
 
@@ -1012,6 +1060,9 @@ function mergeExecutionHistoryIntoControl(control, nextHistory, preferredMatch =
     createdAt: preferredEntry?.createdAt ?? "",
     evidenceFiles: preferredEntry?.evidenceFiles ?? [],
     evidenceStatus: preferredEntry?.evidenceStatus ?? "미수집",
+    executionTestMethod: String(preferredEntry?.testMethodSnapshot ?? control.executionTestMethod ?? control.testMethod ?? "").trim(),
+    executionPopulation: String(preferredEntry?.populationSnapshot ?? control.executionPopulation ?? control.population ?? "").trim(),
+    executionEvidenceText: String(preferredEntry?.evidenceTextSnapshot ?? control.executionEvidenceText ?? control.evidenceText ?? "").trim(),
     executionHistory: normalizedHistory,
   };
 }
@@ -1039,9 +1090,12 @@ function normalizeControl(control) {
   return {
     ...control,
     ...catalog,
+    cycle: String(control.cycle ?? catalog.cycle ?? "").trim(),
     process: control.process?.trim() ?? catalog.process ?? "",
     subProcess: control.subProcess?.trim() ?? catalog.subProcess ?? control.process?.trim() ?? catalog.process ?? "",
     title: normalizedTitle,
+    riskId: String(control.riskId ?? catalog.riskId ?? "").trim(),
+    riskName: String(control.riskName ?? catalog.riskName ?? "").trim(),
     controlType: control.controlType ?? catalog.controlType ?? "예방",
     keyControl: control.keyControl ?? catalog.keyControl ?? "No",
     ownerDept: performDept || normalizeUnitLabel(catalog.performDept) || "",
@@ -1051,7 +1105,6 @@ function normalizeControl(control) {
     reviewDept: reviewDept || normalizeUnitLabel(catalog.reviewDept) || "",
     frequency: control.frequency ?? catalog.frequency,
     targetSystems: normalizedSystems,
-    riskName: control.riskName ?? "",
     controlObjective: control.controlObjective ?? control.purpose ?? "",
     controlActivity: normalizedActivity,
     description: normalizedDescription,
@@ -1060,8 +1113,11 @@ function normalizeControl(control) {
     evidenceText: normalizedEvidenceText,
     testMethod: control.testMethod ?? "",
     policyReference: control.policyReference ?? "",
-    deficiencyImpact: control.deficiencyImpact ?? "",
+    deficiencyImpact: String(control.deficiencyImpact ?? catalog.deficiencyImpact ?? "").trim(),
     executionNote: String(activeExecution?.executionNote ?? control.executionNote ?? "").trim(),
+    executionTestMethod: String(activeExecution?.testMethodSnapshot ?? control.executionTestMethod ?? control.testMethod ?? "").trim(),
+    executionPopulation: String(activeExecution?.populationSnapshot ?? control.executionPopulation ?? control.population ?? "").trim(),
+    executionEvidenceText: String(activeExecution?.evidenceTextSnapshot ?? control.executionEvidenceText ?? control.evidenceText ?? "").trim(),
     executionYear: String(activeExecution?.executionYear ?? control.executionYear ?? "").trim(),
     executionPeriod: String(activeExecution?.executionPeriod ?? control.executionPeriod ?? "").trim(),
     executionSubmitted:
@@ -1107,9 +1163,12 @@ function buildControlManagementSnapshot(control) {
   return {
     ...catalog,
     ...control,
+    cycle: String(control.cycle ?? catalog.cycle ?? "").trim(),
     process: control.process?.trim() ?? catalog.process ?? "",
     subProcess: control.subProcess?.trim() ?? catalog.subProcess ?? control.process?.trim() ?? catalog.process ?? "",
     title: control.title?.replace(/\s+/g, " ").trim() ?? catalog.title ?? "",
+    riskId: String(control.riskId ?? catalog.riskId ?? "").trim(),
+    riskName: String(control.riskName ?? catalog.riskName ?? "").trim(),
     controlType: control.controlType ?? catalog.controlType ?? "예방",
     keyControl: control.keyControl ?? catalog.keyControl ?? "No",
     ownerDept: performDept || normalizeUnitLabel(catalog.performDept) || "",
@@ -1119,7 +1178,6 @@ function buildControlManagementSnapshot(control) {
     reviewDept: reviewDept || normalizeUnitLabel(catalog.reviewDept) || "",
     frequency: control.frequency ?? catalog.frequency ?? "",
     targetSystems: normalizedSystems,
-    riskName: control.riskName ?? "",
     controlObjective: control.controlObjective ?? control.purpose ?? "",
     controlActivity: convertLeadingNumberBulletsToCircled(buildActivityFromControl({
       ...control,
@@ -1132,7 +1190,7 @@ function buildControlManagementSnapshot(control) {
     evidenceText: convertLeadingNumberBulletsToCircled(control.evidenceText ?? ""),
     testMethod: control.testMethod ?? "",
     policyReference: control.policyReference ?? "",
-    deficiencyImpact: control.deficiencyImpact ?? "",
+    deficiencyImpact: String(control.deficiencyImpact ?? catalog.deficiencyImpact ?? "").trim(),
     population: control.population ?? "",
     evidences: Array.isArray(control.evidences) ? control.evidences.map((item) => convertLeadingNumberBulletsToCircled(item)) : [],
     procedures: Array.isArray(control.procedures) ? control.procedures : [],
@@ -1403,6 +1461,15 @@ function mergeMissingWorkflows(controls, workflows) {
 }
 
 function loadWorkspace() {
+  if (HAS_REMOTE_BACKEND) {
+    return applyWorkspaceDataCorrections({
+      ...structuredClone(defaultData),
+      loginDomains: parseDomainList(defaultData.loginDomains),
+      people: structuredClone(defaultPeople),
+      auditLogs: [],
+    }).workspace;
+  }
+
   const saved = window.localStorage.getItem(STORAGE_KEY);
   if (!saved) {
     return applyWorkspaceDataCorrections({
@@ -1422,7 +1489,7 @@ function loadWorkspace() {
         controls: parsed.controls.map(normalizeControl),
         workflows: mergeMissingWorkflows(parsed.controls.map(normalizeControl), parsed.workflows),
         loginDomains: parsedLoginDomains.length > 0 ? parsedLoginDomains : parseDomainList(defaultData.loginDomains),
-        people: Array.isArray(parsed.people) ? parsed.people : structuredClone(defaultPeople),
+        people: normalizePeopleCollection(Array.isArray(parsed.people) ? parsed.people : structuredClone(defaultPeople)),
         auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
       }).workspace;
     }
@@ -1437,6 +1504,9 @@ function loadWorkspace() {
 }
 
 function persistWorkspace(workspace) {
+  if (HAS_REMOTE_BACKEND) {
+    return;
+  }
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
 }
 
@@ -1452,7 +1522,7 @@ function normalizeImportedWorkspace(source) {
     controls: normalizedControls,
     workflows: mergeMissingWorkflows(normalizedControls, Array.isArray(parsed.workflows) ? parsed.workflows : []),
     loginDomains: parseDomainList(parsed.loginDomains).length > 0 ? parseDomainList(parsed.loginDomains) : parseDomainList(defaultData.loginDomains),
-    people: Array.isArray(parsed.people) ? parsed.people : structuredClone(defaultPeople),
+    people: normalizePeopleCollection(Array.isArray(parsed.people) ? parsed.people : structuredClone(defaultPeople)),
     auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
   }).workspace;
 }
@@ -1554,7 +1624,7 @@ function deriveAssignmentStatus(executionNote, reviewChecked) {
   return "점검 예정";
 }
 
-function controlProgressValue(control) {
+function controlProgressValue(control, targetYear = "") {
   const targets = {
     Daily: 365,
     Weekly: 52,
@@ -1583,7 +1653,13 @@ function controlProgressValue(control) {
     if (!hasExecutionEntryContent(entry)) {
       return false;
     }
-    return String(entry?.reviewChecked ?? "미검토").trim() === "검토 완료";
+    if (String(entry?.reviewChecked ?? "미검토").trim() !== "검토 완료") {
+      return false;
+    }
+    if (String(targetYear ?? "").trim()) {
+      return String(entry?.executionYear ?? "").trim() === String(targetYear).trim();
+    }
+    return true;
   }).length;
 
   return Math.min(100, Math.round((completedCount / target) * 100));
@@ -1716,6 +1792,14 @@ function overduePeriodLabelsForYear(frequency, year, currentDate = new Date()) {
   }
 
   return [];
+}
+
+function isDashboardDelayedControl(control, year, currentDate = new Date()) {
+  const normalizedStatus = deriveAssignmentStatus(control?.executionNote ?? "", control?.reviewChecked ?? "미검토");
+  if (isCompletedStatus(normalizedStatus)) {
+    return false;
+  }
+  return overduePeriodLabelsForYear(control?.frequency, year, currentDate).length > 0;
 }
 
 const controlGroupOrder = ["PWC", "APD", "PC", "CO", "PD", "CS"];
@@ -2157,13 +2241,7 @@ function renderSystemChips(systems) {
   }
 
   return (
-    <div className="system-chip-list">
-      {systems.map((system) => (
-        <span className="system-chip" key={system}>
-          {system}
-        </span>
-      ))}
-    </div>
+    <div className="target-systems-text">{systems.join(", ")}</div>
   );
 }
 
@@ -2212,6 +2290,28 @@ function normalizeAccessRole(role) {
     return "reviewer";
   }
   return "viewer";
+}
+
+function accessRoleClassName(role) {
+  const normalized = normalizeAccessRole(role);
+  return `access-role access-role-${normalized}`;
+}
+
+function buildMemberChangeDetail(previousPerson, nextEntry) {
+  const changes = [];
+  const previousUnit = String(previousPerson?.team ?? previousPerson?.unit ?? "-").trim() || "-";
+  const nextUnit = String(nextEntry?.team ?? nextEntry?.unit ?? "미지정").trim() || "미지정";
+  const previousRole = normalizeAccessRole(previousPerson?.accessRole ?? "-");
+  const nextRole = normalizeAccessRole(nextEntry?.accessRole ?? "viewer");
+
+  if (!previousPerson || previousUnit !== nextUnit) {
+    changes.push(`유닛:${previousUnit} -> ${nextUnit}`);
+  }
+  if (!previousPerson || previousRole !== nextRole) {
+    changes.push(`권한:${previousRole} -> ${nextRole}`);
+  }
+
+  return `${nextEntry?.name ?? "회원"} · ${changes.join(", ")}`;
 }
 
 function isAllowedEmailBySet(email, domainSet) {
@@ -2290,6 +2390,32 @@ function createMemberId() {
   return `MBR-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function accessRoleRank(role) {
+  const normalized = normalizeAccessRole(role);
+  if (normalized === "admin") {
+    return 3;
+  }
+  if (normalized === "reviewer") {
+    return 2;
+  }
+  return 1;
+}
+
+function pickPreferredText(currentValue, incomingValue) {
+  const current = String(currentValue ?? "").trim();
+  const incoming = String(incomingValue ?? "").trim();
+  const currentMeaningful = current && current !== "미지정";
+  const incomingMeaningful = incoming && incoming !== "미지정";
+
+  if (incomingMeaningful && !currentMeaningful) {
+    return incoming;
+  }
+  if (!current && incoming) {
+    return incoming;
+  }
+  return current || incoming;
+}
+
 function mergePeopleByIdOrEmail(primary = [], secondary = []) {
   const byId = new Map();
   const byEmail = new Map();
@@ -2323,11 +2449,23 @@ function mergePeopleByIdOrEmail(primary = [], secondary = []) {
       return;
     }
 
+    const nextAccessRole = accessRoleRank(person.accessRole) > accessRoleRank(target.accessRole)
+      ? normalizeAccessRole(person.accessRole)
+      : normalizeAccessRole(target.accessRole);
+    const nextUnit = pickPreferredText(target.unit ?? target.team, person.unit ?? person.team) || "미지정";
+    const nextName = pickPreferredText(target.name, person.name);
+    const nextRole = pickPreferredText(target.role, person.role) || "both";
+
     Object.assign(target, {
       ...target,
       ...person,
       id: target.id || id || createMemberId(),
       email: target.email || email,
+      name: nextName,
+      role: nextRole,
+      unit: nextUnit,
+      team: nextUnit,
+      accessRole: nextAccessRole,
     });
 
     if (target.id) {
@@ -2339,6 +2477,21 @@ function mergePeopleByIdOrEmail(primary = [], secondary = []) {
   });
 
   return merged;
+}
+
+function normalizePeopleCollection(people = []) {
+  return mergePeopleByIdOrEmail(
+    (Array.isArray(people) ? people : []).map((person) => ({
+      ...person,
+      id: String(person?.id ?? "").trim() || createMemberId(),
+      email: String(person?.email ?? "").trim().toLowerCase(),
+      name: String(person?.name ?? "").trim(),
+      role: String(person?.role ?? "").trim() || "both",
+      unit: String(person?.unit ?? person?.team ?? "").trim() || "미지정",
+      team: String(person?.team ?? person?.unit ?? "").trim() || "미지정",
+      accessRole: normalizeAccessRole(person?.accessRole),
+    })),
+  );
 }
 
 function mergeAuditLogs(primary = [], secondary = [], maxItems = AUDIT_LOG_MAX_ITEMS) {
@@ -2467,6 +2620,7 @@ export default function App() {
   const initialNavigationState = loadNavigationStateFromUrl();
   const [authUser, setAuthUser] = useState(() => loadAuthSession());
   const [authError, setAuthError] = useState("");
+  const [devLoginEmail, setDevLoginEmail] = useState(DEFAULT_DEV_LOGIN_EMAIL);
   const [loginDomains, setLoginDomains] = useState(() => loadLoginDomains());
   const [loginDomainDraft, setLoginDomainDraft] = useState(() => loadLoginDomains().join(", "));
   const [deletedMemberEmails, setDeletedMemberEmails] = useState(() => loadDeletedMemberEmails());
@@ -2498,7 +2652,6 @@ export default function App() {
   const [registrationCategoryFilter, setRegistrationCategoryFilter] = useState("전체");
   const [registrationListPage, setRegistrationListPage] = useState(1);
   const [registrationSelectedControlId, setRegistrationSelectedControlId] = useState("");
-  const [registrationFormMode, setRegistrationFormMode] = useState("basic");
   const [roleAssignmentControlId, setRoleAssignmentControlId] = useState("");
   const [evidenceInputCount, setEvidenceInputCount] = useState(1);
   const [assignmentExecutionNote, setAssignmentExecutionNote] = useState("");
@@ -2545,6 +2698,10 @@ export default function App() {
   const [memberDrafts, setMemberDrafts] = useState({});
   const [auditLogQuery, setAuditLogQuery] = useState("");
   const [auditLogPage, setAuditLogPage] = useState(1);
+  const [remoteAuditLogs, setRemoteAuditLogs] = useState([]);
+  const [remoteAuditLogTotalPages, setRemoteAuditLogTotalPages] = useState(1);
+  const [remoteAuditLogLoading, setRemoteAuditLogLoading] = useState(false);
+  const [remoteWorkspaceReady, setRemoteWorkspaceReady] = useState(() => !HAS_REMOTE_BACKEND);
   const [integrationStatus, setIntegrationStatus] = useState(() => ({
     spreadsheet: HAS_REMOTE_BACKEND ? "미확인" : "미설정",
     drive: HAS_REMOTE_BACKEND ? "미확인" : "미설정",
@@ -2601,23 +2758,7 @@ export default function App() {
       .sort((left, right) => left.localeCompare(right, "ko"));
   }, [people, reviewerPeople]);
   const memberDirectory = useMemo(() => {
-    const seenEmails = new Set();
-    const syncedPeople = people.reduce((accumulator, person) => {
-      const normalizedEmail = String(person.email ?? "").trim().toLowerCase();
-      if (normalizedEmail && seenEmails.has(normalizedEmail)) {
-        return accumulator;
-      }
-      if (normalizedEmail) {
-        seenEmails.add(normalizedEmail);
-      }
-      accumulator.push({
-        ...person,
-        email: person.email ?? "",
-        unit: person.unit ?? person.team ?? "미지정",
-        accessRole: normalizeAccessRole(person.accessRole),
-      });
-      return accumulator;
-    }, []);
+    const syncedPeople = normalizePeopleCollection(people);
 
     if (!authUser?.email) {
       return syncedPeople;
@@ -2886,11 +3027,16 @@ export default function App() {
     (registrationCurrentPage - 1) * listPageSize,
     registrationCurrentPage * listPageSize,
   );
-  const registrationSelectedControl =
-    controlManagementControls.find((control) => control.id === registrationSelectedControlId)
-    ?? registrationPagedControls[0]
-    ?? controlManagementControls[0]
+  const registrationSelectedControlSource =
+    controls.find((control) => control.id === registrationSelectedControlId)
+    ?? controls.find((control) => control.id === registrationPagedControls[0]?.id)
+    ?? controls[0]
     ?? null;
+  const registrationSelectedControl = registrationSelectedControlSource
+    ? buildControlManagementSnapshot(registrationSelectedControlSource)
+    : registrationPagedControls[0]
+      ?? controlManagementControls[0]
+      ?? null;
   const executionYearOptions = useMemo(() => buildExecutionYearOptions(), []);
   const executionPeriodOptions = useMemo(
     () => buildExecutionPeriodOptions(selectedControl?.frequency),
@@ -2982,6 +3128,9 @@ export default function App() {
     scheduled: reportControls.filter((item) => item.status === "점검 예정").length,
   }), [reportControls]);
   const filteredAuditLogs = useMemo(() => {
+    if (HAS_REMOTE_BACKEND) {
+      return [];
+    }
     const normalizedQuery = auditLogQuery.trim().toLowerCase();
     if (!normalizedQuery) {
       return auditLogs;
@@ -3003,12 +3152,15 @@ export default function App() {
         .includes(normalizedQuery),
     );
   }, [auditLogQuery, auditLogs]);
-  const totalAuditLogPages = Math.max(1, Math.ceil(filteredAuditLogs.length / AUDIT_LOG_PAGE_SIZE));
+  const localTotalAuditLogPages = Math.max(1, Math.ceil(filteredAuditLogs.length / AUDIT_LOG_PAGE_SIZE));
+  const totalAuditLogPages = HAS_REMOTE_BACKEND ? remoteAuditLogTotalPages : localTotalAuditLogPages;
   const currentAuditLogPage = Math.min(auditLogPage, totalAuditLogPages);
-  const pagedAuditLogs = filteredAuditLogs.slice(
-    (currentAuditLogPage - 1) * AUDIT_LOG_PAGE_SIZE,
-    currentAuditLogPage * AUDIT_LOG_PAGE_SIZE,
-  );
+  const pagedAuditLogs = HAS_REMOTE_BACKEND
+    ? remoteAuditLogs
+    : filteredAuditLogs.slice(
+      (currentAuditLogPage - 1) * AUDIT_LOG_PAGE_SIZE,
+      currentAuditLogPage * AUDIT_LOG_PAGE_SIZE,
+    );
 
   useEffect(() => {
     setMemberDrafts(
@@ -3025,6 +3177,9 @@ export default function App() {
   }, [memberDirectory]);
 
   useEffect(() => {
+    if (HAS_REMOTE_BACKEND) {
+      return;
+    }
     if (auditLogPage > totalAuditLogPages) {
       setAuditLogPage(totalAuditLogPages);
     }
@@ -3035,7 +3190,47 @@ export default function App() {
   }, [auditLogQuery]);
 
   useEffect(() => {
+    if (!HAS_REMOTE_BACKEND || currentView !== "audit") {
+      return;
+    }
+
+    let active = true;
+    setRemoteAuditLogLoading(true);
+    fetchSupabaseAuditLogsPage({
+      page: auditLogPage,
+      pageSize: AUDIT_LOG_PAGE_SIZE,
+      query: auditLogQuery,
+    })
+      .then((result) => {
+        if (!active) {
+          return;
+        }
+        setRemoteAuditLogs(result.logs);
+        setRemoteAuditLogTotalPages(result.totalPages);
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+        setRemoteAuditLogs([]);
+        setRemoteAuditLogTotalPages(1);
+      })
+      .finally(() => {
+        if (active) {
+          setRemoteAuditLogLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [auditLogPage, auditLogQuery, currentView]);
+
+  useEffect(() => {
     if (!authUser?.email) {
+      return;
+    }
+    if (HAS_REMOTE_BACKEND && !remoteWorkspaceReady) {
       return;
     }
 
@@ -3085,25 +3280,35 @@ export default function App() {
           : person,
       ),
     });
-  }, [authUser, people, deletedMemberEmailSet]);
+  }, [authUser, people, deletedMemberEmailSet, remoteWorkspaceReady]);
 
   useEffect(() => {
     workspaceRef.current = workspace;
   }, [workspace]);
 
-  const dashboardFilteredControls = useMemo(
+  const dashboardSummaryControls = useMemo(
+    () => controls,
+    [controls],
+  );
+  const dashboardBaseControls = useMemo(
     () => controls.filter((control) => {
       const matchesUnit =
         dashboardUnitFilter === "전체"
           ? true
           : (control.performDept ?? control.performer ?? "미지정") === dashboardUnitFilter;
+      return matchesUnit;
+    }),
+    [controls, dashboardUnitFilter],
+  );
+  const dashboardFilteredControls = useMemo(
+    () => dashboardBaseControls.filter((control) => {
       const matchesDelay =
         dashboardDelayFilter === "지연만"
-          ? !isCompletedStatus(control.status)
+          ? isDashboardDelayedControl(control, dashboardDelayYear)
           : true;
-      return matchesUnit && matchesDelay;
+      return matchesDelay;
     }),
-    [controls, dashboardUnitFilter, dashboardDelayFilter],
+    [dashboardBaseControls, dashboardDelayYear, dashboardDelayFilter],
   );
   const dashboardProcessSummary = useMemo(
     () => summarizeByProcess(dashboardFilteredControls, workflows),
@@ -3115,7 +3320,7 @@ export default function App() {
       items: [],
     }));
 
-    dashboardFilteredControls.forEach((control) => {
+    dashboardSummaryControls.forEach((control) => {
       const months = scheduledMonthsByFrequency(control.frequency);
       if (months.length === 0) {
         return;
@@ -3141,12 +3346,12 @@ export default function App() {
       ...bucket,
       items: bucket.items.sort(compareControlsByListOrder),
     }));
-  }, [dashboardFilteredControls]);
+  }, [dashboardSummaryControls]);
   const dashboardMonthlyCards =
     dashboardCalendarSummary.find((bucket) => bucket.month === dashboardCalendarMonth)?.items ?? [];
   const dashboardAnnualDelayBuckets = useMemo(() => {
     return Object.entries(DASHBOARD_DELAY_BUCKET_CONFIG).map(([key, config]) => {
-      const items = dashboardFilteredControls
+      const items = dashboardSummaryControls
         .flatMap((control) => {
           const normalizedStatus = deriveAssignmentStatus(control.executionNote ?? "", control.reviewChecked ?? "미검토");
           if (!config.frequencies.includes(control.frequency) || isCompletedStatus(normalizedStatus)) {
@@ -3177,9 +3382,9 @@ export default function App() {
         items,
       };
     });
-  }, [dashboardDelayYear, dashboardFilteredControls]);
+  }, [dashboardDelayYear, dashboardSummaryControls]);
   const dashboardAnnualProgressSummary = useMemo(() => {
-    const summary = dashboardFilteredControls.reduce((acc, control) => {
+    const summary = dashboardSummaryControls.reduce((acc, control) => {
       const plannedCount = annualPlannedCountByFrequency(control.frequency);
       if (plannedCount <= 0) {
         return acc;
@@ -3199,7 +3404,32 @@ export default function App() {
       ...summary,
       progressRate: summary.planned === 0 ? 0 : Math.round((summary.completed / summary.planned) * 100),
     };
-  }, [dashboardDelayYear, dashboardFilteredControls]);
+  }, [dashboardDelayYear, dashboardSummaryControls]);
+  const dashboardAnnualProgressItems = useMemo(() => (
+    dashboardSummaryControls
+      .flatMap((control) =>
+        getControlExecutionHistory(control)
+          .filter((entry) =>
+            String(entry?.executionYear ?? "").trim() === String(dashboardDelayYear).trim()
+            && String(entry?.reviewChecked ?? "미검토").trim() === "검토 완료",
+          )
+          .map((entry) => ({
+            id: control.id,
+            title: control.title,
+            process: control.process,
+            frequency: frequencyLabelMap[control.frequency] ?? control.frequency ?? "-",
+            status: deriveAssignmentStatus(entry.executionNote ?? "", entry.reviewChecked ?? "미검토"),
+            performer: control.performDept ?? control.performer ?? "-",
+            executionYear: entry.executionYear ?? "",
+            executionPeriod: entry.executionPeriod ?? "",
+            updatedAt: entry.updatedAt ?? "",
+          })),
+      )
+      .sort((left, right) =>
+        left.id.localeCompare(right.id, "ko")
+        || String(left.executionPeriod).localeCompare(String(right.executionPeriod), "ko"),
+      )
+  ), [dashboardDelayYear, dashboardSummaryControls]);
   const selectedDashboardDelayBucket =
     dashboardAnnualDelayBuckets.find((bucket) => bucket.key === dashboardDelayDetailKey)
     ?? dashboardAnnualDelayBuckets[0]
@@ -3207,7 +3437,7 @@ export default function App() {
   const controlProgressGroups = useMemo(() => {
     const grouped = dashboardFilteredControls.reduce((acc, control) => {
       const frequency = control.frequency || "미지정";
-      const progress = controlProgressValue(control);
+      const progress = controlProgressValue(control, dashboardDelayYear);
       if (frequency === "수시" || progress == null) {
         return acc;
       }
@@ -3236,8 +3466,9 @@ export default function App() {
         frequency,
         label: frequencyLabelMap[frequency] ?? frequency,
         items: items.sort(compareControlsByListOrder),
+        progressRate: items.length === 0 ? 0 : Math.round(items.reduce((sum, item) => sum + item.progress, 0) / items.length),
       }));
-  }, [dashboardFilteredControls]);
+  }, [dashboardDelayYear, dashboardFilteredControls]);
   const visibleControlProgressGroups = useMemo(
     () => (
       dashboardFrequencyFocus === "전체"
@@ -3259,10 +3490,10 @@ export default function App() {
         title: control.title,
         process: control.process,
         frequency: frequencyLabelMap[control.frequency] ?? control.frequency ?? "-",
-        progress: controlProgressValue(control) ?? 0,
+        progress: controlProgressValue(control, dashboardDelayYear) ?? 0,
         status: deriveAssignmentStatus(control.executionNote ?? "", control.reviewChecked ?? "미검토"),
       })),
-    [dashboardFilteredControls],
+    [dashboardDelayYear, dashboardFilteredControls],
   );
   const dashboardControlGroups = useMemo(() => {
     const grouped = dashboardControlItems.reduce((acc, item) => {
@@ -3285,15 +3516,23 @@ export default function App() {
       .map(([group, items]) => ({
         group,
         items: items.sort(compareControlsByListOrder),
+        progressRate: items.length === 0 ? 0 : Math.round(items.reduce((sum, item) => sum + item.progress, 0) / items.length),
       }));
   }, [dashboardControlItems]);
   const visibleDashboardControlGroups = useMemo(
     () =>
       dashboardControlGroups
-        .map((group) => ({
-          ...group,
-          items: group.items.filter((item) => matchesDashboardControlStatus(item.status, dashboardControlStatusFocus)),
-        }))
+        .map((group) => {
+          const filteredItems = group.items.filter((item) => matchesDashboardControlStatus(item.status, dashboardControlStatusFocus));
+          return {
+            ...group,
+            items: filteredItems,
+            progressRate:
+              filteredItems.length === 0
+                ? 0
+                : Math.round(filteredItems.reduce((sum, item) => sum + item.progress, 0) / filteredItems.length),
+          };
+        })
         .filter((group) => group.items.length > 0),
     [dashboardControlGroups, dashboardControlStatusFocus],
   );
@@ -3325,36 +3564,36 @@ export default function App() {
         controlProgressGroups.find((group) => group.frequency === key)?.items.length ?? 0;
 
       return [
-        { label: "월별", value: `${countByFrequency("Monthly")}건`, targetId: "dashboard-frequency-monthly", filterValue: "Monthly" },
-        { label: "분기별", value: `${countByFrequency("Quarterly")}건`, targetId: "dashboard-frequency-quarterly", filterValue: "Quarterly" },
-        { label: "반기별", value: `${countByFrequency("Half-Bi-annual")}건`, targetId: "dashboard-frequency-half-bi-annual", filterValue: "Half-Bi-annual" },
-        { label: "연 1회", value: `${countByFrequency("Annual")}건`, targetId: "dashboard-frequency-annual", filterValue: "Annual" },
-        { label: "이벤트 발생 시", value: `${countByFrequency("Event Driven")}건`, targetId: "dashboard-frequency-event-driven", filterValue: "Event Driven" },
-        { label: "필요 시", value: `${countByFrequency("Other")}건`, targetId: "dashboard-frequency-other", filterValue: "Other" },
+        { label: "월별", value: `${countByFrequency("Monthly")}개`, targetId: "dashboard-frequency-monthly", filterValue: "Monthly" },
+        { label: "분기별", value: `${countByFrequency("Quarterly")}개`, targetId: "dashboard-frequency-quarterly", filterValue: "Quarterly" },
+        { label: "반기별", value: `${countByFrequency("Half-Bi-annual")}개`, targetId: "dashboard-frequency-half-bi-annual", filterValue: "Half-Bi-annual" },
+        { label: "연 1회", value: `${countByFrequency("Annual")}개`, targetId: "dashboard-frequency-annual", filterValue: "Annual" },
+        { label: "이벤트 발생 시", value: `${countByFrequency("Event Driven")}개`, targetId: "dashboard-frequency-event-driven", filterValue: "Event Driven" },
+        { label: "필요 시", value: `${countByFrequency("Other")}개`, targetId: "dashboard-frequency-other", filterValue: "Other" },
       ];
     }
 
     if (dashboardView === "category") {
       const completedCategories = dashboardProcessSummary.filter((item) => item.pending === 0).length;
       const pendingCategories = dashboardProcessSummary.filter((item) => item.pending > 0).length;
-      const averageProgress =
+      const completionRate =
         dashboardProcessSummary.length === 0
           ? 0
-          : Math.round(dashboardProcessSummary.reduce((sum, item) => sum + item.progressRate, 0) / dashboardProcessSummary.length);
+          : Math.round((completedCategories / dashboardProcessSummary.length) * 100);
 
       return [
         { label: "전체", value: `${dashboardProcessSummary.length}개`, targetId: "dashboard-category-root", filterValue: "전체" },
         { label: "완료", value: `${completedCategories}개`, targetId: "dashboard-category-root", filterValue: "완료" },
         { label: "관리 필요", value: `${pendingCategories}개`, targetId: "dashboard-category-root", filterValue: "관리 필요" },
-        { label: "현재 현황 평균", value: `${averageProgress}%`, targetId: "dashboard-category-root", filterValue: "전체" },
+        { label: "완료율", value: `${completionRate}%`, targetId: "dashboard-category-root", filterValue: "전체" },
       ];
     }
 
     return [
-      { label: "전체 통제", value: `${dashboardStatusSummary.total}건`, targetId: "dashboard-control-root", filterValue: "전체" },
-      { label: "진행 중", value: `${dashboardStatusSummary.inProgress}건`, targetId: "dashboard-control-root", filterValue: "진행 중" },
-      { label: "완료", value: `${dashboardStatusSummary.completed}건`, targetId: "dashboard-control-root", filterValue: "완료" },
-      { label: "예정", value: `${dashboardStatusSummary.scheduled}건`, targetId: "dashboard-control-root", filterValue: "예정" },
+      { label: "전체 통제", value: `${dashboardStatusSummary.total}개`, targetId: "dashboard-control-root", filterValue: "전체" },
+      { label: "진행 중", value: `${dashboardStatusSummary.inProgress}개`, targetId: "dashboard-control-root", filterValue: "진행 중" },
+      { label: "완료", value: `${dashboardStatusSummary.completed}개`, targetId: "dashboard-control-root", filterValue: "완료" },
+      { label: "예정", value: `${dashboardStatusSummary.scheduled}개`, targetId: "dashboard-control-root", filterValue: "예정" },
     ];
   }, [controlProgressGroups, dashboardAnchorTargets, dashboardProcessSummary, dashboardStatusSummary, dashboardView]);
   const summary = useMemo(() => {
@@ -3446,6 +3685,15 @@ export default function App() {
     { key: "control-review", label: "통제 검토", helper: "검토 대기 건 처리", badgeCount: reviewPendingCount },
     { key: "performed-complete", label: "수행 완료", helper: "최종 완료 이력 확인", badgeCount: performedExecutionCount },
   ];
+  const canOpenWorkbenchTab = (tabKey) => {
+    if (tabKey === "controls-complete") {
+      return completedExecutionCount > 0;
+    }
+    if (tabKey === "control-review") {
+      return reviewPendingCount > 0;
+    }
+    return true;
+  };
   const currentWorkbenchStepIndex = workbenchFlowSteps.findIndex((step) => step.key === workbenchTab);
   const currentWorkbenchStep = currentWorkbenchStepIndex >= 0 ? workbenchFlowSteps[currentWorkbenchStepIndex] : null;
   const totalCompletedPages = Math.max(1, Math.ceil(completedExecutionControls.length / listPageSize));
@@ -3539,6 +3787,9 @@ export default function App() {
   }
 
   function handleWorkbenchTabChange(nextTab) {
+    if (!canOpenWorkbenchTab(nextTab)) {
+      return;
+    }
     setWorkbenchTab(nextTab);
 
     if (nextTab === "register") {
@@ -3722,23 +3973,27 @@ export default function App() {
   }
 
   function openDashboardDelayDetail(delayKey) {
-    const resolvedKey = DASHBOARD_DELAY_BUCKET_CONFIG[delayKey] ? delayKey : "monthly";
+    const resolvedKey = delayKey === "progress" || DASHBOARD_DELAY_BUCKET_CONFIG[delayKey] ? delayKey : "monthly";
     setDashboardDelayDetailKey(resolvedKey);
     setCurrentView("dashboard-delay-detail");
     if (typeof window !== "undefined") {
       window.scrollTo({ top: 0, behavior: "auto" });
     }
-    writeAuditLog("MENU_OPEN", "dashboard-delay-detail", `${DASHBOARD_DELAY_BUCKET_CONFIG[resolvedKey].label} 상세 열람`);
+    writeAuditLog(
+      "MENU_OPEN",
+      "dashboard-delay-detail",
+      resolvedKey === "progress"
+        ? `${dashboardDelayYear}년 진행 내역 상세 열람`
+        : `${DASHBOARD_DELAY_BUCKET_CONFIG[resolvedKey].label} 상세 열람`,
+    );
     if (window.matchMedia("(max-width: 960px)").matches) {
       setIsSidebarOpen(false);
     }
   }
 
-  function handleLoginSuccess(response) {
-    const payload = decodeJwtPayload(response?.credential ?? "");
-    const email = String(payload?.email ?? "").toLowerCase();
-
-    if (!payload || !payload.email_verified || !email || !isAllowedEmailBySet(email, loginDomainSet)) {
+  function completeLogin(nextUser, { verified = true } = {}) {
+    const email = String(nextUser?.email ?? "").toLowerCase();
+    if (!verified || !email || !isAllowedEmailBySet(email, loginDomainSet)) {
       setAuthError(
         effectiveLoginDomains.length > 0
           ? LOGIN_DOMAIN_ERROR_MESSAGE
@@ -3748,16 +4003,10 @@ export default function App() {
       setAuthUser(null);
       return;
     }
-
-    const nextUser = {
-      email,
-      name: payload.name ?? email,
-      picture: payload.picture ?? "",
-    };
-
     const currentWorkspace = workspaceRef.current;
     const currentPeople = Array.isArray(currentWorkspace.people) ? currentWorkspace.people : [];
     const existingMember = currentPeople.find((person) => String(person.email ?? "").toLowerCase() === email);
+    const canAutoCreateMember = !HAS_REMOTE_BACKEND || remoteWorkspaceReady;
     if (deletedMemberEmailSet.has(email) && !existingMember) {
       setAuthError("삭제된 계정은 관리자 승인 전까지 다시 등록할 수 없습니다.");
       window.localStorage.removeItem(AUTH_STORAGE_KEY);
@@ -3774,29 +4023,31 @@ export default function App() {
                 email,
                 unit: person.unit ?? person.team ?? "미지정",
                 accessRole: normalizeAccessRole(person.accessRole),
-              }
-            : person,
+            }
+          : person,
         )
-      : [
-          {
-            id: createMemberId(),
-            name: nextUser.name,
-            email,
-            role: "both",
-            unit: "미지정",
-            team: "미지정",
-            accessRole: "viewer",
-          },
-          ...currentPeople,
-        ];
+      : canAutoCreateMember
+        ? [
+            {
+              id: createMemberId(),
+              name: nextUser.name,
+              email,
+              role: "both",
+              unit: "미지정",
+              team: "미지정",
+              accessRole: "viewer",
+            },
+            ...currentPeople,
+          ]
+        : currentPeople;
 
     window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextUser));
     setAuthError("");
     setAuthUser(nextUser);
     writeAuditLog(
-      existingMember ? "LOGIN_SUCCESS" : "MEMBER_JOINED",
+      existingMember || !canAutoCreateMember ? "LOGIN_SUCCESS" : "MEMBER_JOINED",
       email,
-      existingMember ? `${nextUser.name} 로그인` : `${nextUser.name} 최초 로그인 및 회원 등록`,
+      existingMember || !canAutoCreateMember ? `${nextUser.name} 로그인` : `${nextUser.name} 최초 로그인 및 회원 등록`,
       {
         ...currentWorkspace,
         people: nextPeople,
@@ -3806,6 +4057,34 @@ export default function App() {
         actorEmail: nextUser.email,
       },
     );
+  }
+
+  function handleLoginSuccess(response) {
+    const payload = decodeJwtPayload(response?.credential ?? "");
+    const email = String(payload?.email ?? "").toLowerCase();
+
+    completeLogin({
+      email,
+      name: payload?.name ?? email,
+      picture: payload?.picture ?? "",
+    }, {
+      verified: Boolean(payload?.email_verified),
+    });
+  }
+
+  function handleDevLogin() {
+    const normalizedEmail = String(devLoginEmail ?? "").trim().toLowerCase();
+    const currentWorkspace = workspaceRef.current;
+    const currentPeople = Array.isArray(currentWorkspace.people) ? currentWorkspace.people : [];
+    const matchedMember = currentPeople.find((person) => String(person.email ?? "").trim().toLowerCase() === normalizedEmail);
+    const fallbackName = normalizedEmail.split("@")[0] || "local-user";
+    completeLogin({
+      email: normalizedEmail,
+      name: matchedMember?.name ?? fallbackName,
+      picture: "",
+    }, {
+      verified: true,
+    });
   }
 
   function handleLogout() {
@@ -4019,7 +4298,7 @@ export default function App() {
             ? remoteLoginDomains
             : (localLoginDomains.length > 0 ? localLoginDomains : parseDomainList(defaultData.loginDomains)),
           people: remotePeople,
-          auditLogs: mergeAuditLogs(remoteAuditLogs, currentWorkspace.auditLogs ?? []),
+          auditLogs: remoteAuditLogs,
         };
 
         setIntegrationStatus((current) => ({
@@ -4036,6 +4315,11 @@ export default function App() {
           ...current,
           spreadsheet: "오류",
         }));
+      })
+      .finally(() => {
+        if (active) {
+          setRemoteWorkspaceReady(true);
+        }
       });
 
     return () => {
@@ -4115,32 +4399,57 @@ export default function App() {
     }
   }
 
+  function syncRemoteAuditLog(logEntry) {
+    if (!HAS_REMOTE_BACKEND) {
+      return;
+    }
+
+    createSupabaseAuditLog(logEntry)
+      .then((savedLog) => {
+        const currentWorkspace = workspaceRef.current;
+        const nextWorkspace = {
+          ...currentWorkspace,
+          auditLogs: mergeAuditLogs(
+            [savedLog],
+            (currentWorkspace.auditLogs ?? []).filter((item) => item.id !== logEntry.id),
+          ),
+        };
+        commitWorkspace(nextWorkspace, { syncRemote: false });
+      })
+      .catch(() => {
+        setIntegrationStatus((current) => ({
+          ...current,
+          spreadsheet: current.spreadsheet === "연결됨" ? current.spreadsheet : "오류",
+        }));
+      });
+  }
+
   function writeAuditLog(action, target, detail, baseWorkspace = null, actorOverride = null, alertContext = null) {
     const currentWorkspace = baseWorkspace ?? workspaceRef.current;
     const actorName = actorOverride?.actorName ?? authUser?.name ?? "";
     const actorEmail = actorOverride?.actorEmail ?? authUser?.email ?? "";
     const createdAtTs = new Date().toISOString();
+    const nextLog = {
+      id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      action,
+      target,
+      detail,
+      actorName,
+      actorEmail,
+      ip: "-",
+      createdAt: formatSeoulDateTime(new Date()),
+      createdAtTs,
+    };
     const nextWorkspace = {
       ...currentWorkspace,
       auditLogs: mergeAuditLogs(
-        [
-          {
-            id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            action,
-            target,
-            detail,
-            actorName,
-            actorEmail,
-            ip: "-",
-            createdAt: formatSeoulDateTime(new Date()),
-            createdAtTs,
-          },
-        ],
+        [nextLog],
         currentWorkspace.auditLogs ?? [],
       ),
     };
 
     commitWorkspace(nextWorkspace, { syncRemote: baseWorkspace !== null });
+    syncRemoteAuditLog(nextLog);
     sendGoogleChatControlAlert({
       action,
       target,
@@ -4501,18 +4810,27 @@ export default function App() {
     }
 
     const editingControl = controls.find((control) => control.id === registrationSelectedControlId) ?? null;
+    const nextControlCatalog = controlCatalog[registrationForm.controlId.trim()] ?? {};
     const preservedReviewer = normalizeUnitLabel(editingControl?.reviewer ?? editingControl?.reviewDept ?? "");
     const preservedOwnerPerson = editingControl?.ownerPerson ?? "";
     const resolvedReviewDept = normalizeUnitLabel(registrationForm.reviewDept) || preservedReviewer;
+    const preservedCycle = String(editingControl?.cycle ?? nextControlCatalog.cycle ?? "").trim();
+    const preservedRiskId = String(editingControl?.riskId ?? nextControlCatalog.riskId ?? "").trim();
+    const preservedDeficiencyImpact = String(
+      registrationForm.deficiencyImpact.trim()
+      || editingControl?.deficiencyImpact
+      || nextControlCatalog.deficiencyImpact
+      || "",
+    ).trim();
 
     const nextControl = normalizeControl({
       id: registrationForm.controlId.trim(),
-      cycle: "",
+      cycle: preservedCycle,
       process: registrationForm.process.trim(),
       subProcess: registrationForm.subProcess.trim() || registrationForm.process.trim(),
       title: registrationForm.controlName.trim(),
       purpose: registrationForm.controlObjective.trim(),
-      riskId: "",
+      riskId: preservedRiskId,
       riskName: registrationForm.risk.trim(),
       controlObjective: registrationForm.controlObjective.trim(),
       controlActivity: registrationForm.controlActivity.trim(),
@@ -4534,7 +4852,7 @@ export default function App() {
       attributes: [
         registrationForm.controlActivity.trim(),
         registrationForm.policyReference.trim(),
-        registrationForm.deficiencyImpact.trim(),
+        preservedDeficiencyImpact,
       ].filter(Boolean),
       evidences: registrationForm.evidence.split(",").map((item) => item.trim()).filter(Boolean),
       procedures: registrationForm.testMethod.split(",").map((item) => item.trim()).filter(Boolean),
@@ -4542,7 +4860,7 @@ export default function App() {
       evidenceText: registrationForm.evidence.trim(),
       testMethod: registrationForm.testMethod.trim(),
       policyReference: registrationForm.policyReference.trim(),
-      deficiencyImpact: registrationForm.deficiencyImpact.trim(),
+      deficiencyImpact: preservedDeficiencyImpact,
     });
     const duplicateControl = controls.find((control) => control.id === nextControl.id);
 
@@ -4627,6 +4945,15 @@ export default function App() {
       return;
     }
 
+    if (HAS_REMOTE_BACKEND) {
+      try {
+        await deleteSupabaseControl(targetControl.id);
+      } catch {
+        showCenterAlert("통제 삭제를 DB에 반영하지 못했습니다. 다시 시도해주세요.");
+        return;
+      }
+    }
+
     const nextControls = controls.filter((control) => control.id !== targetControl.id);
     const nextWorkflows = workflows.filter((workflow) => workflow.controlId !== targetControl.id);
     const nextRegistrationControlId = nextControls[0]?.id ?? "";
@@ -4648,11 +4975,11 @@ export default function App() {
     if (roleAssignmentControlId === targetControl.id) {
       setRoleAssignmentControlId(nextControls[0]?.id ?? "");
     }
-    showCenterAlert("통제를 삭제했습니다.");
+    showCenterAlert(HAS_REMOTE_BACKEND ? "통제가 삭제되고 DB에도 반영되었습니다." : "통제를 삭제했습니다.");
   }
 
   useEffect(() => {
-    if (!registrationSelectedControlId) {
+    if (currentView !== "register" || !registrationSelectedControlId) {
       return;
     }
 
@@ -4660,7 +4987,7 @@ export default function App() {
     if (control) {
       loadRegistrationControl(control);
     }
-  }, [registrationSelectedControlId]);
+  }, [currentView, controls, registrationSelectedControlId]);
 
   useEffect(() => {
     if (!registrationSelectedControlId) {
@@ -4747,7 +5074,7 @@ export default function App() {
     const loggedWorkspace = writeAuditLog(
       action,
       nextEntry.email || nextEntry.id,
-      `${nextEntry.name} · 유닛:${previousPerson?.team ?? previousPerson?.unit ?? "-"} -> ${nextEntry.team}, 권한:${previousPerson?.accessRole ?? "-"} -> ${nextEntry.accessRole}`,
+      buildMemberChangeDetail(previousPerson, nextEntry),
       {
         ...workspace,
         people: nextPeople,
@@ -4768,20 +5095,111 @@ export default function App() {
       return;
     }
 
-    const draftEntries = Object.entries(memberDrafts).filter(([, draft]) => draft && typeof draft === "object");
+    const draftEntries = Object.entries(memberDrafts).filter(([personId, draft]) => {
+      if (!draft || typeof draft !== "object") {
+        return false;
+      }
+      const sourcePerson = memberDirectory.find((person) => person.id === personId);
+      if (!sourcePerson) {
+        return false;
+      }
+      const currentUnit = String(sourcePerson.unit ?? sourcePerson.team ?? "미지정").trim() || "미지정";
+      const draftUnit = String(draft.unit ?? currentUnit).trim() || "미지정";
+      const currentAccessRole = normalizeAccessRole(sourcePerson.accessRole);
+      const draftAccessRole = normalizeAccessRole(draft.accessRole ?? currentAccessRole);
+      return draftUnit !== currentUnit || draftAccessRole !== currentAccessRole;
+    });
     if (draftEntries.length === 0) {
       showCenterAlert("저장할 회원 변경 내역이 없습니다.");
       return;
     }
 
+    let nextPeople = [...people];
+    const restoredEmails = [];
+    const auditEntries = [];
+
     for (const [personId, draft] of draftEntries) {
-      // Save sequentially so each write applies on the latest workspace state.
-      // This avoids dropping prior changes when remote sync is enabled.
-      // eslint-disable-next-line no-await-in-loop
-      await handleMemberSave(personId, draft, { suppressPopup: true });
+      const sourcePerson = memberDirectory.find((person) => person.id === personId);
+      if (!sourcePerson) {
+        continue;
+      }
+
+      const normalizedEmail = String(sourcePerson.email ?? "").trim().toLowerCase();
+      const existingIndex = nextPeople.findIndex((person) => {
+        if (person.id === personId) {
+          return true;
+        }
+        if (!normalizedEmail) {
+          return false;
+        }
+        return String(person.email ?? "").trim().toLowerCase() === normalizedEmail;
+      });
+      const previousPerson = existingIndex >= 0 ? nextPeople[existingIndex] : null;
+      const nextEntry = {
+        id: existingIndex >= 0
+          ? nextPeople[existingIndex].id
+          : personId.startsWith("AUTH-")
+            ? createMemberId()
+            : personId,
+        name: sourcePerson.name,
+        email: normalizedEmail,
+        role: existingIndex >= 0 ? nextPeople[existingIndex].role ?? sourcePerson.role ?? "both" : sourcePerson.role ?? "both",
+        unit: String(draft.unit ?? "").trim() || "미지정",
+        team: String(draft.unit ?? "").trim() || "미지정",
+        accessRole: normalizeAccessRole(draft.accessRole),
+      };
+
+      if (nextEntry.accessRole === "admin" && !isAllowedEmailBySet(nextEntry.email, loginDomainSet)) {
+        showCenterAlert(`admin 권한은 ${allowedDomainText} 도메인 계정에만 부여할 수 있습니다.`);
+        return;
+      }
+
+      nextPeople =
+        existingIndex >= 0
+          ? nextPeople.map((person, index) => (index === existingIndex ? { ...person, ...nextEntry } : person))
+          : [nextEntry, ...nextPeople];
+
+      if (nextEntry.email) {
+        restoredEmails.push(nextEntry.email);
+      }
+
+      auditEntries.push({
+        id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        action:
+          !previousPerson
+            ? "MEMBER_JOINED"
+            : normalizeAccessRole(previousPerson.accessRole) !== nextEntry.accessRole
+              ? "ROLE_CHANGED"
+              : "MEMBER_UPDATED",
+        target: nextEntry.email || nextEntry.id,
+        detail: buildMemberChangeDetail(previousPerson, nextEntry),
+        actorName: authUser?.name ?? "",
+        actorEmail: authUser?.email ?? "",
+        ip: "-",
+        createdAt: formatSeoulDateTime(new Date()),
+        createdAtTs: new Date().toISOString(),
+      });
     }
 
-    setMemberSavePopupMessage("회원 정보가 저장되었습니다.");
+    const normalizedPeople = normalizePeopleCollection(nextPeople);
+    if (restoredEmails.length > 0) {
+      const restoredEmailSet = new Set(restoredEmails);
+      setDeletedMemberEmails((current) => current.filter((email) => !restoredEmailSet.has(email)));
+    }
+
+    const loggedWorkspace = {
+      ...workspace,
+      people: normalizedPeople,
+      auditLogs: mergeAuditLogs(auditEntries, workspace.auditLogs ?? []),
+    };
+    commitWorkspace(loggedWorkspace, { syncRemote: false });
+
+    const synced = await ensureRemoteSync(loggedWorkspace);
+    if (!HAS_REMOTE_BACKEND || synced) {
+      setMemberSavePopupMessage("회원 정보가 저장되었습니다.");
+      return;
+    }
+    showCenterAlert("회원 정보 저장은 되었지만 원격 동기화에 실패했습니다.");
   }
 
   async function handleMemberDelete(personId) {
@@ -4945,6 +5363,7 @@ export default function App() {
     const executionPeriod = formData.get("executionPeriod").toString().trim();
     const executionAuthorName = String(authUser?.name ?? "").trim();
     const executionAuthorEmail = normalizedAuthEmail;
+    const executionAuthorUnit = String(selectedControl.performDept ?? selectedControl.performer ?? selectedControl.ownerDept ?? "").trim();
     const status = executionNote ? "점검 중" : "점검 예정";
     const currentExecutionEntry = getPreferredExecutionEntry(selectedControl, null, {
       executionYear,
@@ -5029,15 +5448,21 @@ export default function App() {
           executionYear,
           executionPeriod,
           executionNote,
+          testMethodSnapshot: String(control.testMethod ?? "").trim(),
+          populationSnapshot: String(control.population ?? "").trim(),
+          evidenceTextSnapshot: String(control.evidenceText ?? "").trim(),
           executionSubmitted: submitMode === "complete",
           reviewRequested: false,
           executionAuthorName,
           executionAuthorEmail,
+          executionAuthorUnit,
           reviewChecked: "미검토",
           note: "",
           reviewResult: "",
           reviewAuthorName: "",
           reviewAuthorEmail: "",
+          reviewAuthorUnit: String(control.reviewDept ?? control.reviewer ?? "").trim(),
+          reviewDate: "",
           status,
           evidenceFiles: nextEvidenceFiles,
           evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
@@ -5096,6 +5521,7 @@ export default function App() {
                 note: "",
                 reviewAuthorName: "",
                 reviewAuthorEmail: "",
+                reviewDate: "",
                 status: deriveAssignmentStatus(entry.executionNote ?? "", "미검토"),
               }
             : entry,
@@ -5242,8 +5668,12 @@ export default function App() {
             executionYear,
             executionPeriod,
             executionNote,
+            testMethodSnapshot: String(control.testMethod ?? "").trim(),
+            populationSnapshot: String(control.population ?? "").trim(),
+            evidenceTextSnapshot: String(control.evidenceText ?? "").trim(),
             executionSubmitted: true,
             reviewRequested: false,
+            executionAuthorUnit: String(control.performDept ?? control.performer ?? control.ownerDept ?? "").trim(),
             evidenceFiles: nextEvidenceFiles,
             evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
             status: deriveAssignmentStatus(executionNote, currentEntry?.reviewChecked ?? "미검토"),
@@ -5285,6 +5715,8 @@ export default function App() {
     const reviewChecked = reviewDecision === "양호" ? "검토 완료" : "반려";
     const reviewAuthorName = String(authUser?.name ?? "").trim();
     const reviewAuthorEmail = normalizedAuthEmail;
+    const reviewAuthorUnit = String(selectedReviewControl.reviewDept ?? selectedReviewControl.reviewer ?? "").trim();
+    const reviewDate = new Date().toISOString();
     const reviewer = reviewAuthorName || reviewAuthorEmail;
 
     if (!reviewAuthorEmail) {
@@ -5311,6 +5743,8 @@ export default function App() {
                 reviewResult: reviewDecision,
                 reviewAuthorName,
                 reviewAuthorEmail,
+                reviewAuthorUnit,
+                reviewDate,
               }
             : entry,
         );
@@ -5492,6 +5926,26 @@ export default function App() {
           ) : (
             <p className="login-error">`.env`에 `VITE_GOOGLE_CLIENT_ID`를 설정하세요.</p>
           )}
+          {DEV_LOCAL_LOGIN_ENABLED ? (
+            <div className="login-method-card login-dev-card">
+              <span className="login-method-label">개발 서버 전용</span>
+              <div className="login-method-row">
+                <strong>로컬 로그인</strong>
+                <span>모바일 확인용</span>
+              </div>
+              <div className="login-dev-row">
+                <input
+                  type="email"
+                  value={devLoginEmail}
+                  onChange={(event) => setDevLoginEmail(event.target.value)}
+                  placeholder="muhayu.com 이메일"
+                />
+                <button className="secondary-button" type="button" onClick={handleDevLogin}>
+                  바로 로그인
+                </button>
+              </div>
+            </div>
+          ) : null}
           {authError ? <p className="login-error">{authError}</p> : null}
           <p className="login-footnote">인가된 도메인 계정만 접근할 수 있습니다.</p>
         </section>
@@ -5571,6 +6025,7 @@ export default function App() {
           <div className="app-user-chip">
             <strong>{authUser.name}</strong>
             <span>{authUser.email}</span>
+            <em className={`status-badge ${accessRoleClassName(currentAccessRole)}`}>{currentAccessRole}</em>
           </div>
           <button className="secondary-button app-user-logout" type="button" onClick={handleLogout}>
             로그아웃
@@ -5583,7 +6038,7 @@ export default function App() {
                 <section className="dashboard-month-calendar">
                   <div className="dashboard-month-calendar-head">
                     <strong>월 단위 캘린더</strong>
-                    <span>{dashboardCalendarMonth}월 수행 대상 {dashboardMonthlyCards.length}건</span>
+                    <span>{dashboardCalendarMonth}월 수행 대상 {dashboardMonthlyCards.length}개</span>
                   </div>
                   <div className="dashboard-month-grid">
                     {dashboardCalendarSummary.map((bucket) => {
@@ -5603,7 +6058,7 @@ export default function App() {
                           }}
                         >
                           <span>{bucket.month}월</span>
-                          <strong>{bucket.items.length}건</strong>
+                          <strong>{bucket.items.length}개</strong>
                         </button>
                       );
                     })}
@@ -5647,7 +6102,7 @@ export default function App() {
                   <button
                     type="button"
                     className="dashboard-delay-inline-summary dashboard-progress-inline-summary"
-                    onClick={() => openDashboardDelayDetail(dashboardAnnualDelayBuckets[0]?.key ?? "monthly")}
+                    onClick={() => openDashboardDelayDetail("progress")}
                   >
                     <span>{`${dashboardDelayYear}년 진행률`}</span>
                     <strong>{`${dashboardAnnualProgressSummary.progressRate}%`}</strong>
@@ -5734,7 +6189,7 @@ export default function App() {
                       >
                         <div className="control-progress-group-head">
                           <strong>{group.label}</strong>
-                          <span>{group.items.length}건</span>
+                          <span>{`진행률: ${group.progressRate}%`}</span>
                         </div>
                         <div className="control-progress-list">
                           {group.items.map((item) => (
@@ -5742,7 +6197,7 @@ export default function App() {
                               type="button"
                               className="control-progress-card"
                               key={item.id}
-                              onClick={() => openControlOperationByFrequency(group.frequency)}
+                              onClick={() => openControlOperation(item.id)}
                             >
                               <div className="control-progress-head">
                                 <strong>{item.id}</strong>
@@ -5769,7 +6224,7 @@ export default function App() {
                       <section className={`control-progress-group tone-${toDashboardAnchor(group.group)}`} key={group.group}>
                         <div className="control-progress-group-head">
                           <strong>{group.group}</strong>
-                          <span>{group.items.length}건</span>
+                          <span>{`진행률: ${group.progressRate}%`}</span>
                         </div>
                         <div className="control-progress-list control-progress-list-by-control">
                           {group.items.map((item) => (
@@ -5809,9 +6264,9 @@ export default function App() {
                         id={`dashboard-category-${toDashboardAnchor(item.process)}`}
                         onClick={() => openRegistrationByCategory(item.process)}
                       >
-                        <div className="control-progress-head">
+                        <div className="control-progress-head category-progress-head">
                           <strong>{item.process}</strong>
-                          <span>{item.controls}건</span>
+                          <span>{`진행률: ${item.progressRate}%`}</span>
                         </div>
                         <small>현재 현황 · 완료 {item.done} · 관리 필요 {item.pending}</small>
                         <div className="progress-track" aria-hidden="true">
@@ -5834,9 +6289,11 @@ export default function App() {
               <article className="panel member-management-panel">
                 <div className="section-heading">
                   <div>
-                    <h2>연 기준 지연 통제 상세</h2>
+                    <h2>{dashboardDelayDetailKey === "progress" ? "연 기준 진행 내역 상세" : "연 기준 지연 통제 상세"}</h2>
                     <p className="detail-purpose">
-                      {`${dashboardDelayYear}년 기준, 현재 날짜까지 도래했지만 미완료인 지연 항목을 월/분기/반기/연 단위로 표시합니다.`}
+                      {dashboardDelayDetailKey === "progress"
+                        ? `${dashboardDelayYear}년 기준 검토 완료된 수행 내역을 표시합니다.`
+                        : `${dashboardDelayYear}년 기준, 현재 날짜까지 도래했지만 미완료인 지연 항목을 월/분기/반기/연 단위로 표시합니다.`}
                     </p>
                   </div>
                   <div className="execution-filter-actions">
@@ -5851,6 +6308,14 @@ export default function App() {
                   </div>
                 </div>
                 <div className="detail-tabs dashboard-tabs">
+                  <button
+                    type="button"
+                    className={dashboardDelayDetailKey === "progress" ? "tab-button active" : "tab-button"}
+                    onClick={() => setDashboardDelayDetailKey("progress")}
+                  >
+                    진행 내역
+                    <span className="tab-pending-badge">{dashboardAnnualProgressItems.length}</span>
+                  </button>
                   {dashboardAnnualDelayBuckets.map((bucket) => (
                     <button
                       type="button"
@@ -5863,7 +6328,40 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-                {selectedDashboardDelayBucket?.items?.length ? (
+                {dashboardDelayDetailKey === "progress" ? (
+                  dashboardAnnualProgressItems.length ? (
+                    <div className="control-progress-list dashboard-delay-detail-list">
+                      {dashboardAnnualProgressItems.map((item) => (
+                        <button
+                          type="button"
+                          className="control-progress-card tone-category"
+                          key={`progress-${item.id}-${item.executionYear}-${item.executionPeriod}`}
+                          onClick={() =>
+                            openControlOperation(item.id, item.process, {
+                              executionYear: item.executionYear,
+                              executionPeriod: item.executionPeriod,
+                            })
+                          }
+                        >
+                          <div className="control-progress-head">
+                            <strong>{item.id}</strong>
+                            <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
+                          </div>
+                          <AutoFitTitle>{item.title}</AutoFitTitle>
+                          <small>{item.process} · {item.frequency}</small>
+                          <small>완료 기간 · {item.executionYear}년 {item.executionPeriod}</small>
+                          <small>수행 부서 · {item.performer}</small>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="panel empty-selection-panel dashboard-delay-empty">
+                      <p className="eyebrow">진행 내역</p>
+                      <h2>해당 연도의 완료 내역이 없습니다.</h2>
+                      <p className="detail-purpose">연도 또는 대시보드 필터 조건을 바꾸면 다시 집계됩니다.</p>
+                    </div>
+                  )
+                ) : selectedDashboardDelayBucket?.items?.length ? (
                   <div className="control-progress-list dashboard-delay-detail-list">
                     {selectedDashboardDelayBucket.items.map((item) => (
                       <button
@@ -5919,6 +6417,7 @@ export default function App() {
                 {workbenchFlowSteps.map((step, index) => {
                   const isActiveStep = workbenchTab === step.key;
                   const isCompletedStep = currentWorkbenchStepIndex > index;
+                  const isDisabledStep = !canOpenWorkbenchTab(step.key);
                   const badgeClassName =
                     step.key === "control-review"
                       ? "tab-pending-badge"
@@ -5942,8 +6441,11 @@ export default function App() {
                             ? "tab-button workbench-step-button completed"
                             : isActiveStep
                               ? "tab-button active workbench-step-button"
-                              : "tab-button workbench-step-button"
+                              : isDisabledStep
+                                ? "tab-button workbench-step-button disabled"
+                                : "tab-button workbench-step-button"
                         }
+                        disabled={isDisabledStep}
                         onClick={() => handleWorkbenchTabChange(step.key)}
                         aria-current={isActiveStep ? "step" : undefined}
                       >
@@ -6042,7 +6544,7 @@ export default function App() {
                     <article className="registration-metric-card">
                       <div className="registration-metric-icon"><ShieldCheckIcon /></div>
                       <div>
-                        <p>통제유형</p>
+                        <p>통제 유형</p>
                         <strong>{registrationForm.controlType}</strong>
                       </div>
                     </article>
@@ -6056,15 +6558,15 @@ export default function App() {
                     <article className="registration-metric-card">
                       <div className="registration-metric-icon"><OwnerIcon /></div>
                       <div>
-                        <p>담당부서</p>
+                        <p>수행 부서</p>
                         <strong>{registrationForm.ownerDept}</strong>
                       </div>
                     </article>
                     <article className="registration-metric-card">
                       <div className="registration-metric-icon"><CheckBadgeIcon /></div>
                       <div>
-                        <p>수행주기</p>
-                        <strong>{registrationForm.frequency}</strong>
+                        <p>수행 주기</p>
+                        <strong>{formatFrequencyLabel(registrationForm.frequency) || "-"}</strong>
                       </div>
                     </article>
                   </div>
@@ -6077,7 +6579,7 @@ export default function App() {
                   </div>
                   <div className="registration-form-grid two-col">
                     <label className="registration-field">
-                      <span>Control ID <em>필수</em></span>
+                      <span>통제 ID <em>필수</em></span>
                       <input value={registrationForm.controlId} onChange={(event) => updateRegistrationField("controlId", event.target.value)} />
                       <small>예: APD-03, CHG-01</small>
                     </label>
@@ -6087,7 +6589,7 @@ export default function App() {
                       <small>감사자가 봐도 바로 이해되는 이름으로 작성</small>
                     </label>
                     <label className="registration-field">
-                      <span>Process <em>필수</em></span>
+                      <span>프로세스 <em>필수</em></span>
                       <select value={registrationForm.process} onChange={(event) => updateRegistrationField("process", event.target.value)}>
                         <option value="IT 정책관리">IT 정책관리</option>
                         <option value="계정관리">계정관리</option>
@@ -6096,12 +6598,10 @@ export default function App() {
                         <option value="백업관리">백업관리</option>
                       </select>
                     </label>
-                    {registrationFormMode === "advanced" ? (
-                      <label className="registration-field">
-                        <span>Sub Process</span>
-                        <input value={registrationForm.subProcess} onChange={(event) => updateRegistrationField("subProcess", event.target.value)} />
-                      </label>
-                    ) : null}
+                    <label className="registration-field">
+                      <span>서브 프로세스</span>
+                      <input value={registrationForm.subProcess} onChange={(event) => updateRegistrationField("subProcess", event.target.value)} />
+                    </label>
                     <fieldset className="system-fieldset registration-field">
                       <legend>관련 시스템 <em>필수</em></legend>
                       <div className="system-options">
@@ -6117,12 +6617,10 @@ export default function App() {
                         ))}
                       </div>
                     </fieldset>
-                    {registrationFormMode === "advanced" ? (
-                      <label className="registration-field">
-                        <span>정책/기준서 참조</span>
-                        <input value={registrationForm.policyReference} onChange={(event) => updateRegistrationField("policyReference", event.target.value)} />
-                      </label>
-                    ) : null}
+                    <label className="registration-field">
+                      <span>정책/기준서 참조</span>
+                      <input value={registrationForm.policyReference} onChange={(event) => updateRegistrationField("policyReference", event.target.value)} />
+                    </label>
                   </div>
                 </article>
 
@@ -6133,22 +6631,22 @@ export default function App() {
                   </div>
                   <div className="registration-form-grid two-col">
                     <label className="registration-field">
-                      <span>Risk <em>필수</em></span>
+                      <span>위험 <em>필수</em></span>
                       <textarea rows="4" value={registrationForm.risk} onChange={(event) => updateRegistrationField("risk", event.target.value)} />
                       <small>무엇이 잘못될 수 있는지 위험을 구체적으로 작성</small>
                     </label>
                     <label className="registration-field">
-                      <span>Control Objective <em>필수</em></span>
+                      <span>통제 목적 <em>필수</em></span>
                       <textarea rows="4" value={registrationForm.controlObjective} onChange={(event) => updateRegistrationField("controlObjective", event.target.value)} />
                       <small>이 통제가 존재해야 하는 목적</small>
                     </label>
                     <label className="registration-field">
-                      <span>Activity <em>필수</em></span>
+                      <span>통제 활동 <em>필수</em></span>
                       <textarea rows="4" value={registrationForm.controlActivity} onChange={(event) => updateRegistrationField("controlActivity", event.target.value)} />
                       <small>실제로 수행하는 핵심 통제행위</small>
                     </label>
                     <label className="registration-field">
-                      <span>Description <em>필수</em></span>
+                      <span>상세 설명 <em>필수</em></span>
                       <textarea rows="4" value={registrationForm.description} onChange={(event) => updateRegistrationField("description", event.target.value)} />
                       <small>누가, 어떻게, 무엇을 증적으로 남기는지 포함해서 작성</small>
                     </label>
@@ -6156,35 +6654,15 @@ export default function App() {
                 </article>
 
                 <article className="panel registration-section-card">
-                  <div className="registration-section-head with-mode-toggle">
+                  <div className="registration-section-head">
                     <div>
                       <h2>운영 및 감사 정보</h2>
                       <p>실행 가능성과 감사 검증 가능성을 높이는 필수 운영 정보</p>
                     </div>
-                    <div className="registration-mode-toggle" role="tablist" aria-label="등록 폼 표시 모드">
-                      <button
-                        type="button"
-                        className={registrationFormMode === "basic" ? "secondary-button slim-button no-wrap registration-mode-button active" : "secondary-button slim-button no-wrap registration-mode-button"}
-                        onClick={() => setRegistrationFormMode("basic")}
-                        role="tab"
-                        aria-selected={registrationFormMode === "basic"}
-                      >
-                        기본 입력
-                      </button>
-                      <button
-                        type="button"
-                        className={registrationFormMode === "advanced" ? "secondary-button slim-button no-wrap registration-mode-button active" : "secondary-button slim-button no-wrap registration-mode-button"}
-                        onClick={() => setRegistrationFormMode("advanced")}
-                        role="tab"
-                        aria-selected={registrationFormMode === "advanced"}
-                      >
-                        고급 입력
-                      </button>
-                    </div>
                   </div>
-                  <div className="registration-form-grid three-col registration-audit-grid">
+                  <div className="registration-form-grid two-col registration-audit-grid">
                     <label className="registration-field registration-audit-frequency">
-                      <span>Frequency <em>필수</em></span>
+                      <span>수행 주기 <em>필수</em></span>
                       <select value={registrationForm.frequency} onChange={(event) => updateRegistrationField("frequency", event.target.value)}>
                         <option value="Daily">일별</option>
                         <option value="Weekly">주별</option>
@@ -6197,7 +6675,7 @@ export default function App() {
                       </select>
                     </label>
                     <label className="registration-field registration-audit-control-type">
-                      <span>Control Type <em>필수</em></span>
+                      <span>통제 유형 <em>필수</em></span>
                       <select value={registrationForm.controlType} onChange={(event) => updateRegistrationField("controlType", event.target.value)}>
                         <option value="예방">예방</option>
                         <option value="탐지">탐지</option>
@@ -6205,68 +6683,58 @@ export default function App() {
                       </select>
                     </label>
                     <label className="registration-field registration-audit-owner-dept">
-                      <span>담당 부서 <em>필수</em></span>
+                      <span>수행 부서 <em>필수</em></span>
                       <input value={registrationForm.ownerDept} onChange={(event) => updateRegistrationField("ownerDept", event.target.value)} />
                     </label>
                     <label className="registration-field registration-audit-review-dept">
-                      <span>검토 부서</span>
+                      <span>검토 부서 <em>필수</em></span>
                       <input value={registrationForm.reviewDept} onChange={(event) => updateRegistrationField("reviewDept", event.target.value)} />
                     </label>
-                    {registrationFormMode === "advanced" ? (
-                      <label className="registration-field registration-audit-advanced-half registration-audit-automation">
-                        <span>자동화 수준</span>
-                        <select value={registrationForm.automationLevel} onChange={(event) => updateRegistrationField("automationLevel", event.target.value)}>
-                          <option value="수동">수동</option>
-                          <option value="반자동">반자동</option>
-                          <option value="자동">자동</option>
-                        </select>
-                      </label>
-                    ) : null}
-                    {registrationFormMode === "advanced" ? (
-                      <label className="registration-field registration-audit-advanced-half registration-audit-deficiency">
-                        <span>결함 영향도</span>
-                        <select value={registrationForm.deficiencyImpact} onChange={(event) => updateRegistrationField("deficiencyImpact", event.target.value)}>
-                          <option value="높음">높음</option>
-                          <option value="중간">중간</option>
-                          <option value="낮음">낮음</option>
-                        </select>
-                      </label>
-                    ) : null}
-                    {registrationFormMode === "advanced" ? (
-                      <label className="registration-field registration-audit-advanced-half registration-audit-test-method">
-                        <span>테스트 방법</span>
-                        <textarea rows="4" value={registrationForm.testMethod} onChange={(event) => updateRegistrationField("testMethod", event.target.value)} />
-                        <small>감사/자가점검 시 어떻게 검증할지 기술</small>
-                      </label>
-                    ) : null}
-                    {registrationFormMode === "advanced" ? (
-                      <label className="registration-field registration-audit-advanced-half registration-audit-population">
-                        <span>모집단</span>
-                        <textarea rows="4" value={registrationForm.population} onChange={(event) => updateRegistrationField("population", event.target.value)} />
-                        <small>점검 대상 기간, 건수, 추출 기준 등을 작성</small>
-                      </label>
-                    ) : null}
+                    <label className="registration-field registration-audit-advanced-half registration-audit-automation">
+                      <span>자동화 수준</span>
+                      <select value={registrationForm.automationLevel} onChange={(event) => updateRegistrationField("automationLevel", event.target.value)}>
+                        <option value="수동">수동</option>
+                        <option value="반자동">반자동</option>
+                        <option value="자동">자동</option>
+                      </select>
+                    </label>
+                    <label className="registration-field registration-audit-advanced-half registration-audit-deficiency">
+                      <span>결함 영향도</span>
+                      <select value={registrationForm.deficiencyImpact} onChange={(event) => updateRegistrationField("deficiencyImpact", event.target.value)}>
+                        <option value="높음">높음</option>
+                        <option value="중간">중간</option>
+                        <option value="낮음">낮음</option>
+                      </select>
+                    </label>
+                    <label className="registration-field registration-audit-advanced-half registration-audit-test-method">
+                      <span>테스트 방법</span>
+                      <textarea rows="4" value={registrationForm.testMethod} onChange={(event) => updateRegistrationField("testMethod", event.target.value)} />
+                      <small>감사/자가점검 시 어떻게 검증할지 기술</small>
+                    </label>
+                    <label className="registration-field registration-audit-advanced-half registration-audit-population">
+                      <span>모집단</span>
+                      <textarea rows="4" value={registrationForm.population} onChange={(event) => updateRegistrationField("population", event.target.value)} />
+                      <small>점검 대상 기간, 건수, 추출 기준 등을 작성</small>
+                    </label>
                     <label className="registration-field registration-field-row-start registration-audit-evidence">
-                      <span>Evidence <em>필수</em></span>
+                      <span>증적 <em>필수</em></span>
                       <textarea rows="4" value={registrationForm.evidence} onChange={(event) => updateRegistrationField("evidence", event.target.value)} />
                       <small className="registration-field-spacer" aria-hidden="true">placeholder</small>
                     </label>
-                    {registrationFormMode === "advanced" ? (
-                      <div className="registration-switch-card registration-audit-advanced-full">
-                        <div>
-                          <strong>핵심통제(Key Control)</strong>
-                          <p>재무/감사 영향도가 높아 별도 검증이 필요한 통제</p>
-                        </div>
-                        <label className="switch">
-                          <input
-                            type="checkbox"
-                            checked={registrationForm.keyControl}
-                            onChange={(event) => updateRegistrationField("keyControl", event.target.checked)}
-                          />
-                          <span className="switch-slider" />
-                        </label>
+                    <div className="registration-switch-card registration-audit-advanced-full">
+                      <div>
+                        <strong>핵심통제</strong>
+                        <p>재무/감사 영향도가 높아 별도 검증이 필요한 통제</p>
                       </div>
-                    ) : null}
+                      <label className="switch">
+                        <input
+                          type="checkbox"
+                          checked={registrationForm.keyControl}
+                          onChange={(event) => updateRegistrationField("keyControl", event.target.checked)}
+                        />
+                        <span className="switch-slider" />
+                      </label>
+                    </div>
                   </div>
                 </article>
                   <div className="registration-action-group">
@@ -6378,11 +6846,11 @@ export default function App() {
                     <div><p>상세 설명</p><span>{registrationSelectedControl?.description || registrationSelectedControl?.population || "-"}</span></div>
                     <div><p>핵심통제</p><span>{registrationSelectedControl?.keyControl || "-"}</span></div>
                     <div><p>주기</p><span>{formatFrequencyLabel(registrationSelectedControl?.frequency) || "-"}</span></div>
-                    <div><p>통제유형</p><span>{registrationSelectedControl?.controlType || "-"}</span></div>
+                    <div><p>통제 유형</p><span>{registrationSelectedControl?.controlType || "-"}</span></div>
                     <div><p>자동화 수준</p><span>{registrationSelectedControl?.automationLevel || "-"}</span></div>
-                    <div><p>수행부서</p><span>{resolveExecutionAuthorDisplay(registrationSelectedControl)}</span></div>
+                    <div><p>수행 부서</p><span>{resolveExecutionAuthorDisplay(registrationSelectedControl)}</span></div>
                     <div><p>담당자</p><span>{registrationSelectedControl?.ownerPerson || "-"}</span></div>
-                    <div><p>검토부서</p><span>{resolveReviewDeptDisplay(registrationSelectedControl)}</span></div>
+                    <div><p>검토 부서</p><span>{resolveReviewDeptDisplay(registrationSelectedControl)}</span></div>
                     <div>
                       <p>관련 시스템</p>
                       {renderSystemChips(registrationSelectedControl?.targetSystems)}
@@ -6699,6 +7167,9 @@ export default function App() {
                           <span className="status-badge unit-assignee-badge">
                             수행: {resolveExecutionAuthorDisplay(selectedCompletedControl)}
                           </span>
+                          <span className="status-badge unit-assignee-badge">
+                            검토: {resolveReviewDeptDisplay(selectedCompletedControl)}
+                          </span>
                         </div>
                       </div>
                       <p className="detail-purpose">{selectedCompletedControl.id} · {selectedCompletedControl.title}</p>
@@ -6711,17 +7182,19 @@ export default function App() {
                             <span className="review-meta-chip review-meta-period">주기: {selectedCompletedControl.executionPeriod || "-"}</span>
                             <span className="review-meta-separator">|</span>
                             <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorDisplay(selectedCompletedControl)}</span>
+                            <span className="review-meta-separator">|</span>
+                            <span className="review-meta-chip review-meta-owner">검토 유닛: {resolveReviewDeptDisplay(selectedCompletedControl)}</span>
                           </div>
                         </div>
                         <div className="execution-meta-item">
                           <span>테스트 방법</span>
                           <span className="detail-body-text">
-                            {preserveDisplayLineBreaks(selectedCompletedControl.testMethod || (selectedCompletedControl.procedures ?? []).join("\n")) || "-"}
+                            {preserveDisplayLineBreaks(resolveExecutionDetailTestMethod(selectedCompletedControl)) || "-"}
                           </span>
                         </div>
                         <div className="execution-meta-item">
                           <span>모집단</span>
-                          <span className="detail-body-text">{preserveDisplayLineBreaks(selectedCompletedControl.population) || "-"}</span>
+                          <span className="detail-body-text">{preserveDisplayLineBreaks(resolveExecutionDetailPopulation(selectedCompletedControl)) || "-"}</span>
                         </div>
                         {!completedEditMode ? (
                           <>
@@ -7010,12 +7483,12 @@ export default function App() {
                       <div className="execution-meta-item">
                         <span>테스트 방법</span>
                         <span className="detail-body-text">
-                          {preserveDisplayLineBreaks(selectedReviewControl.testMethod || (selectedReviewControl.procedures ?? []).join("\n")) || "-"}
+                          {preserveDisplayLineBreaks(resolveExecutionDetailTestMethod(selectedReviewControl)) || "-"}
                         </span>
                       </div>
                       <div className="execution-meta-item">
                         <span>모집단</span>
-                        <span className="detail-body-text">{preserveDisplayLineBreaks(selectedReviewControl.population) || "-"}</span>
+                        <span className="detail-body-text">{preserveDisplayLineBreaks(resolveExecutionDetailPopulation(selectedReviewControl)) || "-"}</span>
                       </div>
                       <div className="execution-meta-item review-row-full">
                         <span>수행 내역</span>
@@ -7141,12 +7614,12 @@ export default function App() {
               </article>
 
               <div className="control-main review-tight-stack">
-                <article className="panel detail-hero control-review-panel">
+                <article className="panel detail-hero control-review-panel performed-detail-panel">
                   {selectedPerformedControl ? (
                     <>
                       <div className="section-heading">
                         <div>
-                          <h2>수행 완료</h2>
+                          <h2>수행 내역 상세</h2>
                         </div>
                         <div className="badge-row">
                           <span className={`status-badge ${statusClass(selectedPerformedControl.status)}`}>{selectedPerformedControl.status}</span>
@@ -7154,76 +7627,85 @@ export default function App() {
                           <span className="status-badge unit-assignee-badge">
                             수행: {resolveExecutionAuthorDisplay(selectedPerformedControl)}
                           </span>
+                          <span className="status-badge unit-assignee-badge">
+                            검토: {resolveReviewActorDisplay(selectedPerformedControl)}
+                          </span>
                         </div>
                       </div>
                       <p className="detail-purpose">{selectedPerformedControl.id} · {selectedPerformedControl.title}</p>
                       <div className="review-detail-body">
-                        <div className="detail-meta-grid execution-meta-grid review-detail-grid">
-                          <div className="execution-meta-item review-row-full review-compact-meta-item">
-                            <div className="detail-body-text review-compact-meta-line">
-                              <span className="review-meta-chip review-meta-year">년도: {selectedPerformedControl.executionYear ? `${selectedPerformedControl.executionYear}년` : "-"}</span>
-                              <span className="review-meta-separator">|</span>
-                              <span className="review-meta-chip review-meta-period">주기: {selectedPerformedControl.executionPeriod || "-"}</span>
-                              <span className="review-meta-separator">|</span>
-                              <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorDisplay(selectedPerformedControl)}</span>
-                            </div>
+                        <div className="execution-meta-item review-row-full review-compact-meta-item">
+                          <div className="detail-body-text review-compact-meta-line">
+                            <span className="review-meta-chip review-meta-year">년도: {selectedPerformedControl.executionYear ? `${selectedPerformedControl.executionYear}년` : "-"}</span>
+                            <span className="review-meta-separator">|</span>
+                            <span className="review-meta-chip review-meta-period">주기: {selectedPerformedControl.executionPeriod || "-"}</span>
+                            <span className="review-meta-separator">|</span>
+                            <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorDisplay(selectedPerformedControl)}</span>
+                            <span className="review-meta-separator">|</span>
+                            <span className="review-meta-chip review-meta-owner">검토자: {resolveReviewActorDisplay(selectedPerformedControl)}</span>
                           </div>
-                          <div className="execution-meta-item">
-                            <span>테스트 방법</span>
-                            <span className="detail-body-text">
-                              {preserveDisplayLineBreaks(selectedPerformedControl.testMethod || (selectedPerformedControl.procedures ?? []).join("\n")) || "-"}
-                            </span>
-                          </div>
-                          <div className="execution-meta-item">
-                            <span>모집단</span>
-                            <span className="detail-body-text">{preserveDisplayLineBreaks(selectedPerformedControl.population) || "-"}</span>
-                          </div>
-                          <div className="execution-meta-item review-row-full">
-                            <span>수행 내역</span>
-                            <span className="detail-body-text">{preserveDisplayLineBreaks(selectedPerformedControl.executionNote) || "-"}</span>
-                          </div>
-                          <div className="execution-meta-item review-row-full">
-                            <span>증적 파일</span>
-                            <div className="evidence-file-list">
-                              {(selectedPerformedControl.evidenceFiles ?? []).length > 0 ? (
-                                (selectedPerformedControl.evidenceFiles ?? []).map((file, index) => (
-                                  <span className="evidence-file-chip-wrap" key={`${file.name}-${index}`}>
-                                    <button
-                                      className="system-chip evidence-file-chip"
-                                      type="button"
-                                      onClick={() => {
-                                        if (isImageEvidence(file) || isPdfEvidence(file)) {
-                                          handleOpenEvidencePreview(file);
-                                          return;
-                                        }
-                                        handleDownloadEvidence(file);
-                                      }}
-                                    >
-                                      {file.url ? file.name : `${file.name} (대기)`}
-                                    </button>
-                                  </span>
-                                ))
-                              ) : (
-                                <span className="empty-text">첨부된 증적 없음</span>
-                              )}
-                            </div>
-                          </div>
-                          <div className="execution-meta-item">
-                            <span>검토자</span>
-                            <span className="detail-body-text">
-                              {String(selectedPerformedControl.reviewAuthorName ?? "").trim()
-                                || String(selectedPerformedControl.reviewAuthorEmail ?? "").trim()
-                                || "-"}
-                            </span>
-                          </div>
-                          <div className="execution-meta-item">
-                            <span>검토 결과</span>
-                            <span className="detail-body-text">{selectedPerformedControl.reviewResult || "양호"}</span>
-                          </div>
-                          <div className="execution-meta-item review-row-full">
-                            <span>검토 의견</span>
-                            <span className="detail-body-text">{preserveDisplayLineBreaks(selectedPerformedControl.note) || "-"}</span>
-                          </div>
+                        </div>
+                        <div className="table-wrap performed-detail-table-wrap">
+                          <table className="performed-detail-table">
+                            <tbody>
+                              <tr>
+                                <th>테스트 방법</th>
+                                <td>{preserveDisplayLineBreaks(resolveExecutionDetailTestMethod(selectedPerformedControl)) || "-"}</td>
+                              </tr>
+                              <tr>
+                                <th>모집단</th>
+                                <td>{preserveDisplayLineBreaks(resolveExecutionDetailPopulation(selectedPerformedControl)) || "-"}</td>
+                              </tr>
+                              <tr>
+                                <th>수행 내역</th>
+                                <td>{preserveDisplayLineBreaks(selectedPerformedControl.executionNote) || "-"}</td>
+                              </tr>
+                              <tr>
+                                <th>증적 파일</th>
+                                <td>
+                                  <div className="evidence-file-list">
+                                    {(selectedPerformedControl.evidenceFiles ?? []).length > 0 ? (
+                                      (selectedPerformedControl.evidenceFiles ?? []).map((file, index) => (
+                                        <span className="evidence-file-chip-wrap" key={`${file.name}-${index}`}>
+                                          <button
+                                            className="system-chip evidence-file-chip"
+                                            type="button"
+                                            onClick={() => {
+                                              if (isImageEvidence(file) || isPdfEvidence(file)) {
+                                                handleOpenEvidencePreview(file);
+                                                return;
+                                              }
+                                              handleDownloadEvidence(file);
+                                            }}
+                                          >
+                                            {file.url ? file.name : `${file.name} (대기)`}
+                                          </button>
+                                        </span>
+                                      ))
+                                    ) : (
+                                      <span className="empty-text">첨부된 증적 없음</span>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                              <tr>
+                                <th>검토자</th>
+                                <td>
+                                  {String(selectedPerformedControl.reviewAuthorName ?? "").trim()
+                                    || String(selectedPerformedControl.reviewAuthorEmail ?? "").trim()
+                                    || "-"}
+                                </td>
+                              </tr>
+                              <tr>
+                                <th>검토 결과</th>
+                                <td>{selectedPerformedControl.reviewResult || "양호"}</td>
+                              </tr>
+                              <tr>
+                                <th>검토 의견</th>
+                                <td>{preserveDisplayLineBreaks(selectedPerformedControl.note) || "-"}</td>
+                              </tr>
+                            </tbody>
+                          </table>
                         </div>
                       </div>
                     </>
@@ -7268,18 +7750,20 @@ export default function App() {
                         disabled={!canManageMembers}
                       />
                     </label>
-                    <button className="secondary-button slim-button no-wrap login-domain-save-button" type="button" onClick={handleLoginDomainSave} disabled={!canManageMembers}>
-                      인증 허용 도메인 저장
-                    </button>
-                    <button className="secondary-button slim-button no-wrap" type="button" onClick={handleSaveAllMemberDrafts} disabled={!canManageMembers}>
-                      회원 정보 저장
-                    </button>
-                    <button className="secondary-button slim-button no-wrap" type="button" onClick={handleExportWorkspaceBackup}>
-                      백업 내보내기
-                    </button>
-                    <button className="secondary-button slim-button no-wrap" type="button" onClick={handleImportWorkspaceBackupClick}>
-                      백업 불러오기
-                    </button>
+                    <div className="member-management-actions">
+                      <button className="secondary-button slim-button no-wrap login-domain-save-button" type="button" onClick={handleLoginDomainSave} disabled={!canManageMembers}>
+                        인증 허용 도메인 저장
+                      </button>
+                      <button className="secondary-button slim-button no-wrap" type="button" onClick={handleSaveAllMemberDrafts} disabled={!canManageMembers}>
+                        회원 정보 저장
+                      </button>
+                      <button className="secondary-button slim-button no-wrap" type="button" onClick={handleExportWorkspaceBackup}>
+                        백업 내보내기
+                      </button>
+                      <button className="secondary-button slim-button no-wrap" type="button" onClick={handleImportWorkspaceBackupClick}>
+                        백업 불러오기
+                      </button>
+                    </div>
                     <input
                       ref={workspaceBackupInputRef}
                       type="file"
@@ -7318,6 +7802,7 @@ export default function App() {
                           </td>
                           <td>
                             <select
+                              className={accessRoleClassName(memberDrafts[person.id]?.accessRole ?? person.accessRole ?? "viewer")}
                               value={normalizeAccessRole(memberDrafts[person.id]?.accessRole ?? person.accessRole ?? "viewer")}
                               onChange={(event) => handleMemberDraftChange(person.id, "accessRole", event.target.value)}
                               disabled={!canManageMembers}
@@ -7329,7 +7814,7 @@ export default function App() {
                           </td>
                           <td>
                             <button
-                              className="secondary-button slim-button"
+                              className="secondary-button slim-button member-delete-button"
                               type="button"
                               onClick={() => handleMemberDelete(person.id)}
                               disabled={!canManageMembers || !people.some((entry) => entry.id === person.id)}
@@ -7617,28 +8102,44 @@ export default function App() {
                     placeholder="사용자, 액션, 대상, 내용 검색"
                   />
                 </div>
-                <div className="table-wrap">
+                <div className="table-wrap audit-table-wrap">
                   <table className="audit-table">
                     <thead>
                       <tr>
-                        <th>시각</th>
-                        <th>사용자</th>
-                        <th>액션</th>
-                        <th>IP</th>
-                        <th>대상</th>
-                        <th>내용</th>
+                        <th className="audit-col-time">시각</th>
+                        <th className="audit-col-user">사용자</th>
+                        <th className="audit-col-action">액션</th>
+                        <th className="audit-col-ip">IP</th>
+                        <th className="audit-col-target">대상</th>
+                        <th className="audit-col-detail">내용</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {pagedAuditLogs.length > 0 ? (
+                      {remoteAuditLogLoading ? (
+                        <tr>
+                          <td colSpan="6">감사 로그를 불러오는 중입니다.</td>
+                        </tr>
+                      ) : pagedAuditLogs.length > 0 ? (
                         pagedAuditLogs.map((log) => (
                           <tr key={log.id}>
-                            <td>{String(log.createdAt ?? "-").slice(0, 16) || "-"}</td>
-                            <td>{log.actorName || log.actorEmail || "-"}</td>
-                            <td>{log.action ? `${log.action} · ${auditActionLabel(log.action)}` : "-"}</td>
-                            <td>{log.ip || "-"}</td>
-                            <td>{log.target || "-"}</td>
-                            <td>{log.detail || "-"}</td>
+                            <td className="audit-col-time" data-label="시각">
+                              {String(log.createdAt ?? "-").slice(0, 16) || "-"}
+                            </td>
+                            <td className="audit-col-user" data-label="사용자">
+                              {log.actorName || log.actorEmail || "-"}
+                            </td>
+                            <td className="audit-col-action" data-label="액션">
+                              {log.action ? `${log.action} · ${auditActionLabel(log.action)}` : "-"}
+                            </td>
+                            <td className="audit-col-ip" data-label="IP">
+                              {log.ip || "-"}
+                            </td>
+                            <td className="audit-col-target" data-label="대상">
+                              {log.target || "-"}
+                            </td>
+                            <td className="audit-col-detail" data-label="내용">
+                              {log.detail || "-"}
+                            </td>
                           </tr>
                         ))
                       ) : (

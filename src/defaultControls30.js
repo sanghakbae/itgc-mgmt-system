@@ -15,7 +15,7 @@ export const defaultControls30 = [
     "evidenceStatus": "수집 중",
     "ownerDept": "QA유닛",
     "performer": "QA유닛",
-    "reviewer": "정보보호유닛",
+    "reviewer": "이광주",
     "note": "",
     "population": "매년 수행되는 IT SOD 및 IT 운영 프로세스 관련 정책 검토의 건",
     "attributes": [
@@ -45,7 +45,7 @@ export const defaultControls30 = [
     "testMethod": "1. 테스트 연도에 업데이트 된 IT 정책서를 수령한다.\n2. IT 조직의 SOD에 관한 내용이 명시되어 있는지 검토한다.\n3. 하기 도메인별 IT프로세스에 관한 내용이 명시되어 있는지 검토한다.\n - 프로그램 및 데이터 접근 (Access to Programs and Data)\n - 프로그램 변경 (Changes to Application Programs)\n - 프로그램 개발 (Program Development)\n - 컴퓨터 운영 (Computer Operations)\n4. IT 정책서의 제/개정 시 CTO의 승인을 득하였는지 확인한다.",
     "evidenceText": "1. IT 정책서의 IT 조직의 SOD 및 IT 프로세스 문서화 내역\n2. IT 정책서의 CTO 승인 증빙\n3. IT 정책서의  게시 내역",
     "performDept": "QA유닛",
-    "reviewDept": "정보보호유닛",
+    "reviewDept": "이광주",
     "ownerPerson": "",
     "deficiencyImpact": "",
     "targetSystems": []
@@ -561,7 +561,7 @@ export const defaultControls30 = [
     "evidenceStatus": "수집 중",
     "ownerDept": "QA유닛",
     "performer": "QA유닛",
-    "reviewer": "TA유닛",
+    "reviewer": "이광주",
     "note": "",
     "population": "1. 테스트 기간 중 발생한 어플리케이션 설정 변경(패치) 이력",
     "attributes": [
@@ -590,7 +590,7 @@ export const defaultControls30 = [
     "testMethod": "[어플리케이션 설정 변경(패치]\n1. 변경 이력을 추출한다.\n2. 추출된 프로그램 변경 및 설정 변경 빈도에 따라 샘플 Guide를 참고하여 무작위로 샘플링을 수행한다.\n3. 추출된 샘플에 대한 프로그램 변경 요청서를 확인하여 현업 부서장과 담당IT유닛장의 승인 여부를 확인함. 이 때, 요청 문서의 승인일과 배포일을 대조하여 승인이 완료된 후 배포가 수행되었는지 확인한다.\n4. 추출된 샘플에 대한 테스트 결과 문서를 확인하여 운영 환경 이관 전 개발자 테스트 및 사용자 테스트가 수행되었음을 확인한다.\n5. 프로그램 변경 요청서 상 요청 내역과 실제 변경 내역의 일치 여부를 확인한다.",
     "evidenceText": "1. 프로그램 변경 요청 문서 승인 증빙\n2. 개발자 테스트/사용자 테스트 결과 문서",
     "performDept": "QA유닛",
-    "reviewDept": "TA유닛",
+    "reviewDept": "이광주",
     "ownerPerson": "",
     "deficiencyImpact": "",
     "targetSystems": []
@@ -746,7 +746,7 @@ export const defaultControls30 = [
     "evidenceStatus": "수집 중",
     "ownerDept": "QA유닛",
     "performer": "QA유닛",
-    "reviewer": "TA유닛",
+    "reviewer": "이광주",
     "note": "",
     "population": "이슈트래킹 내역",
     "attributes": [
@@ -769,7 +769,7 @@ export const defaultControls30 = [
     "testMethod": "1. 시스템 이슈트래킹 내역을 추출한다.\n2. 빈도에 따라 샘플 Guide를 참고하여 무작위로 샘플링한다.\n3. 해당 오류에 대한 조치 내역이 포함되어 있다.",
     "evidenceText": "이슈트래킹 게시글",
     "performDept": "QA유닛",
-    "reviewDept": "TA유닛",
+    "reviewDept": "이광주",
     "ownerPerson": "",
     "deficiencyImpact": "",
     "targetSystems": []

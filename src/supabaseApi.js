@@ -6,9 +6,12 @@ export const ITGC_EVIDENCE_TABLE = "itgc_evidence_files";
 export const ITGC_WORKFLOWS_TABLE = "itgc_workflows";
 export const ITGC_MEMBER_TABLE = "itgc_member_master";
 export const ITGC_AUDIT_TABLE = "itgc_audit_log";
+export const ITGC_CONFIG_TABLE = "itgc_app_config";
 export const ITGC_EVIDENCE_BUCKET = "itgc_evidence_files";
 const AUDIT_LOG_MAX_ITEMS = 3000;
 const LOGIN_DOMAIN_CONFIG_MEMBER_ID = "CFG-LOGIN-DOMAINS";
+const LOGIN_DOMAIN_CONFIG_KEY = "login_domains";
+const AUDIT_LOG_FETCH_LIMIT_MAX = 100;
 
 function assertSupabaseConfigured() {
   if (!supabaseConfigured || !supabase) {
@@ -117,12 +120,28 @@ function createExecutionEntryKey(controlId, executionYear, executionPeriod) {
   return `${String(controlId ?? "").trim()}::${String(executionYear ?? "").trim()}::${String(executionPeriod ?? "").trim()}`;
 }
 
+function normalizeExecutionId(value, controlId, executionYear, executionPeriod) {
+  const rawId = String(value ?? "").trim();
+  const canonicalId = createExecutionEntryKey(controlId, executionYear, executionPeriod);
+  if (String(controlId ?? "").trim() && String(executionYear ?? "").trim() && String(executionPeriod ?? "").trim()) {
+    if (!rawId || rawId.startsWith("EXE-")) {
+      return canonicalId;
+    }
+  }
+  return rawId || canonicalId;
+}
+
 function normalizeExecutionEntry(entry, control = {}) {
+  const executionYear = String(entry?.executionYear ?? "").trim();
+  const executionPeriod = String(entry?.executionPeriod ?? "").trim();
   return {
-    executionId: String(entry?.executionId ?? createExecutionEntryKey(control.id, entry?.executionYear, entry?.executionPeriod)).trim(),
-    executionYear: String(entry?.executionYear ?? "").trim(),
-    executionPeriod: String(entry?.executionPeriod ?? "").trim(),
+    executionId: normalizeExecutionId(entry?.executionId, control.id, executionYear, executionPeriod),
+    executionYear,
+    executionPeriod,
     executionNote: String(entry?.executionNote ?? "").trim(),
+    testMethodSnapshot: String(entry?.testMethodSnapshot ?? control?.testMethod ?? "").trim(),
+    populationSnapshot: String(entry?.populationSnapshot ?? control?.population ?? "").trim(),
+    evidenceTextSnapshot: String(entry?.evidenceTextSnapshot ?? control?.evidenceText ?? "").trim(),
     executionSubmitted:
       typeof entry?.executionSubmitted === "boolean"
         ? entry.executionSubmitted
@@ -133,16 +152,19 @@ function normalizeExecutionEntry(entry, control = {}) {
         : false,
     executionAuthorName: String(entry?.executionAuthorName ?? "").trim(),
     executionAuthorEmail: String(entry?.executionAuthorEmail ?? "").trim().toLowerCase(),
+    executionAuthorUnit: String(entry?.executionAuthorUnit ?? control?.performDept ?? control?.performer ?? control?.ownerDept ?? "").trim(),
     reviewChecked: String(entry?.reviewChecked ?? "미검토").trim() || "미검토",
     reviewResult: String(entry?.reviewResult ?? "").trim(),
     reviewAuthorName: String(entry?.reviewAuthorName ?? "").trim(),
     reviewAuthorEmail: String(entry?.reviewAuthorEmail ?? "").trim().toLowerCase(),
+    reviewAuthorUnit: String(entry?.reviewAuthorUnit ?? control?.reviewDept ?? control?.reviewer ?? "").trim(),
     note: String(entry?.note ?? "").trim(),
     status: String(entry?.status ?? "점검 예정").trim() || "점검 예정",
     evidenceFiles: Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : [],
     evidenceStatus:
       String(entry?.evidenceStatus ?? "").trim()
       || ((Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0 ? "준비 완료" : "미수집"),
+    reviewDate: normalizeDate(entry?.reviewDate),
     updatedAt: String(entry?.updatedAt ?? "").trim(),
   };
 }
@@ -186,6 +208,50 @@ function normalizeDomainList(raw) {
       return normalized.replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^\./, "");
     })
     .filter(Boolean);
+}
+
+function isMissingRelationError(error) {
+  const code = String(error?.code ?? "").trim();
+  return code === "PGRST205" || code === "42P01";
+}
+
+function deriveExecutionDateFromEntry(entry, frequency) {
+  const year = Number(String(entry?.executionYear ?? "").trim());
+  const period = String(entry?.executionPeriod ?? "").trim();
+  const normalizedFrequency = String(frequency ?? "").trim().toLowerCase();
+
+  if (!Number.isInteger(year) || year < 1900) {
+    return null;
+  }
+
+  if (normalizedFrequency === "monthly" || normalizedFrequency === "월별") {
+    const match = period.match(/(\d{1,2})월/);
+    const month = Number(match?.[1] ?? NaN);
+    return Number.isInteger(month) && month >= 1 && month <= 12
+      ? `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`
+      : null;
+  }
+  if (normalizedFrequency === "quarterly" || normalizedFrequency === "분기별") {
+    const match = period.match(/([1-4])분기/);
+    const quarter = Number(match?.[1] ?? NaN);
+    const month = quarter >= 1 && quarter <= 4 ? ((quarter - 1) * 3) + 1 : NaN;
+    return Number.isInteger(month)
+      ? `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`
+      : null;
+  }
+  if (normalizedFrequency === "half-bi-annual" || normalizedFrequency === "반기별") {
+    if (period === "상반기") {
+      return `${String(year).padStart(4, "0")}-01-01`;
+    }
+    if (period === "하반기") {
+      return `${String(year).padStart(4, "0")}-07-01`;
+    }
+    return null;
+  }
+  if (normalizedFrequency === "annual" || normalizedFrequency === "연 1회 + 변경 시" || normalizedFrequency === "연간") {
+    return `${String(year).padStart(4, "0")}-01-01`;
+  }
+  return null;
 }
 
 function buildMasterControlPayload(control) {
@@ -255,14 +321,32 @@ function mapControlToExecutionRows(control, nowIso) {
     .map((entry) => ({
     execution_id: entry.executionId || createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod),
     control_id: control.id,
-    execution_date: normalizeDate(control.lastUpdatedAt ?? nowIso),
+    execution_year: entry.executionYear ?? "",
+    execution_period: entry.executionPeriod ?? "",
+    execution_date: deriveExecutionDateFromEntry(entry, control.frequency),
     execution_note: entry.executionNote ?? "",
+    test_method_snapshot: entry.testMethodSnapshot ?? control.testMethod ?? "",
+    population_snapshot: entry.populationSnapshot ?? control.population ?? "",
+    evidence_text_snapshot: entry.evidenceTextSnapshot ?? control.evidenceText ?? "",
+    evidence_status: entry.evidenceStatus ?? "미수집",
+    execution_submitted: Boolean(entry.executionSubmitted),
+    review_requested: Boolean(entry.reviewRequested),
     status: entry.status ?? "점검 예정",
     review_checked: entry.reviewChecked ?? "미검토",
-    review_date: entry.reviewChecked === "검토 완료" ? normalizeDate(nowIso) : null,
+    review_result: entry.reviewResult ?? "",
+    review_date:
+      entry.reviewChecked === "검토 완료"
+        ? normalizeDate(entry.reviewDate ?? entry.updatedAt ?? nowIso)
+        : null,
     review_note: entry.note ?? "",
-    performed_by: control.performDept ?? control.performer ?? control.ownerDept ?? "",
-    reviewed_by: control.reviewDept ?? control.reviewer ?? "",
+    performed_by: entry.executionAuthorUnit ?? control.performDept ?? control.performer ?? control.ownerDept ?? "",
+    reviewed_by: entry.reviewAuthorUnit ?? control.reviewDept ?? control.reviewer ?? "",
+    performed_by_name: entry.executionAuthorName ?? "",
+    performed_by_email: entry.executionAuthorEmail ?? "",
+    performed_by_unit: entry.executionAuthorUnit ?? control.performDept ?? control.performer ?? control.ownerDept ?? "",
+    reviewed_by_name: entry.reviewAuthorName ?? "",
+    reviewed_by_email: entry.reviewAuthorEmail ?? "",
+    reviewed_by_unit: entry.reviewAuthorUnit ?? control.reviewDept ?? control.reviewer ?? "",
     drive_folder_id: null,
     last_updated_at: nowIso,
     execution_payload: {
@@ -270,16 +354,22 @@ function mapControlToExecutionRows(control, nowIso) {
       executionNote: entry.executionNote ?? "",
       executionYear: entry.executionYear ?? "",
       executionPeriod: entry.executionPeriod ?? "",
+      testMethodSnapshot: entry.testMethodSnapshot ?? control.testMethod ?? "",
+      populationSnapshot: entry.populationSnapshot ?? control.population ?? "",
+      evidenceTextSnapshot: entry.evidenceTextSnapshot ?? control.evidenceText ?? "",
       executionSubmitted: Boolean(entry.executionSubmitted),
       reviewRequested: Boolean(entry.reviewRequested),
       executionAuthorName: entry.executionAuthorName ?? "",
       executionAuthorEmail: entry.executionAuthorEmail ?? "",
+      executionAuthorUnit: entry.executionAuthorUnit ?? control.performDept ?? control.performer ?? control.ownerDept ?? "",
       note: entry.note ?? "",
       reviewer: control.reviewer ?? control.reviewDept ?? "",
       reviewChecked: entry.reviewChecked ?? "미검토",
       reviewResult: entry.reviewResult ?? "",
       reviewAuthorName: entry.reviewAuthorName ?? "",
       reviewAuthorEmail: entry.reviewAuthorEmail ?? "",
+      reviewAuthorUnit: entry.reviewAuthorUnit ?? control.reviewDept ?? control.reviewer ?? "",
+      reviewDate: normalizeDate(entry.reviewDate ?? entry.updatedAt ?? nowIso),
       status: entry.status ?? "점검 예정",
       evidenceStatus: entry.evidenceStatus ?? "미수집",
     },
@@ -368,6 +458,16 @@ function mapLoginDomainConfigRow(loginDomains, nowIso) {
   };
 }
 
+function mapLoginDomainConfigToConfigRow(loginDomains, nowIso) {
+  return {
+    config_key: LOGIN_DOMAIN_CONFIG_KEY,
+    config_value: {
+      loginDomains: normalizeDomainList(loginDomains),
+    },
+    updated_at: nowIso,
+  };
+}
+
 function mapAuditToRow(log, nowIso) {
   return {
     log_id: log.id,
@@ -383,8 +483,50 @@ function mapAuditToRow(log, nowIso) {
   };
 }
 
-async function upsertRows(table, rows, pk, options = {}) {
-  const { prune = true } = options;
+function isMissingExecutionSnapshotColumnError(error) {
+  const message = String(error?.message ?? "");
+  return message.includes("execution_year")
+    || message.includes("execution_period")
+    || message.includes("test_method_snapshot")
+    || message.includes("population_snapshot")
+    || message.includes("evidence_text_snapshot")
+    || message.includes("evidence_status")
+    || message.includes("execution_submitted")
+    || message.includes("review_requested")
+    || message.includes("review_result")
+    || message.includes("performed_by_name")
+    || message.includes("performed_by_email")
+    || message.includes("performed_by_unit")
+    || message.includes("reviewed_by_name")
+    || message.includes("reviewed_by_email")
+    || message.includes("reviewed_by_unit");
+}
+
+function stripExecutionSnapshotColumns(rows) {
+  return rows.map((row) => {
+    const {
+      execution_year,
+      execution_period,
+      test_method_snapshot,
+      population_snapshot,
+      evidence_text_snapshot,
+      evidence_status,
+      execution_submitted,
+      review_requested,
+      review_result,
+      performed_by_name,
+      performed_by_email,
+      performed_by_unit,
+      reviewed_by_name,
+      reviewed_by_email,
+      reviewed_by_unit,
+      ...legacyRow
+    } = row;
+    return legacyRow;
+  });
+}
+
+async function upsertRows(table, rows, pk) {
   if (!rows.length) {
     return;
   }
@@ -396,14 +538,41 @@ async function upsertRows(table, rows, pk, options = {}) {
   if (upsertError) {
     throw new Error(`${table}_upsert_failed:${upsertError.message}`);
   }
+}
 
-  if (!prune) {
+async function removeStorageObjects(paths) {
+  const normalizedPaths = [...new Set((paths ?? []).map((path) => String(path ?? "").trim()).filter(Boolean))];
+  if (!normalizedPaths.length) {
     return;
   }
 
+  const { error } = await supabase.storage
+    .from(ITGC_EVIDENCE_BUCKET)
+    .remove(normalizedPaths);
+
+  if (error) {
+    throw new Error(`storage_remove_failed:${error.message}`);
+  }
+}
+
+async function reconcileScopedRows(table, rows, pk, scopeColumn, options = {}) {
+  const {
+    extraSelectColumns = [],
+    beforeDelete = null,
+    scopeValues: providedScopeValues = null,
+  } = options;
+  const scopeValues = providedScopeValues
+    ? [...new Set(providedScopeValues.map((value) => String(value ?? "").trim()).filter(Boolean))]
+    : [...new Set(rows.map((row) => row[scopeColumn]).filter(Boolean))];
+  if (!scopeValues.length) {
+    return;
+  }
+
+  const selectColumns = [pk, scopeColumn, ...extraSelectColumns].join(",");
   const { data: existingRows, error: selectError } = await supabase
     .from(table)
-    .select(pk);
+    .select(selectColumns)
+    .in(scopeColumn, scopeValues);
 
   if (selectError) {
     throw new Error(`${table}_select_failed:${selectError.message}`);
@@ -418,6 +587,11 @@ async function upsertRows(table, rows, pk, options = {}) {
     return;
   }
 
+  if (typeof beforeDelete === "function") {
+    const staleRows = (existingRows ?? []).filter((row) => staleIds.includes(row[pk]));
+    await beforeDelete(staleRows);
+  }
+
   const { error: deleteError } = await supabase
     .from(table)
     .delete()
@@ -426,6 +600,36 @@ async function upsertRows(table, rows, pk, options = {}) {
   if (deleteError) {
     throw new Error(`${table}_delete_failed:${deleteError.message}`);
   }
+}
+
+async function fetchConfigRowsMaybe() {
+  const { data, error } = await supabase
+    .from(ITGC_CONFIG_TABLE)
+    .select("*");
+
+  if (error) {
+    if (isMissingRelationError(error)) {
+      return [];
+    }
+    throw new Error(`config_fetch_failed:${error.message}`);
+  }
+
+  return data ?? [];
+}
+
+async function upsertConfigRowMaybe(row) {
+  const { error } = await supabase
+    .from(ITGC_CONFIG_TABLE)
+    .upsert([row], { onConflict: "config_key" });
+
+  if (error) {
+    if (isMissingRelationError(error)) {
+      return false;
+    }
+    throw new Error(`config_upsert_failed:${error.message}`);
+  }
+
+  return true;
 }
 
 export async function fetchSupabaseIntegrationStatus() {
@@ -458,14 +662,14 @@ export async function fetchSupabaseWorkspace() {
     { data: evidenceRows, error: evidenceError },
     { data: workflowRows, error: workflowError },
     { data: memberRows, error: memberError },
-    { data: auditRows, error: auditError },
+    configRows,
   ] = await Promise.all([
     supabase.from(ITGC_CONTROL_MASTER_TABLE).select("*").order("sort_order", { ascending: true }),
     supabase.from(ITGC_CONTROL_EXECUTION_TABLE).select("*").order("last_updated_at", { ascending: false }),
     supabase.from(ITGC_EVIDENCE_TABLE).select("*").order("uploaded_at", { ascending: false }),
     supabase.from(ITGC_WORKFLOWS_TABLE).select("*").order("due_date", { ascending: true }),
     supabase.from(ITGC_MEMBER_TABLE).select("*").order("member_name", { ascending: true }),
-    supabase.from(ITGC_AUDIT_TABLE).select("*").order("created_at_ts", { ascending: false }).limit(AUDIT_LOG_MAX_ITEMS),
+    fetchConfigRowsMaybe(),
   ]);
 
   if (controlError) {
@@ -483,10 +687,6 @@ export async function fetchSupabaseWorkspace() {
   if (memberError) {
     throw new Error(`members_fetch_failed:${memberError.message}`);
   }
-  if (auditError) {
-    throw new Error(`audit_fetch_failed:${auditError.message}`);
-  }
-
   const executionRowsByControlId = new Map();
   for (const row of executionRows ?? []) {
     const current = executionRowsByControlId.get(row.control_id) ?? [];
@@ -496,10 +696,16 @@ export async function fetchSupabaseWorkspace() {
 
   const evidenceByExecutionId = new Map();
   for (const row of evidenceRows ?? []) {
-    const current = evidenceByExecutionId.get(row.execution_id) ?? [];
     const payload = typeof row.evidence_payload === "object" && row.evidence_payload ? row.evidence_payload : {};
+    const canonicalExecutionId = normalizeExecutionId(
+      row.execution_id ?? payload.executionId,
+      row.control_id,
+      payload.executionYear,
+      payload.executionPeriod,
+    );
+    const keys = [...new Set([String(row.execution_id ?? "").trim(), canonicalExecutionId].filter(Boolean))];
 
-    current.push({
+    const nextEvidence = {
       ...payload,
       evidenceId: row.evidence_id,
       name: row.file_name,
@@ -510,8 +716,13 @@ export async function fetchSupabaseWorkspace() {
       note: row.file_note,
       storagePath: row.storage_path,
       provider: row.provider,
+    };
+
+    keys.forEach((key) => {
+      const current = evidenceByExecutionId.get(key) ?? [];
+      current.push(nextEvidence);
+      evidenceByExecutionId.set(key, current);
     });
-    evidenceByExecutionId.set(row.execution_id, current);
   }
 
   const controls = (controlRows ?? []).map((row) => {
@@ -522,30 +733,85 @@ export async function fetchSupabaseWorkspace() {
       return normalizeExecutionEntry({
         executionId,
         executionYear:
-          executionPayload.executionYear
+          execution.execution_year
+          ?? executionPayload.executionYear
           ?? deriveExecutionYear(execution.execution_date),
         executionPeriod:
-          executionPayload.executionPeriod
+          execution.execution_period
+          ?? executionPayload.executionPeriod
           ?? deriveExecutionPeriod(execution.execution_date, row.frequency),
         executionNote: execution.execution_note ?? executionPayload.executionNote ?? "",
+        testMethodSnapshot:
+          execution.test_method_snapshot
+          ?? executionPayload.testMethodSnapshot
+          ?? row.test_method
+          ?? payload.testMethod
+          ?? "",
+        populationSnapshot:
+          execution.population_snapshot
+          ?? executionPayload.populationSnapshot
+          ?? payload.population
+          ?? row.control_description
+          ?? "",
+        evidenceTextSnapshot:
+          execution.evidence_text_snapshot
+          ?? executionPayload.evidenceTextSnapshot
+          ?? row.evidence_text
+          ?? payload.evidenceText
+          ?? "",
         executionSubmitted:
-          typeof executionPayload.executionSubmitted === "boolean"
+          typeof execution.execution_submitted === "boolean"
+            ? execution.execution_submitted
+            : typeof executionPayload.executionSubmitted === "boolean"
             ? executionPayload.executionSubmitted
             : undefined,
         reviewRequested:
-          typeof executionPayload.reviewRequested === "boolean"
+          typeof execution.review_requested === "boolean"
+            ? execution.review_requested
+            : typeof executionPayload.reviewRequested === "boolean"
             ? executionPayload.reviewRequested
             : undefined,
-        executionAuthorName: executionPayload.executionAuthorName ?? execution.performed_by ?? row.perform_dept ?? "",
-        executionAuthorEmail: executionPayload.executionAuthorEmail ?? "",
+        executionAuthorName:
+          execution.performed_by_name
+          ?? executionPayload.executionAuthorName
+          ?? execution.performed_by
+          ?? row.perform_dept
+          ?? "",
+        executionAuthorEmail:
+          execution.performed_by_email
+          ?? executionPayload.executionAuthorEmail
+          ?? "",
+        executionAuthorUnit:
+          execution.performed_by_unit
+          ?? executionPayload.executionAuthorUnit
+          ?? execution.performed_by
+          ?? row.perform_dept
+          ?? "",
         reviewChecked: execution.review_checked ?? executionPayload.reviewChecked ?? "미검토",
-        reviewResult: executionPayload.reviewResult ?? "",
-        reviewAuthorName: executionPayload.reviewAuthorName ?? "",
-        reviewAuthorEmail: executionPayload.reviewAuthorEmail ?? "",
+        reviewResult: execution.review_result ?? executionPayload.reviewResult ?? "",
+        reviewAuthorName:
+          execution.reviewed_by_name
+          ?? executionPayload.reviewAuthorName
+          ?? "",
+        reviewAuthorEmail:
+          execution.reviewed_by_email
+          ?? executionPayload.reviewAuthorEmail
+          ?? "",
+        reviewAuthorUnit:
+          execution.reviewed_by_unit
+          ?? executionPayload.reviewAuthorUnit
+          ?? execution.reviewed_by
+          ?? row.review_dept
+          ?? "",
         note: execution.review_note ?? executionPayload.note ?? "",
         status: execution.status ?? executionPayload.status ?? row.status ?? "점검 예정",
-        evidenceStatus: executionPayload.evidenceStatus ?? row.evidence_status ?? "미수집",
+        evidenceStatus:
+          execution.evidence_status
+          ?? executionPayload.evidenceStatus
+          ?? row.evidence_status
+          ?? "미수집",
         evidenceFiles: evidenceByExecutionId.get(executionId) ?? [],
+        reviewDate: execution.review_date ?? executionPayload.reviewDate ?? "",
         updatedAt: execution.last_updated_at ?? execution.updated_at ?? "",
       }, payload);
     });
@@ -595,6 +861,9 @@ export async function fetchSupabaseWorkspace() {
       reviewAuthorName: latestExecution?.reviewAuthorName ?? "",
       reviewAuthorEmail: latestExecution?.reviewAuthorEmail ?? "",
       evidenceFiles: latestExecution?.evidenceFiles ?? [],
+      executionTestMethod: latestExecution?.testMethodSnapshot ?? row.test_method ?? payload.testMethod ?? "",
+      executionPopulation: latestExecution?.populationSnapshot ?? payload.population ?? row.control_description ?? "",
+      executionEvidenceText: latestExecution?.evidenceTextSnapshot ?? row.evidence_text ?? payload.evidenceText ?? "",
       executionHistory: executions,
     };
   });
@@ -615,9 +884,12 @@ export async function fetchSupabaseWorkspace() {
     };
   });
 
+  const loginDomainConfig = (configRows ?? []).find((row) => row.config_key === LOGIN_DOMAIN_CONFIG_KEY);
   const loginDomainConfigRow = (memberRows ?? []).find((row) => row.member_id === LOGIN_DOMAIN_CONFIG_MEMBER_ID);
   const loginDomains = normalizeDomainList(
-    loginDomainConfigRow?.member_payload?.loginDomains
+    loginDomainConfig?.config_value?.loginDomains
+      ?? loginDomainConfig?.config_value?.domains
+      ?? loginDomainConfigRow?.member_payload?.loginDomains
       ?? loginDomainConfigRow?.member_payload?.domains
       ?? "",
   );
@@ -639,7 +911,51 @@ export async function fetchSupabaseWorkspace() {
     };
   });
 
-  const auditLogs = (auditRows ?? []).map((row) => {
+  return {
+    controls,
+    workflows,
+    people,
+    auditLogs: [],
+    loginDomains,
+  };
+}
+
+export async function fetchSupabaseAuditLogsPage(options = {}) {
+  assertSupabaseConfigured();
+
+  const page = Math.max(1, Number(options.page) || 1);
+  const pageSize = Math.min(AUDIT_LOG_FETCH_LIMIT_MAX, Math.max(1, Number(options.pageSize) || 30));
+  const query = String(options.query ?? "").trim();
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+
+  let request = supabase
+    .from(ITGC_AUDIT_TABLE)
+    .select("*", { count: "exact" })
+    .order("created_at_ts", { ascending: false })
+    .range(from, to);
+
+  if (query) {
+    const escaped = query.replace(/[%_,]/g, (char) => `\\${char}`);
+    request = request.or(
+      [
+        `created_at.ilike.%${escaped}%`,
+        `actor_name.ilike.%${escaped}%`,
+        `actor_email.ilike.%${escaped}%`,
+        `action.ilike.%${escaped}%`,
+        `target.ilike.%${escaped}%`,
+        `detail.ilike.%${escaped}%`,
+        `ip.ilike.%${escaped}%`,
+      ].join(","),
+    );
+  }
+
+  const { data, count, error } = await request;
+  if (error) {
+    throw new Error(`audit_fetch_failed:${error.message}`);
+  }
+
+  const logs = (data ?? []).map((row) => {
     const payload = typeof row.audit_payload === "object" && row.audit_payload ? row.audit_payload : {};
 
     return {
@@ -657,11 +973,9 @@ export async function fetchSupabaseWorkspace() {
   });
 
   return {
-    controls,
-    workflows,
-    people,
-    auditLogs,
-    loginDomains,
+    logs,
+    totalCount: Number(count) || 0,
+    totalPages: Math.max(1, Math.ceil((Number(count) || 0) / pageSize)),
   };
 }
 
@@ -680,18 +994,40 @@ export async function syncSupabaseWorkspace(workspace) {
   const executionRows = controls.flatMap((control) => mapControlToExecutionRows(control, nowIso));
   const evidenceRows = controls.flatMap((control) => mapControlToEvidenceRows(control, nowIso));
   const workflowRows = workflows.map((workflow) => mapWorkflowToRow(workflow, nowIso));
-  const memberRows = [
-    ...people.map((member) => mapMemberToRow(member, nowIso)),
-    mapLoginDomainConfigRow(loginDomains, nowIso),
-  ];
-  const auditRows = auditLogs.map((log) => mapAuditToRow(log, nowIso));
+  const controlIds = controls.map((control) => control.id).filter(Boolean);
+  const memberRows = people.map((member) => mapMemberToRow(member, nowIso));
+  const configRow = mapLoginDomainConfigToConfigRow(loginDomains, nowIso);
 
   await upsertRows(ITGC_CONTROL_MASTER_TABLE, controlRows, "control_id");
-  await upsertRows(ITGC_CONTROL_EXECUTION_TABLE, executionRows, "execution_id");
+  try {
+    await upsertRows(ITGC_CONTROL_EXECUTION_TABLE, executionRows, "execution_id");
+  } catch (error) {
+    if (!isMissingExecutionSnapshotColumnError(error)) {
+      throw error;
+    }
+    await upsertRows(ITGC_CONTROL_EXECUTION_TABLE, stripExecutionSnapshotColumns(executionRows), "execution_id");
+  }
   await upsertRows(ITGC_EVIDENCE_TABLE, evidenceRows, "evidence_id");
   await upsertRows(ITGC_WORKFLOWS_TABLE, workflowRows, "workflow_id");
-  await upsertRows(ITGC_MEMBER_TABLE, memberRows, "member_id", { prune: false });
-  await upsertRows(ITGC_AUDIT_TABLE, auditRows, "log_id", { prune: false });
+  await reconcileScopedRows(ITGC_CONTROL_EXECUTION_TABLE, executionRows, "execution_id", "control_id", {
+    scopeValues: controlIds,
+  });
+  await reconcileScopedRows(ITGC_EVIDENCE_TABLE, evidenceRows, "evidence_id", "control_id", {
+    scopeValues: controlIds,
+    extraSelectColumns: ["storage_path"],
+    beforeDelete: async (staleRows) => {
+      await removeStorageObjects(staleRows.map((row) => row.storage_path));
+    },
+  });
+  await reconcileScopedRows(ITGC_WORKFLOWS_TABLE, workflowRows.filter((row) => row.control_id), "workflow_id", "control_id", {
+    scopeValues: controlIds,
+  });
+  await upsertRows(ITGC_MEMBER_TABLE, memberRows, "member_id");
+
+  const configSynced = await upsertConfigRowMaybe(configRow);
+  if (!configSynced) {
+    await upsertRows(ITGC_MEMBER_TABLE, [mapLoginDomainConfigRow(loginDomains, nowIso)], "member_id");
+  }
 
   return { ok: true };
 }
@@ -713,6 +1049,76 @@ export async function deleteSupabaseMember(memberId) {
   }
 
   return { ok: true };
+}
+
+export async function deleteSupabaseControl(controlId) {
+  assertSupabaseConfigured();
+  const normalizedId = String(controlId ?? "").trim();
+  if (!normalizedId) {
+    throw new Error("invalid_control_id");
+  }
+
+  const { data: evidenceRows, error: evidenceSelectError } = await supabase
+    .from(ITGC_EVIDENCE_TABLE)
+    .select("storage_path")
+    .eq("control_id", normalizedId);
+
+  if (evidenceSelectError) {
+    throw new Error(`control_evidence_select_failed:${evidenceSelectError.message}`);
+  }
+
+  await removeStorageObjects((evidenceRows ?? []).map((row) => row.storage_path));
+
+  const { error } = await supabase
+    .from(ITGC_CONTROL_MASTER_TABLE)
+    .delete()
+    .eq("control_id", normalizedId);
+
+  if (error) {
+    throw new Error(`control_delete_failed:${error.message}`);
+  }
+
+  return { ok: true };
+}
+
+export async function createSupabaseAuditLog(log) {
+  assertSupabaseConfigured();
+
+  const payload = {
+    id: String(log?.id ?? "").trim(),
+    action: String(log?.action ?? "").trim(),
+    target: String(log?.target ?? "").trim(),
+    detail: String(log?.detail ?? "").trim(),
+    actorName: String(log?.actorName ?? "").trim(),
+    actorEmail: String(log?.actorEmail ?? "").trim().toLowerCase(),
+    createdAt: String(log?.createdAt ?? "").trim(),
+    createdAtTs: String(log?.createdAtTs ?? "").trim(),
+  };
+
+  const { data, error } = await supabase.functions.invoke("audit-log", {
+    body: payload,
+  });
+
+  if (error) {
+    throw new Error(`audit_log_function_failed:${error.message}`);
+  }
+
+  const row = data?.log;
+  if (!row) {
+    throw new Error("audit_log_function_invalid_response");
+  }
+
+  return {
+    id: row.log_id ?? payload.id,
+    action: row.action ?? payload.action,
+    target: row.target ?? payload.target,
+    detail: row.detail ?? payload.detail,
+    actorName: row.actor_name ?? payload.actorName,
+    actorEmail: row.actor_email ?? payload.actorEmail,
+    ip: row.ip ?? "-",
+    createdAt: row.created_at ?? payload.createdAt,
+    createdAtTs: row.created_at_ts ?? payload.createdAtTs,
+  };
 }
 
 export async function uploadEvidenceToSupabase(controlId, files) {
