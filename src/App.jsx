@@ -2732,6 +2732,7 @@ export default function App() {
   const [remoteAuditLogTotalPages, setRemoteAuditLogTotalPages] = useState(1);
   const [remoteAuditLogLoading, setRemoteAuditLogLoading] = useState(false);
   const [remoteWorkspaceReady, setRemoteWorkspaceReady] = useState(() => !HAS_REMOTE_BACKEND);
+  const isRemoteWorkspaceLoading = HAS_REMOTE_BACKEND && !remoteWorkspaceReady;
   const [integrationStatus, setIntegrationStatus] = useState(() => ({
     spreadsheet: HAS_REMOTE_BACKEND ? "미확인" : "미설정",
     drive: HAS_REMOTE_BACKEND ? "미확인" : "미설정",
@@ -3022,7 +3023,9 @@ export default function App() {
 
     return matchesProcess && matchesFrequency && matchesControlId && matchesUnit && matchesExecutionFilter;
   }).sort(compareControlsByListOrder);
-  const controlExecutionDraftCount = controls.filter((control) => hasDraftExecutionEntry(control)).length;
+  const controlExecutionDraftCount = isRemoteWorkspaceLoading
+    ? null
+    : controls.filter((control) => hasDraftExecutionEntry(control)).length;
   const totalControlPages = Math.max(1, Math.ceil(visibleControls.length / listPageSize));
   const currentControlPage = Math.min(controlListPage, totalControlPages);
   const limitedControls = visibleControls.slice(
@@ -3657,7 +3660,7 @@ export default function App() {
       ).sort(compareControlsByRecentExecution),
     [controls],
   );
-  const reviewPendingCount = reviewQueueControls.length;
+  const reviewPendingCount = isRemoteWorkspaceLoading ? null : reviewQueueControls.length;
   const completedExecutionControls = useMemo(
     () =>
       controls.flatMap((control) =>
@@ -3683,7 +3686,7 @@ export default function App() {
       ).sort(compareControlsByRecentExecution),
     [controls],
   );
-  const completedExecutionCount = completedExecutionControls.length;
+  const completedExecutionCount = isRemoteWorkspaceLoading ? null : completedExecutionControls.length;
   const performedExecutionControls = useMemo(
     () =>
       controls.flatMap((control) =>
@@ -3708,7 +3711,7 @@ export default function App() {
       ).sort(compareControlsByRecentExecution),
     [controls],
   );
-  const performedExecutionCount = performedExecutionControls.length;
+  const performedExecutionCount = isRemoteWorkspaceLoading ? null : performedExecutionControls.length;
   const workbenchFlowSteps = [
     { key: "register", label: "통제 등록/수정", helper: "통제 기준 정보 정리", badgeCount: 0 },
     { key: "controls", label: "통제 작성", helper: "수행 내용과 증적 작성", badgeCount: controlExecutionDraftCount },
@@ -3717,11 +3720,14 @@ export default function App() {
     { key: "performed-complete", label: "수행 완료", helper: "최종 완료 이력 확인", badgeCount: performedExecutionCount },
   ];
   const canOpenWorkbenchTab = (tabKey) => {
+    if (isRemoteWorkspaceLoading && ["controls-complete", "control-review", "performed-complete"].includes(tabKey)) {
+      return false;
+    }
     if (tabKey === "controls-complete") {
-      return completedExecutionCount > 0;
+      return (completedExecutionCount ?? 0) > 0;
     }
     if (tabKey === "control-review") {
-      return reviewPendingCount > 0;
+      return (reviewPendingCount ?? 0) > 0;
     }
     return true;
   };
@@ -6507,6 +6513,9 @@ export default function App() {
                     현재 단계 <strong>{currentWorkbenchStepIndex + 1}. {currentWorkbenchStep.label}</strong>
                   </p>
                 ) : null}
+                {isRemoteWorkspaceLoading ? (
+                  <p className="workbench-flow-current">원격 수행 이력을 불러오는 중입니다.</p>
+                ) : null}
               </div>
               <div className="workbench-step-flow" role="tablist" aria-label="통제 관리 단계">
                 {workbenchFlowSteps.map((step, index) => {
@@ -6547,10 +6556,14 @@ export default function App() {
                         <span className="workbench-step-index" aria-hidden="true">{index + 1}</span>
                         <span className="workbench-step-body">
                           <span className="workbench-step-label">{step.label}</span>
-                          <span className="workbench-step-helper">{step.helper}</span>
+                          <span className="workbench-step-helper">
+                            {isRemoteWorkspaceLoading && ["controls-complete", "control-review", "performed-complete"].includes(step.key)
+                              ? "원격 데이터 로딩 중"
+                              : step.helper}
+                          </span>
                         </span>
                         <span className="workbench-step-badge-slot">
-                          {step.badgeCount > 0 ? <span className={badgeClassName}>{step.badgeCount}</span> : null}
+                          {typeof step.badgeCount === "number" && step.badgeCount > 0 ? <span className={badgeClassName}>{step.badgeCount}</span> : null}
                         </span>
                       </button>
                       {index < workbenchFlowSteps.length - 1 ? (
