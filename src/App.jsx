@@ -6054,6 +6054,20 @@ export default function App() {
     );
   }
 
+  if (isRemoteWorkspaceLoading) {
+    return (
+      <div className="login-shell">
+        <section className="login-card">
+          <div className="login-badge">itgc management system</div>
+          <div className="login-copy-block">
+            <h1>IT 통제(ITGC) 관리 시스템</h1>
+            <p className="login-copy">화면을 준비하는 중입니다.</p>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className={isSidebarOpen ? `app-shell theme-${uiTheme}` : `app-shell sidebar-collapsed theme-${uiTheme}`}>
       <button
