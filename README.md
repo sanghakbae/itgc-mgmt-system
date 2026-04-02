@@ -194,9 +194,19 @@ GitHub Actions 워크플로우:
 필요한 GitHub Actions Secrets:
 
 - `VITE_GOOGLE_CLIENT_ID`
-- `VITE_GOOGLE_SCRIPT_URL`
+- `VITE_ALLOWED_DOMAIN`
+- `VITE_GOOGLE_CHAT_WEBHOOK_URL` (선택)
+- `VITE_GOOGLE_CHAT_ALERT_ACTIONS` (선택)
+- `VITE_GOOGLE_CHAT_DEDUP_MS` (선택)
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
 
 `main` 브랜치에 푸시하면 자동 배포됩니다.
+
+주의:
+
+- GitHub Pages 배포는 로컬 `.env`를 읽지 않고 위 GitHub Actions Secrets 값을 사용합니다.
+- 현재 워크플로우는 `VITE_DATA_BACKEND=supabase`로 빌드하므로 `VITE_SUPABASE_URL` 또는 `VITE_SUPABASE_ANON_KEY`가 없으면 배포 화면에서 로컬과 다른 데이터가 보일 수 있습니다.
 
 ### AWS Amplify
 
