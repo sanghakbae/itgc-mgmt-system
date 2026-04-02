@@ -2013,12 +2013,13 @@ th {
 
 .member-management-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(58px, 84px));
+  justify-content: end;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   flex-wrap: nowrap;
   min-width: 0;
-  width: 100%;
+  width: auto;
   margin-left: auto;
 }
 
@@ -2026,9 +2027,9 @@ th {
   width: 100%;
   max-width: none !important;
   min-width: 0;
-  min-height: 30px;
-  padding: 0 6px;
-  font-size: 0.68rem;
+  min-height: 28px;
+  padding: 0 4px;
+  font-size: 0.62rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2449,6 +2450,13 @@ th {
   text-align-last: center;
 }
 
+.member-table input[type="checkbox"] {
+  width: 12px;
+  height: 12px;
+  min-height: 12px;
+  padding: 0;
+}
+
 .member-table select {
   width: 96px;
   min-width: 96px;
@@ -2546,6 +2554,15 @@ th {
   color: #1e3a8a;
   background: rgba(59, 130, 246, 0.18);
   border: 1px solid rgba(30, 64, 175, 0.34);
+}
+
+.evidence-missing,
+.review-pending {
+  color: #ffffff;
+  background: rgba(185, 28, 28, 0.9);
+  border: 1px solid rgba(127, 29, 29, 0.92);
+  font-weight: 700;
+  padding: 1px 7px;
 }
 
 .integration-item .status-badge {
@@ -4627,6 +4644,16 @@ th {
 .registration-control-item.active {
   border-color: rgba(24, 49, 83, 0.22);
   background: rgba(24, 49, 83, 0.06);
+}
+
+.registration-control-item.key-control-card {
+  background: rgba(220, 38, 38, 0.05);
+  border-color: rgba(185, 28, 28, 0.58);
+}
+
+.registration-control-item.key-control-card.active {
+  background: rgba(220, 38, 38, 0.12);
+  border-color: rgba(153, 27, 27, 0.72);
 }
 
 .control-browser-layout {
@@ -6899,13 +6926,12 @@ textarea,
     content: "";
   }
 
-  .table-wrap.member-table-wrap .member-table td:nth-child(1)::before { content: "ID"; }
-  .table-wrap.member-table-wrap .member-table td:nth-child(2)::before { content: "이름"; }
-  .table-wrap.member-table-wrap .member-table td:nth-child(3)::before { content: "이메일"; }
-  .table-wrap.member-table-wrap .member-table td:nth-child(4)::before { content: "유닛"; }
-  .table-wrap.member-table-wrap .member-table td:nth-child(5)::before { content: "권한"; }
-  .table-wrap.member-table-wrap .member-table td:nth-child(6)::before { content: "저장"; }
-  .table-wrap.member-table-wrap .member-table td:nth-child(7)::before { content: "삭제"; }
+  .table-wrap.member-table-wrap .member-table td:nth-child(1)::before { content: "삭제"; }
+  .table-wrap.member-table-wrap .member-table td:nth-child(2)::before { content: "ID"; }
+  .table-wrap.member-table-wrap .member-table td:nth-child(3)::before { content: "이름"; }
+  .table-wrap.member-table-wrap .member-table td:nth-child(4)::before { content: "이메일"; }
+  .table-wrap.member-table-wrap .member-table td:nth-child(5)::before { content: "유닛"; }
+  .table-wrap.member-table-wrap .member-table td:nth-child(6)::before { content: "권한"; }
 
   .table-wrap.member-table-wrap .member-table input,
   .table-wrap.member-table-wrap .member-table select,

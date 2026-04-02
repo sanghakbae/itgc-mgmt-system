@@ -1109,7 +1109,6 @@ function normalizeControl(control) {
     controlActivity: normalizedActivity,
     description: normalizedDescription,
     automationLevel: control.automationLevel ?? "",
-    ownerPerson: control.ownerPerson ?? control.reviewer ?? "",
     evidenceText: normalizedEvidenceText,
     testMethod: control.testMethod ?? "",
     policyReference: control.policyReference ?? "",
@@ -1180,13 +1179,12 @@ function buildControlManagementSnapshot(control) {
     targetSystems: normalizedSystems,
     controlObjective: control.controlObjective ?? control.purpose ?? "",
     controlActivity: convertLeadingNumberBulletsToCircled(buildActivityFromControl({
-      ...control,
       ...catalog,
+      ...control,
       title: control.title?.replace(/\s+/g, " ").trim() ?? catalog.title ?? "",
     })),
     description: convertLeadingNumberBulletsToCircled(control.description ?? control.population ?? ""),
     automationLevel: control.automationLevel ?? "",
-    ownerPerson: control.ownerPerson ?? "",
     evidenceText: convertLeadingNumberBulletsToCircled(control.evidenceText ?? ""),
     testMethod: control.testMethod ?? "",
     policyReference: control.policyReference ?? "",
@@ -2299,8 +2297,8 @@ function accessRoleClassName(role) {
 
 function buildMemberChangeDetail(previousPerson, nextEntry) {
   const changes = [];
-  const previousUnit = String(previousPerson?.team ?? previousPerson?.unit ?? "-").trim() || "-";
-  const nextUnit = String(nextEntry?.team ?? nextEntry?.unit ?? "미지정").trim() || "미지정";
+  const previousUnit = String(previousPerson?.unit ?? "-").trim() || "-";
+  const nextUnit = String(nextEntry?.unit ?? "미지정").trim() || "미지정";
   const previousRole = normalizeAccessRole(previousPerson?.accessRole ?? "-");
   const nextRole = normalizeAccessRole(nextEntry?.accessRole ?? "viewer");
 
@@ -2416,6 +2414,40 @@ function pickPreferredText(currentValue, incomingValue) {
   return current || incoming;
 }
 
+function isHandleLikeMemberName(name, email = "") {
+  const normalizedName = String(name ?? "").trim().toLowerCase();
+  const normalizedEmail = String(email ?? "").trim().toLowerCase();
+  if (!normalizedName) {
+    return true;
+  }
+  const localPart = normalizedEmail.includes("@") ? normalizedEmail.split("@")[0] : normalizedEmail;
+  if (localPart && normalizedName === localPart) {
+    return true;
+  }
+  return /^[a-z0-9._-]+$/.test(normalizedName);
+}
+
+function pickPreferredMemberName(currentValue, incomingValue, email = "") {
+  const current = String(currentValue ?? "").trim();
+  const incoming = String(incomingValue ?? "").trim();
+  const currentMeaningful = current && current !== "미지정";
+  const incomingMeaningful = incoming && incoming !== "미지정";
+
+  if (!currentMeaningful) {
+    return incoming || current;
+  }
+  if (!incomingMeaningful) {
+    return current;
+  }
+  if (isHandleLikeMemberName(incoming, email) && !isHandleLikeMemberName(current, email)) {
+    return current;
+  }
+  if (!isHandleLikeMemberName(incoming, email) && isHandleLikeMemberName(current, email)) {
+    return incoming;
+  }
+  return current || incoming;
+}
+
 function mergePeopleByIdOrEmail(primary = [], secondary = []) {
   const byId = new Map();
   const byEmail = new Map();
@@ -2452,8 +2484,8 @@ function mergePeopleByIdOrEmail(primary = [], secondary = []) {
     const nextAccessRole = accessRoleRank(person.accessRole) > accessRoleRank(target.accessRole)
       ? normalizeAccessRole(person.accessRole)
       : normalizeAccessRole(target.accessRole);
-    const nextUnit = pickPreferredText(target.unit ?? target.team, person.unit ?? person.team) || "미지정";
-    const nextName = pickPreferredText(target.name, person.name);
+    const nextUnit = pickPreferredText(target.unit, person.unit) || "미지정";
+    const nextName = pickPreferredMemberName(target.name, person.name, target.email || email);
     const nextRole = pickPreferredText(target.role, person.role) || "both";
 
     Object.assign(target, {
@@ -2464,7 +2496,6 @@ function mergePeopleByIdOrEmail(primary = [], secondary = []) {
       name: nextName,
       role: nextRole,
       unit: nextUnit,
-      team: nextUnit,
       accessRole: nextAccessRole,
     });
 
@@ -2488,7 +2519,6 @@ function normalizePeopleCollection(people = []) {
       name: String(person?.name ?? "").trim(),
       role: String(person?.role ?? "").trim() || "both",
       unit: String(person?.unit ?? person?.team ?? "").trim() || "미지정",
-      team: String(person?.team ?? person?.unit ?? "").trim() || "미지정",
       accessRole: normalizeAccessRole(person?.accessRole),
     })),
   );
@@ -2749,12 +2779,12 @@ export default function App() {
   const reviewerPeople = people.filter((person) => person.role === "reviewer" || person.role === "both");
   const performerUnitOptions = useMemo(() => {
     const source = performerPeople.length > 0 ? performerPeople : people;
-    return Array.from(new Set(source.map((person) => normalizeUnitLabel(person.unit ?? person.team ?? "")).filter(Boolean)))
+    return Array.from(new Set(source.map((person) => normalizeUnitLabel(person.unit ?? "")).filter(Boolean)))
       .sort((left, right) => left.localeCompare(right, "ko"));
   }, [people, performerPeople]);
   const reviewerUnitOptions = useMemo(() => {
     const source = reviewerPeople.length > 0 ? reviewerPeople : people;
-    return Array.from(new Set(source.map((person) => normalizeUnitLabel(person.unit ?? person.team ?? "")).filter(Boolean)))
+    return Array.from(new Set(source.map((person) => normalizeUnitLabel(person.unit ?? "")).filter(Boolean)))
       .sort((left, right) => left.localeCompare(right, "ko"));
   }, [people, reviewerPeople]);
   const memberDirectory = useMemo(() => {
@@ -2780,7 +2810,6 @@ export default function App() {
         name: authUser.name ?? normalizedAuthEmail,
         email: normalizedAuthEmail,
         unit: "미지정",
-        team: "미지정",
         accessRole: "viewer",
       },
       ...syncedPeople,
@@ -2801,7 +2830,7 @@ export default function App() {
         memberDirectory
           .map((person) => [
             String(person.email ?? "").trim().toLowerCase(),
-            String(person.unit ?? person.team ?? "").trim(),
+            String(person.unit ?? "").trim(),
           ])
           .filter(([email, unit]) => email && unit),
       ),
@@ -2811,7 +2840,7 @@ export default function App() {
     const grouped = new Map();
     memberDirectory.forEach((person) => {
       const name = String(person?.name ?? "").trim();
-      const unit = String(person?.unit ?? person?.team ?? "").trim();
+      const unit = String(person?.unit ?? "").trim();
       if (!name || !unit) {
         return;
       }
@@ -2830,7 +2859,7 @@ export default function App() {
   const memberSingleNameByUnit = useMemo(() => {
     const grouped = new Map();
     memberDirectory.forEach((person) => {
-      const normalizedUnit = formatExecutionDisplayUnit(person?.unit ?? person?.team ?? "").replace(/\s+/g, "");
+      const normalizedUnit = formatExecutionDisplayUnit(person?.unit ?? "").replace(/\s+/g, "");
       const name = String(person?.name ?? "").trim();
       if (!normalizedUnit || !name) {
         return;
@@ -3168,7 +3197,7 @@ export default function App() {
         memberDirectory.map((person) => [
           person.id,
           {
-            unit: person.unit ?? person.team ?? "미지정",
+            unit: person.unit ?? "미지정",
             accessRole: normalizeAccessRole(person.accessRole),
           },
         ]),
@@ -3249,7 +3278,6 @@ export default function App() {
             email: normalizedEmail,
             role: "both",
             unit: "미지정",
-            team: "미지정",
             accessRole: "viewer",
           },
           ...people,
@@ -3258,9 +3286,13 @@ export default function App() {
       return;
     }
 
+    const nextMemberName = pickPreferredMemberName(currentMember.name, authUser.name ?? normalizedEmail, normalizedEmail)
+      || currentMember.name
+      || authUser.name
+      || normalizedEmail;
     const needsPatch =
-      (currentMember.name ?? "") !== (authUser.name ?? normalizedEmail)
-      || !String(currentMember.unit ?? currentMember.team ?? "").trim();
+      (currentMember.name ?? "") !== nextMemberName
+      || !String(currentMember.unit ?? "").trim();
 
     if (!needsPatch) {
       return;
@@ -3272,9 +3304,8 @@ export default function App() {
         String(person.email ?? "").toLowerCase() === normalizedEmail
           ? {
               ...person,
-              name: authUser.name ?? normalizedEmail,
-              unit: person.unit ?? person.team ?? "미지정",
-              team: person.team ?? person.unit ?? "미지정",
+              name: nextMemberName,
+              unit: person.unit ?? "미지정",
               accessRole: normalizeAccessRole(person.accessRole),
             }
           : person,
@@ -4019,9 +4050,9 @@ export default function App() {
           String(person.email ?? "").toLowerCase() === email
             ? {
                 ...person,
-                name: nextUser.name,
+                name: pickPreferredMemberName(person.name, nextUser.name, email) || person.name || nextUser.name,
                 email,
-                unit: person.unit ?? person.team ?? "미지정",
+                unit: person.unit ?? "미지정",
                 accessRole: normalizeAccessRole(person.accessRole),
             }
           : person,
@@ -4034,7 +4065,6 @@ export default function App() {
               email,
               role: "both",
               unit: "미지정",
-              team: "미지정",
               accessRole: "viewer",
             },
             ...currentPeople,
@@ -4338,12 +4368,16 @@ export default function App() {
 
   function commitWorkspace(nextWorkspace, options = {}) {
     const { syncRemote = true } = options;
+    const normalizedWorkspace = {
+      ...nextWorkspace,
+      people: normalizePeopleCollection(Array.isArray(nextWorkspace?.people) ? nextWorkspace.people : []),
+    };
 
-    workspaceRef.current = nextWorkspace;
-    setWorkspace(nextWorkspace);
-    persistWorkspace(nextWorkspace);
+    workspaceRef.current = normalizedWorkspace;
+    setWorkspace(normalizedWorkspace);
+    persistWorkspace(normalizedWorkspace);
     if (syncRemote && HAS_REMOTE_BACKEND) {
-      syncRemoteWorkspaceByBackend(nextWorkspace)
+      syncRemoteWorkspaceByBackend(normalizedWorkspace)
         .then(() => {
           setIntegrationStatus((current) => ({
             ...current,
@@ -4746,42 +4780,43 @@ export default function App() {
   }
 
   function loadRegistrationControl(control) {
+    const snapshot = buildControlManagementSnapshot(control);
     const fallbackControlActivity =
-      control.controlActivity
-      ?? control.attributes?.[0]
-      ?? control.purpose
+      snapshot.controlActivity
+      ?? snapshot.attributes?.[0]
+      ?? snapshot.purpose
       ?? "";
     const fallbackDescription =
-      control.description
-      ?? control.population
-      ?? control.note
+      snapshot.description
+      ?? snapshot.population
+      ?? snapshot.note
       ?? "";
     const fallbackTargetSystems =
-      Array.isArray(control.targetSystems) && control.targetSystems.length > 0
-        ? control.targetSystems
-        : resolveDefaultSystems(control.process);
+      Array.isArray(snapshot.targetSystems) && snapshot.targetSystems.length > 0
+        ? snapshot.targetSystems
+        : resolveDefaultSystems(snapshot.process);
 
-    setRegistrationSelectedControlId(control.id);
+    setRegistrationSelectedControlId(snapshot.id);
     setRegistrationForm({
-      controlId: control.id ?? "",
-      process: control.process ?? "",
-      subProcess: control.subProcess ?? "",
-      risk: control.riskName ?? "",
-      controlName: control.title ?? "",
-      controlObjective: control.controlObjective ?? control.purpose ?? "",
+      controlId: snapshot.id ?? "",
+      process: snapshot.process ?? "",
+      subProcess: snapshot.subProcess ?? "",
+      risk: snapshot.riskName ?? "",
+      controlName: snapshot.title ?? "",
+      controlObjective: snapshot.controlObjective ?? snapshot.purpose ?? "",
       controlActivity: fallbackControlActivity,
       description: fallbackDescription,
-      frequency: control.frequency ?? "수시",
-      controlType: control.controlType ?? "예방",
-      automationLevel: control.automationLevel ?? "수동",
-      keyControl: isKeyControl(control.keyControl),
-      ownerDept: normalizeUnitLabel(control.performDept ?? control.performer ?? ""),
-      reviewDept: normalizeUnitLabel(control.reviewDept ?? control.reviewer ?? ""),
-      evidence: resolveControlEvidenceText(control),
-      testMethod: resolveControlTestMethod(control),
-      population: control.population ?? "",
-      policyReference: control.policyReference ?? "",
-      deficiencyImpact: control.deficiencyImpact ?? "높음",
+      frequency: snapshot.frequency ?? "수시",
+      controlType: snapshot.controlType ?? "예방",
+      automationLevel: snapshot.automationLevel ?? "수동",
+      keyControl: isKeyControl(snapshot.keyControl),
+      ownerDept: normalizeUnitLabel(snapshot.performDept ?? snapshot.performer ?? ""),
+      reviewDept: normalizeUnitLabel(snapshot.reviewDept ?? snapshot.reviewer ?? ""),
+      evidence: resolveControlEvidenceText(snapshot),
+      testMethod: resolveControlTestMethod(snapshot),
+      population: snapshot.population ?? "",
+      policyReference: snapshot.policyReference ?? "",
+      deficiencyImpact: snapshot.deficiencyImpact ?? "높음",
       targetSystems: fallbackTargetSystems,
     });
   }
@@ -4812,7 +4847,6 @@ export default function App() {
     const editingControl = controls.find((control) => control.id === registrationSelectedControlId) ?? null;
     const nextControlCatalog = controlCatalog[registrationForm.controlId.trim()] ?? {};
     const preservedReviewer = normalizeUnitLabel(editingControl?.reviewer ?? editingControl?.reviewDept ?? "");
-    const preservedOwnerPerson = editingControl?.ownerPerson ?? "";
     const resolvedReviewDept = normalizeUnitLabel(registrationForm.reviewDept) || preservedReviewer;
     const preservedCycle = String(editingControl?.cycle ?? nextControlCatalog.cycle ?? "").trim();
     const preservedRiskId = String(editingControl?.riskId ?? nextControlCatalog.riskId ?? "").trim();
@@ -4845,7 +4879,6 @@ export default function App() {
       reviewer: resolvedReviewDept,
       performDept: normalizeUnitLabel(registrationForm.ownerDept),
       reviewDept: resolvedReviewDept,
-      ownerPerson: preservedOwnerPerson,
       targetSystems: registrationForm.targetSystems ?? [],
       note: "",
       population: registrationForm.population.trim(),
@@ -5023,7 +5056,7 @@ export default function App() {
     if (!sourcePerson) return;
 
     const draft = overrideDraft ?? memberDrafts[personId] ?? {
-      unit: sourcePerson.unit ?? sourcePerson.team ?? "미지정",
+      unit: sourcePerson.unit ?? "미지정",
       accessRole: normalizeAccessRole(sourcePerson.accessRole),
     };
     const normalizedEmail = String(sourcePerson.email ?? "").trim().toLowerCase();
@@ -5046,7 +5079,6 @@ export default function App() {
       email: normalizedEmail,
       role: existingIndex >= 0 ? people[existingIndex].role ?? sourcePerson.role ?? "both" : sourcePerson.role ?? "both",
       unit: draft.unit.trim() || "미지정",
-      team: draft.unit.trim() || "미지정",
       accessRole: normalizeAccessRole(draft.accessRole),
     };
 
@@ -5095,21 +5127,25 @@ export default function App() {
       return;
     }
 
+    const deleteTargets = memberDirectory.filter((person) => Boolean(memberDrafts[person.id]?.deleteChecked));
     const draftEntries = Object.entries(memberDrafts).filter(([personId, draft]) => {
       if (!draft || typeof draft !== "object") {
+        return false;
+      }
+      if (draft.deleteChecked) {
         return false;
       }
       const sourcePerson = memberDirectory.find((person) => person.id === personId);
       if (!sourcePerson) {
         return false;
       }
-      const currentUnit = String(sourcePerson.unit ?? sourcePerson.team ?? "미지정").trim() || "미지정";
+      const currentUnit = String(sourcePerson.unit ?? "미지정").trim() || "미지정";
       const draftUnit = String(draft.unit ?? currentUnit).trim() || "미지정";
       const currentAccessRole = normalizeAccessRole(sourcePerson.accessRole);
       const draftAccessRole = normalizeAccessRole(draft.accessRole ?? currentAccessRole);
       return draftUnit !== currentUnit || draftAccessRole !== currentAccessRole;
     });
-    if (draftEntries.length === 0) {
+    if (draftEntries.length === 0 && deleteTargets.length === 0) {
       showCenterAlert("저장할 회원 변경 내역이 없습니다.");
       return;
     }
@@ -5117,6 +5153,37 @@ export default function App() {
     let nextPeople = [...people];
     const restoredEmails = [];
     const auditEntries = [];
+    const deletedDraftIds = [];
+    const normalizedAuthEmail = String(authUser?.email ?? "").trim().toLowerCase();
+
+    for (const targetPerson of deleteTargets) {
+      const normalizedTargetEmail = String(targetPerson.email ?? "").trim().toLowerCase();
+      if (normalizedAuthEmail && normalizedTargetEmail && normalizedAuthEmail === normalizedTargetEmail) {
+        showCenterAlert("현재 로그인한 본인 계정은 삭제할 수 없습니다.");
+        return;
+      }
+
+      const adminCount = nextPeople.filter((person) => normalizeAccessRole(person.accessRole) === "admin").length;
+      if (normalizeAccessRole(targetPerson.accessRole) === "admin" && adminCount <= 1) {
+        showCenterAlert("마지막 admin 계정은 삭제할 수 없습니다.");
+        return;
+      }
+
+      nextPeople = nextPeople.filter((person) => person.id !== targetPerson.id);
+      deletedDraftIds.push(targetPerson.id);
+
+      auditEntries.push({
+        id: `LOG-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        action: "MEMBER_DELETED",
+        target: targetPerson.email || targetPerson.id,
+        detail: `${targetPerson.name} 회원 삭제`,
+        actorName: authUser?.name ?? "",
+        actorEmail: authUser?.email ?? "",
+        ip: "-",
+        createdAt: formatSeoulDateTime(new Date()),
+        createdAtTs: new Date().toISOString(),
+      });
+    }
 
     for (const [personId, draft] of draftEntries) {
       const sourcePerson = memberDirectory.find((person) => person.id === personId);
@@ -5145,7 +5212,6 @@ export default function App() {
         email: normalizedEmail,
         role: existingIndex >= 0 ? nextPeople[existingIndex].role ?? sourcePerson.role ?? "both" : sourcePerson.role ?? "both",
         unit: String(draft.unit ?? "").trim() || "미지정",
-        team: String(draft.unit ?? "").trim() || "미지정",
         accessRole: normalizeAccessRole(draft.accessRole),
       };
 
@@ -5186,6 +5252,14 @@ export default function App() {
       const restoredEmailSet = new Set(restoredEmails);
       setDeletedMemberEmails((current) => current.filter((email) => !restoredEmailSet.has(email)));
     }
+    if (deleteTargets.length > 0) {
+      const deletedEmails = deleteTargets
+        .map((person) => String(person.email ?? "").trim().toLowerCase())
+        .filter(Boolean);
+      if (deletedEmails.length > 0) {
+        setDeletedMemberEmails((current) => [...new Set([...current, ...deletedEmails])]);
+      }
+    }
 
     const loggedWorkspace = {
       ...workspace,
@@ -5194,9 +5268,30 @@ export default function App() {
     };
     commitWorkspace(loggedWorkspace, { syncRemote: false });
 
+    if (HAS_REMOTE_BACKEND && deleteTargets.length > 0) {
+      try {
+        for (const targetPerson of deleteTargets) {
+          await deleteSupabaseMember(targetPerson.id);
+        }
+      } catch {
+        showCenterAlert("회원 삭제를 DB에 반영하지 못했습니다. 다시 시도해주세요.");
+        return;
+      }
+    }
+
     const synced = await ensureRemoteSync(loggedWorkspace);
+    setMemberDrafts((current) => {
+      if (deletedDraftIds.length === 0) {
+        return current;
+      }
+      const nextDrafts = { ...current };
+      deletedDraftIds.forEach((id) => {
+        delete nextDrafts[id];
+      });
+      return nextDrafts;
+    });
     if (!HAS_REMOTE_BACKEND || synced) {
-      setMemberSavePopupMessage("회원 정보가 저장되었습니다.");
+      setMemberSavePopupMessage(deleteTargets.length > 0 ? "회원 정보와 삭제 사항이 저장되었습니다." : "회원 정보가 저장되었습니다.");
       return;
     }
     showCenterAlert("회원 정보 저장은 되었지만 원격 동기화에 실패했습니다.");
@@ -6487,24 +6582,27 @@ export default function App() {
                     {registrationPagedControls.map((control) => (
                       <button
                         type="button"
-                        key={control.reviewExecutionKey}
+                        key={control.id}
                         className={
                           control.id === registrationSelectedControlId
-                            ? "registration-example-item registration-control-item control-operation-card active"
-                            : "registration-example-item registration-control-item control-operation-card"
+                            ? `registration-example-item registration-control-item control-operation-card${isKeyControl(control.keyControl) ? " key-control-card" : ""} active`
+                            : `registration-example-item registration-control-item control-operation-card${isKeyControl(control.keyControl) ? " key-control-card" : ""}`
                         }
                         onClick={() => loadRegistrationControl(control)}
                       >
                         <div className="registration-example-head">
                           <strong>{control.id}</strong>
-                          <span className={isKeyControl(control.keyControl) ? "status-badge key-badge" : "status-badge normal-badge"}>
-                            {isKeyControl(control.keyControl) ? "Key" : "Normal"}
-                          </span>
+                          <div className="badge-row">
+                            <span className="status-badge unit-assignee-badge">
+                              수행: {resolveExecutionAuthorDisplay(control)}
+                            </span>
+                            <span className="status-badge unit-review-badge">
+                              검토: {resolveReviewDeptDisplay(control)}
+                            </span>
+                          </div>
                         </div>
                         <AutoFitTitle>{control.title}</AutoFitTitle>
-                        <span className="control-item-subtext">
-                          주기: {formatFrequencyLabel(control.frequency) || "-"}
-                        </span>
+                        <span className="control-item-subtext">{formatFrequencyLabel(control.frequency) || "-"}</span>
                       </button>
                     ))}
                   </div>
@@ -6789,8 +6887,8 @@ export default function App() {
                         key={control.id}
                         className={
                           control.id === registrationSelectedControl?.id
-                            ? "registration-example-item registration-control-item control-operation-card active"
-                            : "registration-example-item registration-control-item control-operation-card"
+                            ? `registration-example-item registration-control-item control-operation-card${isKeyControl(control.keyControl) ? " key-control-card" : ""} active`
+                            : `registration-example-item registration-control-item control-operation-card${isKeyControl(control.keyControl) ? " key-control-card" : ""}`
                         }
                         onClick={() => {
                           setRegistrationSelectedControlId(control.id);
@@ -6799,9 +6897,14 @@ export default function App() {
                       >
                         <div className="registration-example-head">
                           <strong>{control.id}</strong>
-                          <span className={isKeyControl(control.keyControl) ? "status-badge key-badge" : "status-badge normal-badge"}>
-                            {isKeyControl(control.keyControl) ? "Key" : "Normal"}
-                          </span>
+                          <div className="badge-row">
+                            <span className="status-badge unit-assignee-badge">
+                              수행: {resolveExecutionAuthorDisplay(control)}
+                            </span>
+                            <span className="status-badge unit-review-badge">
+                              검토: {resolveReviewDeptDisplay(control)}
+                            </span>
+                          </div>
                         </div>
                         <AutoFitTitle>{control.title}</AutoFitTitle>
                         <span className="control-item-subtext">{formatFrequencyLabel(control.frequency) || "-"}</span>
@@ -6849,7 +6952,6 @@ export default function App() {
                     <div><p>통제 유형</p><span>{registrationSelectedControl?.controlType || "-"}</span></div>
                     <div><p>자동화 수준</p><span>{registrationSelectedControl?.automationLevel || "-"}</span></div>
                     <div><p>수행 부서</p><span>{resolveExecutionAuthorDisplay(registrationSelectedControl)}</span></div>
-                    <div><p>담당자</p><span>{registrationSelectedControl?.ownerPerson || "-"}</span></div>
                     <div><p>검토 부서</p><span>{resolveReviewDeptDisplay(registrationSelectedControl)}</span></div>
                     <div>
                       <p>관련 시스템</p>
@@ -6921,7 +7023,7 @@ export default function App() {
                         </div>
                         <AutoFitTitle>{control.title}</AutoFitTitle>
                         <span className="control-item-subtext">
-                          {toControlUnitFilterValue(control)} · {formatFrequencyLabel(control.frequency) || "-"}
+                          {formatFrequencyLabel(control.frequency) || "-"}
                         </span>
                       </button>
                     );
@@ -6962,10 +7064,17 @@ export default function App() {
                           <h2>통제 수행 등록 양식</h2>
                         </div>
                         <div className="badge-row">
-                          <span className={`status-badge ${statusClass(selectedControl.status)}`}>{selectedControl.status}</span>
-                          <span className={`status-badge ${evidenceClass(selectedControl.evidenceStatus)}`}>{evidenceBadgeLabel(selectedControl)}</span>
+                          {assignmentExecutionPeriod.trim() ? null : (
+                            <span className="status-badge evidence-missing">주기 없음</span>
+                          )}
+                          {assignmentExecutionNote.trim() ? null : (
+                            <span className="status-badge review-pending">수행 내역 없음</span>
+                          )}
+                          {assignmentPendingEvidenceCount > 0 ? null : (
+                            <span className="status-badge evidence-missing">증적 파일 없음</span>
+                          )}
                           <span className="status-badge unit-assignee-badge">
-                            수행: {resolveExecutionAuthorDisplay(selectedAssignmentEntry ?? selectedControl)}
+                            수행: {resolveExecutionAuthorDisplay(selectedControl)}
                           </span>
                           <span className="status-badge unit-review-badge">
                             검토: {resolveReviewDeptDisplay(selectedControl)}
@@ -7129,7 +7238,7 @@ export default function App() {
                         </div>
                         <AutoFitTitle>{control.title}</AutoFitTitle>
                         <span className="control-item-subtext">
-                          {control.executionYear ? `${control.executionYear}년` : "-"} · {control.executionPeriod || "-"}
+                          {formatFrequencyLabel(control.frequency) || "-"}
                         </span>
                       </button>
                     ))}
@@ -7418,7 +7527,7 @@ export default function App() {
                         </div>
                         <AutoFitTitle>{control.title}</AutoFitTitle>
                         <span className="control-item-subtext">
-                          {control.executionYear ? `${control.executionYear}년` : "-"} · {control.executionPeriod || "-"}
+                          {formatFrequencyLabel(control.frequency) || "-"}
                         </span>
                       </button>
                     ))}
@@ -7589,7 +7698,7 @@ export default function App() {
                         </div>
                         <AutoFitTitle>{control.title}</AutoFitTitle>
                         <span className="control-item-subtext">
-                          {control.executionYear ? `${control.executionYear}년` : "-"} · {control.executionPeriod || "-"}
+                          {formatFrequencyLabel(control.frequency) || "-"}
                         </span>
                       </button>
                     ))}
@@ -7752,7 +7861,7 @@ export default function App() {
                     </label>
                     <div className="member-management-actions">
                       <button className="secondary-button slim-button no-wrap login-domain-save-button" type="button" onClick={handleLoginDomainSave} disabled={!canManageMembers}>
-                        인증 허용 도메인 저장
+                        허용 도메인
                       </button>
                       <button className="secondary-button slim-button no-wrap" type="button" onClick={handleSaveAllMemberDrafts} disabled={!canManageMembers}>
                         회원 정보 저장
@@ -7777,24 +7886,33 @@ export default function App() {
                   <table className="member-table">
                     <thead>
                       <tr>
+                        <th>삭제</th>
                         <th>ID</th>
                         <th>이름</th>
                         <th>이메일</th>
                         <th>유닛</th>
                         <th>권한</th>
-                        <th>삭제</th>
                       </tr>
                     </thead>
                     <tbody>
                       {sortedMemberDirectory.map((person) => (
                         <tr key={person.id}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={Boolean(memberDrafts[person.id]?.deleteChecked)}
+                              onChange={(event) => handleMemberDraftChange(person.id, "deleteChecked", event.target.checked)}
+                              disabled={!canManageMembers || !people.some((entry) => entry.id === person.id)}
+                              aria-label={`${person.name} 삭제 선택`}
+                            />
+                          </td>
                           <td>{person.id}</td>
                           <td>{person.name}</td>
                           <td>{person.email || "-"}</td>
                           <td>
                             <input
                               type="text"
-                              value={memberDrafts[person.id]?.unit ?? person.unit ?? person.team ?? "미지정"}
+                              value={memberDrafts[person.id]?.unit ?? person.unit ?? "미지정"}
                               onChange={(event) => handleMemberDraftChange(person.id, "unit", event.target.value)}
                               placeholder="유닛 입력"
                               disabled={!canManageMembers}
@@ -7811,16 +7929,6 @@ export default function App() {
                               <option value="reviewer">reviewer</option>
                               <option value="viewer">viewer</option>
                             </select>
-                          </td>
-                          <td>
-                            <button
-                              className="secondary-button slim-button member-delete-button"
-                              type="button"
-                              onClick={() => handleMemberDelete(person.id)}
-                              disabled={!canManageMembers || !people.some((entry) => entry.id === person.id)}
-                            >
-                              삭제
-                            </button>
                           </td>
                         </tr>
                       ))}
@@ -8202,7 +8310,7 @@ export default function App() {
                         </span>
                       </div>
                       <AutoFitTitle>{control.title}</AutoFitTitle>
-                      <small>{resolveExecutionAuthorDisplay(control)} · {resolveReviewDeptDisplay(control)}</small>
+                      <small>{formatFrequencyLabel(control.frequency) || "-"}</small>
                     </button>
                   ))}
                 </div>
