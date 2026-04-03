@@ -12,6 +12,7 @@ import { defaultControls30 } from "./defaultControls30";
 
 const STORAGE_KEY = "itgc-workspace-v8";
 const REGISTRATION_DRAFT_KEY = "itgc-registration-draft-v1";
+const AUTO_BACKUP_DATE_STORAGE_KEY = "itgc-auto-backup-date-v1";
 const AUTH_STORAGE_KEY = "itgc-google-auth-v1";
 const LOGIN_DOMAIN_STORAGE_KEY = "itgc-login-domain-v1";
 const DELETED_MEMBER_EMAILS_STORAGE_KEY = "itgc-deleted-member-emails-v1";
@@ -901,6 +902,21 @@ function compareControlsByRecentExecution(left, right) {
   return compareExecutionEntriesDesc(left, right);
 }
 
+function compareControlsByRecentReview(left, right) {
+  const leftForcedBottom = isForcedBottomControl(left);
+  const rightForcedBottom = isForcedBottomControl(right);
+  if (leftForcedBottom !== rightForcedBottom) {
+    return leftForcedBottom ? 1 : -1;
+  }
+
+  const leftReviewAt = executionTimestamp(left?.reviewDate) || executionTimestamp(left?.updatedAt);
+  const rightReviewAt = executionTimestamp(right?.reviewDate) || executionTimestamp(right?.updatedAt);
+  if (leftReviewAt !== rightReviewAt) {
+    return rightReviewAt - leftReviewAt;
+  }
+  return compareControlsByRecentExecution(left, right);
+}
+
 function compareControlsByListOrder(left, right) {
   return compareControlsByRecentExecution(left, right) || String(left?.id ?? "").localeCompare(String(right?.id ?? ""), "ko");
 }
@@ -1296,7 +1312,10 @@ async function uploadEvidenceFiles(controlId, files) {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_DRIVE_FOLDER_ID) {
     throw new Error("google_drive_not_configured");
   }
-  if (!window.google?.accounts?.oauth2) {
+  async function ensureGoogleOAuthReady() {
+    if (window.google?.accounts?.oauth2) {
+      return;
+    }
     await new Promise((resolve, reject) => {
       if (window.google?.accounts?.oauth2) {
         resolve();
@@ -1329,57 +1348,58 @@ async function uploadEvidenceFiles(controlId, files) {
       document.head.appendChild(script);
     });
   }
-  if (!window.google?.accounts?.oauth2) {
-    throw new Error("google_oauth_not_ready");
-  }
+  async function getGoogleDriveAccessToken() {
+    await ensureGoogleOAuthReady();
+    if (!window.google?.accounts?.oauth2) {
+      throw new Error("google_oauth_not_ready");
+    }
 
-  const requestAccessToken = (prompt = "") => new Promise((resolve, reject) => {
-    const tokenClient = window.google.accounts.oauth2.initTokenClient({
-      client_id: GOOGLE_CLIENT_ID,
-      scope: "https://www.googleapis.com/auth/drive.file",
-      callback: (tokenResponse) => {
-        if (!tokenResponse?.access_token || tokenResponse?.error) {
-          const code = String(tokenResponse?.error || "google_token_failed");
-          const description = String(tokenResponse?.error_description || "").trim();
-          reject(new Error(`google_token_failed|code=${code}|description=${description}`));
-          return;
-        }
-        resolve(tokenResponse);
-      },
+    const requestAccessToken = (prompt = "") => new Promise((resolve, reject) => {
+      const tokenClient = window.google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: "https://www.googleapis.com/auth/drive.file",
+        callback: (tokenResponse) => {
+          if (!tokenResponse?.access_token || tokenResponse?.error) {
+            const code = String(tokenResponse?.error || "google_token_failed");
+            const description = String(tokenResponse?.error_description || "").trim();
+            reject(new Error(`google_token_failed|code=${code}|description=${description}`));
+            return;
+          }
+          resolve(tokenResponse);
+        },
+      });
+      tokenClient.requestAccessToken({ prompt });
     });
-    tokenClient.requestAccessToken({ prompt });
-  });
 
-  let accessToken = "";
-  const now = Date.now();
-  if (googleDriveAccessTokenCache && googleDriveAccessTokenExpiresAt > now + 30_000) {
-    accessToken = googleDriveAccessTokenCache;
-  } else {
+    const now = Date.now();
+    if (googleDriveAccessTokenCache && googleDriveAccessTokenExpiresAt > now + 30_000) {
+      return googleDriveAccessTokenCache;
+    }
     try {
       const tokenResponse = await requestAccessToken("");
-      accessToken = String(tokenResponse?.access_token ?? "");
+      const accessToken = String(tokenResponse?.access_token ?? "");
       const expiresInSec = Number(tokenResponse?.expires_in ?? 0);
       googleDriveAccessTokenCache = accessToken;
       googleDriveAccessTokenExpiresAt = now + (Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec * 1000 : 50 * 60 * 1000);
+      return accessToken;
     } catch (error) {
       const normalized = String(error?.message ?? "").toLowerCase();
-      if (normalized.includes("access_denied") || normalized.includes("interaction_required") || normalized.includes("consent_required")) {
-        const tokenResponse = await requestAccessToken("consent");
-        accessToken = String(tokenResponse?.access_token ?? "");
-        const expiresInSec = Number(tokenResponse?.expires_in ?? 0);
-        googleDriveAccessTokenCache = accessToken;
-        googleDriveAccessTokenExpiresAt = Date.now() + (Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec * 1000 : 50 * 60 * 1000);
-      } else {
+      if (!normalized.includes("access_denied") && !normalized.includes("interaction_required") && !normalized.includes("consent_required")) {
         throw error;
       }
+      const tokenResponse = await requestAccessToken("consent");
+      const accessToken = String(tokenResponse?.access_token ?? "");
+      const expiresInSec = Number(tokenResponse?.expires_in ?? 0);
+      googleDriveAccessTokenCache = accessToken;
+      googleDriveAccessTokenExpiresAt = Date.now() + (Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec * 1000 : 50 * 60 * 1000);
+      return accessToken;
     }
   }
-
-  const uploadedFiles = [];
-  for (const file of files) {
+  async function uploadFileToGoogleDrive(file, namePrefix) {
+    const accessToken = await getGoogleDriveAccessToken();
     const boundary = `itgc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const metadata = {
-      name: `${controlId}_${Date.now()}_${file.name}`,
+      name: `${namePrefix}_${Date.now()}_${file.name}`,
       parents: [GOOGLE_DRIVE_FOLDER_ID],
     };
     const body = new Blob([
@@ -1406,7 +1426,12 @@ async function uploadEvidenceFiles(controlId, files) {
       const message = String(errorBody?.error?.message || `status_${response.status}`);
       throw new Error(`google_drive_upload_failed|status=${response.status}|reason=${reason}|message=${message}`);
     }
-    const result = await response.json();
+    return response.json();
+  }
+
+  const uploadedFiles = [];
+  for (const file of files) {
+    const result = await uploadFileToGoogleDrive(file, controlId);
     uploadedFiles.push({
       evidenceId: `EVD-${controlId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: result.name ?? file.name,
@@ -1425,6 +1450,27 @@ async function uploadEvidenceFiles(controlId, files) {
     files: Array.isArray(result.files) && result.files.length > 0
       ? result.files
       : localFiles,
+  };
+}
+
+async function uploadWorkspaceBackupToDrive(workspace) {
+  if (DATA_BACKEND === "local" || !GOOGLE_CLIENT_ID || !GOOGLE_DRIVE_FOLDER_ID) {
+    return { uploaded: false };
+  }
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupFile = new File(
+    [JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      storageKey: STORAGE_KEY,
+      workspace,
+    }, null, 2)],
+    `itgc-workspace-backup-${timestamp}.json`,
+    { type: "application/json" },
+  );
+  const result = await uploadEvidenceFiles("BACKUP", [backupFile]);
+  return {
+    uploaded: Boolean(result?.uploaded),
+    file: Array.isArray(result?.files) ? result.files[0] ?? null : null,
   };
 }
 
@@ -2384,15 +2430,29 @@ function parseEmailList(raw) {
 
 function parseDomainList(raw) {
   const source = Array.isArray(raw) ? raw.join(",") : String(raw ?? "");
-  return source
+  return [...new Set(source
     .split(/[,\n;\s]+/)
     .map((token) => token.trim().toLowerCase())
     .filter(Boolean)
     .map((token) => {
       const normalized = token.includes("@") ? token.split("@").pop() ?? "" : token;
-      return normalized.replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^\./, "");
+      return normalized
+        .replace(/^https?:\/\//, "")
+        .replace(/\/.*$/, "")
+        .replace(/^\./, "")
+        .replace(/^["'([{<]+/, "")
+        .replace(/["')\]}>.,;:]+$/, "");
     })
-    .filter(Boolean);
+    .filter(Boolean))];
+}
+
+function getSeoulDateKey(date = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
 }
 
 function loadDeletedMemberEmails() {
@@ -2737,6 +2797,7 @@ export default function App() {
   const [assignmentExecutionPeriod, setAssignmentExecutionPeriod] = useState("");
   const [assignmentReviewChecked, setAssignmentReviewChecked] = useState("미검토");
   const [assignmentPendingEvidenceCount, setAssignmentPendingEvidenceCount] = useState(0);
+  const [assignmentDroppedFiles, setAssignmentDroppedFiles] = useState([]);
   const [assignmentReviewNote, setAssignmentReviewNote] = useState("");
   const [completedEditMode, setCompletedEditMode] = useState(false);
   const [completedEditYear, setCompletedEditYear] = useState("");
@@ -2745,6 +2806,7 @@ export default function App() {
   const [completedEditEvidenceFiles, setCompletedEditEvidenceFiles] = useState([]);
   const [completedEvidenceInputCount, setCompletedEvidenceInputCount] = useState(1);
   const [completedPendingEvidenceCount, setCompletedPendingEvidenceCount] = useState(0);
+  const [completedDroppedFiles, setCompletedDroppedFiles] = useState([]);
   const [reviewDecisionDraft, setReviewDecisionDraft] = useState("양호");
   const [dashboardView, setDashboardView] = useState("category");
   const [dashboardUnitFilter, setDashboardUnitFilter] = useState("전체");
@@ -2793,6 +2855,7 @@ export default function App() {
   const workspaceBackupInputRef = useRef(null);
   const pendingAssignmentPresetRef = useRef(null);
   const confirmResolverRef = useRef(null);
+  const autoBackupInFlightRef = useRef(false);
   const deletedMemberEmailSet = useMemo(() => new Set(deletedMemberEmails), [deletedMemberEmails]);
   const effectiveLoginDomains = useMemo(() => {
     const merged = parseDomainList([
@@ -2874,56 +2937,8 @@ export default function App() {
       ),
     [memberDirectory],
   );
-  const memberUnitByEmail = useMemo(
-    () =>
-      new Map(
-        memberDirectory
-          .map((person) => [
-            String(person.email ?? "").trim().toLowerCase(),
-            String(person.unit ?? "").trim(),
-          ])
-          .filter(([email, unit]) => email && unit),
-      ),
-    [memberDirectory],
-  );
-  const memberUnitByName = useMemo(() => {
-    const grouped = new Map();
-    memberDirectory.forEach((person) => {
-      const name = String(person?.name ?? "").trim();
-      const unit = String(person?.unit ?? "").trim();
-      if (!name || !unit) {
-        return;
-      }
-      const current = grouped.get(name) ?? new Set();
-      current.add(unit);
-      grouped.set(name, current);
-    });
-    return new Map(
-      Array.from(grouped.entries())
-        .filter(([, units]) => units.size === 1)
-        .map(([name, units]) => [name, Array.from(units)[0]]),
-    );
-  }, [memberDirectory]);
   const formatExecutionDisplayUnit = (value) =>
     normalizeUnitLabel(value);
-  const memberSingleNameByUnit = useMemo(() => {
-    const grouped = new Map();
-    memberDirectory.forEach((person) => {
-      const normalizedUnit = formatExecutionDisplayUnit(person?.unit ?? "").replace(/\s+/g, "");
-      const name = String(person?.name ?? "").trim();
-      if (!normalizedUnit || !name) {
-        return;
-      }
-      const current = grouped.get(normalizedUnit) ?? new Set();
-      current.add(name);
-      grouped.set(normalizedUnit, current);
-    });
-    return new Map(
-      Array.from(grouped.entries())
-        .filter(([, names]) => names.size === 1)
-        .map(([unit, names]) => [unit, Array.from(names)[0]]),
-    );
-  }, [memberDirectory]);
   const resolveExecutionAuthorName = (control) => {
     if (String(control?.id ?? "").trim() === "C-IT-Cyber-04") {
       return "이치현";
@@ -2994,6 +3009,9 @@ export default function App() {
 
   useEffect(() => {
     if (!authUser?.email) {
+      return;
+    }
+    if (HAS_REMOTE_BACKEND && !remoteWorkspaceReady) {
       return;
     }
     if (isAllowedEmailBySet(authUser.email, loginDomainSet)) {
@@ -3158,7 +3176,8 @@ export default function App() {
   const selectedAssignmentEvidenceCount = Array.isArray(selectedAssignmentEntry?.evidenceFiles)
     ? selectedAssignmentEntry.evidenceFiles.length
     : 0;
-  const totalAssignmentEvidenceCount = selectedAssignmentEvidenceCount + assignmentPendingEvidenceCount;
+  const totalAssignmentEvidenceCount =
+    selectedAssignmentEvidenceCount + assignmentPendingEvidenceCount + assignmentDroppedFiles.length;
   const canSubmitAssignment =
     hasPerformPermissionForControl(selectedControl)
     && assignmentExecutionYear.trim().length > 0
@@ -3787,7 +3806,7 @@ export default function App() {
             createdAt: entry.createdAt ?? "",
             performedExecutionKey: entry.executionId,
           })),
-      ).sort(compareControlsByRecentExecution),
+      ).sort(compareControlsByRecentReview),
     [controls],
   );
   const performedExecutionCount = isRemoteWorkspaceLoading ? null : performedExecutionControls.length;
@@ -4135,7 +4154,8 @@ export default function App() {
 
   function completeLogin(nextUser, { verified = true } = {}) {
     const email = String(nextUser?.email ?? "").toLowerCase();
-    if (!verified || !email || !isAllowedEmailBySet(email, loginDomainSet)) {
+    const canValidateLoginDomain = !HAS_REMOTE_BACKEND || remoteWorkspaceReady;
+    if (!verified || !email || (canValidateLoginDomain && !isAllowedEmailBySet(email, loginDomainSet))) {
       setAuthError(
         effectiveLoginDomains.length > 0
           ? LOGIN_DOMAIN_ERROR_MESSAGE
@@ -4305,9 +4325,23 @@ export default function App() {
     setAssignmentPendingEvidenceCount(nextCount);
   }
 
+  function handleAssignmentEvidenceDrop(event) {
+    event.preventDefault();
+    const nextFiles = Array.from(event.dataTransfer?.files ?? []).filter((file) => file.size > 0);
+    if (nextFiles.length === 0) {
+      return;
+    }
+    setAssignmentDroppedFiles((current) => [...current, ...nextFiles]);
+  }
+
+  function handleRemoveAssignmentDroppedFile(fileIndex) {
+    setAssignmentDroppedFiles((current) => current.filter((_, index) => index !== fileIndex));
+  }
+
   useEffect(() => {
     setEvidenceInputCount(1);
     setAssignmentPendingEvidenceCount(0);
+    setAssignmentDroppedFiles([]);
     const nextEntry = getPreferredExecutionEntry(selectedControl);
     const preset = pendingAssignmentPresetRef.current;
     setAssignmentExecutionNote("");
@@ -4349,7 +4383,46 @@ export default function App() {
     setCompletedEditEvidenceFiles(Array.isArray(selectedCompletedControl?.evidenceFiles) ? selectedCompletedControl.evidenceFiles : []);
     setCompletedEvidenceInputCount(1);
     setCompletedPendingEvidenceCount(0);
+    setCompletedDroppedFiles([]);
   }, [selectedCompletedControl?.completedExecutionKey]);
+
+  useEffect(() => {
+    if (!authUser?.email) {
+      return;
+    }
+    if (HAS_REMOTE_BACKEND && !remoteWorkspaceReady) {
+      return;
+    }
+    if (DATA_BACKEND === "local" || !GOOGLE_CLIENT_ID || !GOOGLE_DRIVE_FOLDER_ID) {
+      return;
+    }
+    const todayKey = getSeoulDateKey();
+    try {
+      if (window.localStorage.getItem(AUTO_BACKUP_DATE_STORAGE_KEY) === todayKey) {
+        return;
+      }
+    } catch {}
+    if (autoBackupInFlightRef.current) {
+      return;
+    }
+
+    autoBackupInFlightRef.current = true;
+    uploadWorkspaceBackupToDrive(workspaceRef.current)
+      .then((result) => {
+        if (!result?.uploaded) {
+          return;
+        }
+        try {
+          window.localStorage.setItem(AUTO_BACKUP_DATE_STORAGE_KEY, todayKey);
+        } catch {}
+      })
+      .catch((error) => {
+        console.warn("Daily workspace backup upload failed:", error);
+      })
+      .finally(() => {
+        autoBackupInFlightRef.current = false;
+      });
+  }, [authUser?.email, remoteWorkspaceReady]);
 
   useEffect(() => {
     setReviewDecisionDraft(normalizeReviewDecisionLabel(selectedReviewControl?.reviewResult ?? "양호"));
@@ -5572,9 +5645,10 @@ export default function App() {
 
     const formData = new FormData(event.currentTarget);
     const submitMode = "complete";
-    const files = formData
+    const formFiles = formData
       .getAll("evidenceFiles")
       .filter((value) => value instanceof File && value.size > 0);
+    const files = [...formFiles, ...assignmentDroppedFiles];
     const executionNote = formData.get("executionNote").toString().trim();
     const executionYear = formData.get("executionYear").toString().trim();
     const executionPeriod = formData.get("executionPeriod").toString().trim();
@@ -5717,6 +5791,7 @@ export default function App() {
     setAssignmentReviewChecked("미검토");
     setEvidenceInputCount(1);
     setAssignmentPendingEvidenceCount(0);
+    setAssignmentDroppedFiles([]);
     setWorkbenchTab("controls-complete");
     setControlListPage(1);
     setSelectedCompletedExecutionKey(completedExecutionKey);
@@ -5802,6 +5877,7 @@ export default function App() {
     setCompletedEditEvidenceFiles(Array.isArray(selectedCompletedControl.evidenceFiles) ? selectedCompletedControl.evidenceFiles : []);
     setCompletedEvidenceInputCount(1);
     setCompletedPendingEvidenceCount(0);
+    setCompletedDroppedFiles([]);
     setCompletedEditMode(true);
   }
 
@@ -5813,6 +5889,7 @@ export default function App() {
     setCompletedEditEvidenceFiles(Array.isArray(selectedCompletedControl?.evidenceFiles) ? selectedCompletedControl.evidenceFiles : []);
     setCompletedEvidenceInputCount(1);
     setCompletedPendingEvidenceCount(0);
+    setCompletedDroppedFiles([]);
   }
 
   function syncCompletedPendingEvidenceCount() {
@@ -5821,6 +5898,19 @@ export default function App() {
     );
     const nextCount = evidenceInputs.reduce((count, input) => count + (input.files?.length ?? 0), 0);
     setCompletedPendingEvidenceCount(nextCount);
+  }
+
+  function handleCompletedEvidenceDrop(event) {
+    event.preventDefault();
+    const nextFiles = Array.from(event.dataTransfer?.files ?? []).filter((file) => file.size > 0);
+    if (nextFiles.length === 0) {
+      return;
+    }
+    setCompletedDroppedFiles((current) => [...current, ...nextFiles]);
+  }
+
+  function handleRemoveCompletedDroppedFile(fileIndex) {
+    setCompletedDroppedFiles((current) => current.filter((_, index) => index !== fileIndex));
   }
 
   function handleRemoveCompletedEvidenceFile(fileIndex) {
@@ -5834,9 +5924,10 @@ export default function App() {
     }
 
     const formData = new FormData(event.currentTarget);
-    const files = formData
+    const formFiles = formData
       .getAll("completedEvidenceFiles")
       .filter((value) => value instanceof File && value.size > 0);
+    const files = [...formFiles, ...completedDroppedFiles];
     const executionYear = completedEditYear.trim();
     const executionPeriod = completedEditPeriod.trim();
     const executionNote = completedEditNote.trim();
@@ -5945,6 +6036,7 @@ export default function App() {
     setCompletedEditEvidenceFiles(nextEvidenceFiles);
     setCompletedEvidenceInputCount(1);
     setCompletedPendingEvidenceCount(0);
+    setCompletedDroppedFiles([]);
     setSelectedCompletedExecutionKey(nextExecutionKey);
     setExecutionSavePopupMessage(
       `등록 완료 내용이 수정되었습니다.${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}${
@@ -6671,7 +6763,6 @@ export default function App() {
               <div className="workbench-flow-overview">
                 <div>
                   <p className="workbench-flow-eyebrow">통제 관리 플로우</p>
-                  <h2>서브 메뉴에서 단계별로 바로 이동할 수 있습니다.</h2>
                 </div>
                 {currentWorkbenchStep ? (
                   <p className="workbench-flow-current">
@@ -7312,7 +7403,7 @@ export default function App() {
                             </select>
                           </div>
                         </div>
-                        <label className="execution-form-item">
+                        <label className="execution-form-item execution-note-label">
                           수행 내역
                           <textarea
                             name="executionNote"
@@ -7370,10 +7461,33 @@ export default function App() {
                                 </button>
                               </span>
                             </div>
+                            <div
+                              className="evidence-input-row"
+                              onDragOver={(event) => event.preventDefault()}
+                              onDrop={handleAssignmentEvidenceDrop}
+                            >
+                              <span className="field-help">파일을 여기로 끌어다 놓아도 업로드됩니다.</span>
+                            </div>
                           </label>
                         </div>
                         <div className="evidence-file-list execution-form-item">
-                          <span className="empty-text">첨부된 증적 없음</span>
+                          {assignmentDroppedFiles.length > 0 ? (
+                            assignmentDroppedFiles.map((file, index) => (
+                              <span className="evidence-file-chip-wrap" key={`${file.name}-${file.size}-${index}`}>
+                                <span className="system-chip evidence-file-chip">{file.name} (드롭됨)</span>
+                                <button
+                                  className="evidence-file-delete"
+                                  type="button"
+                                  aria-label={`${file.name} 삭제`}
+                                  onClick={() => handleRemoveAssignmentDroppedFile(index)}
+                                >
+                                  X
+                                </button>
+                              </span>
+                            ))
+                          ) : (
+                            <span className="empty-text">첨부된 증적 없음</span>
+                          )}
                         </div>
                         {DATA_BACKEND === "local" ? (
                           <p className="field-help">현재는 업로드 URL 미설정 상태라 파일명이 먼저 저장됩니다.</p>
@@ -7562,7 +7676,7 @@ export default function App() {
                                   </select>
                                 </div>
                               </div>
-                              <label className="execution-form-item">
+                              <label className="execution-form-item execution-note-label">
                                 수행 내역
                                 <textarea
                                   name="completedExecutionNote"
@@ -7614,36 +7728,58 @@ export default function App() {
                                       </button>
                                     </span>
                                   </div>
+                                  <div
+                                    className="evidence-input-row"
+                                    onDragOver={(event) => event.preventDefault()}
+                                    onDrop={handleCompletedEvidenceDrop}
+                                  >
+                                    <span className="field-help">파일을 여기로 끌어다 놓아도 업로드됩니다.</span>
+                                  </div>
                                 </label>
                               </div>
                               <div className="evidence-file-list execution-form-item">
-                                {completedEditEvidenceFiles.length > 0 ? (
-                                  completedEditEvidenceFiles.map((file, index) => (
-                                    <span className="evidence-file-chip-wrap" key={`${file.name}-${index}`}>
-                                      <button
-                                        className="system-chip evidence-file-chip"
-                                        type="button"
-                                        title={buildEvidenceTraceLabel(file)}
-                                        onClick={() => {
-                                          if (isImageEvidence(file) || isPdfEvidence(file)) {
-                                            handleOpenEvidencePreview(file);
-                                            return;
-                                          }
-                                          handleDownloadEvidence(file);
-                                        }}
-                                      >
-                                        {file.url ? file.name : `${file.name} (대기)`}
-                                      </button>
-                                      <button
-                                        className="evidence-file-delete"
-                                        type="button"
-                                        aria-label={`${file.name} 삭제`}
-                                        onClick={() => handleRemoveCompletedEvidenceFile(index)}
-                                      >
-                                        X
-                                      </button>
-                                    </span>
-                                  ))
+                                {completedEditEvidenceFiles.length > 0 || completedDroppedFiles.length > 0 ? (
+                                  <>
+                                    {completedEditEvidenceFiles.map((file, index) => (
+                                      <span className="evidence-file-chip-wrap" key={`${file.name}-${index}`}>
+                                        <button
+                                          className="system-chip evidence-file-chip"
+                                          type="button"
+                                          title={buildEvidenceTraceLabel(file)}
+                                          onClick={() => {
+                                            if (isImageEvidence(file) || isPdfEvidence(file)) {
+                                              handleOpenEvidencePreview(file);
+                                              return;
+                                            }
+                                            handleDownloadEvidence(file);
+                                          }}
+                                        >
+                                          {file.url ? file.name : `${file.name} (대기)`}
+                                        </button>
+                                        <button
+                                          className="evidence-file-delete"
+                                          type="button"
+                                          aria-label={`${file.name} 삭제`}
+                                          onClick={() => handleRemoveCompletedEvidenceFile(index)}
+                                        >
+                                          X
+                                        </button>
+                                      </span>
+                                    ))}
+                                    {completedDroppedFiles.map((file, index) => (
+                                      <span className="evidence-file-chip-wrap" key={`${file.name}-${file.size}-${index}`}>
+                                        <span className="system-chip evidence-file-chip">{file.name} (드롭됨)</span>
+                                        <button
+                                          className="evidence-file-delete"
+                                          type="button"
+                                          aria-label={`${file.name} 삭제`}
+                                          onClick={() => handleRemoveCompletedDroppedFile(index)}
+                                        >
+                                          X
+                                        </button>
+                                      </span>
+                                    ))}
+                                  </>
                                 ) : (
                                   <span className="empty-text">첨부된 증적 없음</span>
                                 )}
