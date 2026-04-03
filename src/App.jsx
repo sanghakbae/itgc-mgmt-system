@@ -4317,7 +4317,6 @@ export default function App() {
     pendingAssignmentPresetRef.current = null;
   }, [
     selectedControlId,
-    selectedControl?.executionHistory,
     selectedControl?.reviewDept,
     selectedControl?.reviewer,
   ]);
@@ -4332,11 +4331,9 @@ export default function App() {
       executionPeriod: assignmentExecutionPeriod,
     });
     if (!matchedEntry) {
-      setAssignmentExecutionNote("");
       setAssignmentReviewChecked("미검토");
       return;
     }
-    setAssignmentExecutionNote("");
     setAssignmentReviewChecked(matchedEntry.reviewChecked ?? "미검토");
   }, [selectedControl, assignmentExecutionYear, assignmentExecutionPeriod]);
 
