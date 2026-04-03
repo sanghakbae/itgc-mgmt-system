@@ -658,6 +658,42 @@ function isDriveEvidence(file) {
   );
 }
 
+function getDriveFolderUrl(folderId) {
+  const normalized = String(folderId ?? "").trim();
+  if (!normalized) {
+    return "";
+  }
+  return `https://drive.google.com/drive/folders/${normalized}`;
+}
+
+function buildEvidenceTraceLabel(file) {
+  const provider = String(file?.provider ?? "").trim() || "unknown";
+  const driveFileId = String(file?.driveFileId ?? "").trim();
+  const storagePath = String(file?.storagePath ?? "").trim();
+  const details = [
+    `provider=${provider}`,
+    driveFileId ? `driveFileId=${driveFileId}` : "",
+    storagePath ? `storagePath=${storagePath}` : "",
+  ].filter(Boolean);
+  return details.join(" | ");
+}
+
+function buildEvidenceUploadAuditSuffix(files) {
+  const uploadedFiles = Array.isArray(files) ? files : [];
+  if (uploadedFiles.length === 0) {
+    return "";
+  }
+  const summary = uploadedFiles
+    .map((file) => {
+      const fileName = String(file?.name ?? "evidence").trim();
+      const driveFileId = String(file?.driveFileId ?? "").trim();
+      return driveFileId ? `${fileName}(${driveFileId})` : fileName;
+    })
+    .join(", ");
+  const folderId = String(GOOGLE_DRIVE_FOLDER_ID ?? "").trim();
+  return ` · 업로드 파일: ${summary}${folderId ? ` · Drive Folder ID: ${folderId}` : ""}`;
+}
+
 function normalizeCompactText(value) {
   return String(value ?? "")
     .replace(/\s+/g, " ")
@@ -2885,6 +2921,13 @@ export default function App() {
     }
     return String(control?.executionAuthorName ?? "").trim() || "-";
   };
+  const resolveExecutionActorDisplay = (control) => {
+    const authorName = resolveExecutionAuthorName(control);
+    if (authorName && authorName !== "-") {
+      return authorName;
+    }
+    return resolveExecutionAuthorDisplay(control);
+  };
   const resolveExecutionAuthorDisplay = (control) => {
     const catalog = controlCatalog[String(control?.id ?? "").trim()] ?? {};
     const rawUnit = String(control?.performDept ?? catalog.performDept ?? "").trim();
@@ -2897,8 +2940,12 @@ export default function App() {
     return normalizeUnitLabel(rawUnit) || rawUnit || "-";
   };
   const normalizedAuthEmail = String(authUser?.email ?? "").trim().toLowerCase();
+  const currentMemberRecord = memberDirectory.find(
+    (person) => String(person.email ?? "").trim().toLowerCase() === normalizedAuthEmail,
+  ) ?? null;
+  const currentMemberUnit = normalizeUnitLabel(currentMemberRecord?.unit ?? "");
   const currentAccessRole = normalizeAccessRole(
-    memberDirectory.find((person) => String(person.email ?? "").trim().toLowerCase() === normalizedAuthEmail)?.accessRole ?? "viewer",
+    currentMemberRecord?.accessRole ?? "viewer",
   );
   const sortedMemberDirectory = useMemo(() => {
     const rolePriority = {
@@ -2918,7 +2965,17 @@ export default function App() {
     });
   }, [memberDirectory, memberDrafts]);
   const isAdmin = currentAccessRole === "admin";
-  const canOperateControl = currentAccessRole === "admin" || currentAccessRole === "reviewer";
+  const canReviewControl = currentAccessRole === "admin" || currentAccessRole === "reviewer";
+  const hasPerformPermissionForControl = (control) => {
+    if (!control) {
+      return false;
+    }
+    if (canReviewControl) {
+      return true;
+    }
+    const controlPerformUnit = normalizeUnitLabel(control.performDept ?? control.performer ?? control.ownerDept ?? "");
+    return Boolean(currentMemberUnit) && controlPerformUnit === currentMemberUnit;
+  };
   const canManageMembers =
     isAdmin;
 
@@ -3085,12 +3142,16 @@ export default function App() {
     ),
     [selectedControl, assignmentExecutionPeriod, assignmentExecutionYear],
   );
+  const selectedAssignmentEvidenceCount = Array.isArray(selectedAssignmentEntry?.evidenceFiles)
+    ? selectedAssignmentEntry.evidenceFiles.length
+    : 0;
+  const totalAssignmentEvidenceCount = selectedAssignmentEvidenceCount + assignmentPendingEvidenceCount;
   const canSubmitAssignment =
-    canOperateControl
+    hasPerformPermissionForControl(selectedControl)
     && assignmentExecutionYear.trim().length > 0
     && assignmentExecutionPeriod.trim().length > 0
     && assignmentExecutionNote.trim().length > 0
-    && assignmentPendingEvidenceCount > 0;
+    && totalAssignmentEvidenceCount > 0;
   const canRecallSelectedExecution =
     !!selectedControl
     && normalizedAuthEmail.length > 0
@@ -3140,7 +3201,7 @@ export default function App() {
             title: control.title,
             process: control.process,
             frequency: control.frequency,
-            performer: resolveExecutionAuthorDisplay(control),
+            performer: resolveExecutionActorDisplay(control),
             reviewer: resolveReviewDeptDisplay(control),
             status: entry.status ?? "-",
             reviewChecked: entry.reviewChecked ?? "미검토",
@@ -3160,9 +3221,6 @@ export default function App() {
     scheduled: reportControls.filter((item) => item.status === "점검 예정").length,
   }), [reportControls]);
   const filteredAuditLogs = useMemo(() => {
-    if (HAS_REMOTE_BACKEND) {
-      return [];
-    }
     const normalizedQuery = auditLogQuery.trim().toLowerCase();
     if (!normalizedQuery) {
       return auditLogs;
@@ -3184,11 +3242,20 @@ export default function App() {
         .includes(normalizedQuery),
     );
   }, [auditLogQuery, auditLogs]);
+  const mergedRemoteAuditLogs = useMemo(
+    () => (HAS_REMOTE_BACKEND ? mergeAuditLogs(remoteAuditLogs, auditLogs) : []),
+    [auditLogs, remoteAuditLogs],
+  );
+  const effectiveAuditLogs = HAS_REMOTE_BACKEND ? mergedRemoteAuditLogs : filteredAuditLogs;
+  const effectiveRemoteAuditLogTotalPages = Math.max(remoteAuditLogTotalPages, Math.ceil(effectiveAuditLogs.length / AUDIT_LOG_PAGE_SIZE), 1);
   const localTotalAuditLogPages = Math.max(1, Math.ceil(filteredAuditLogs.length / AUDIT_LOG_PAGE_SIZE));
-  const totalAuditLogPages = HAS_REMOTE_BACKEND ? remoteAuditLogTotalPages : localTotalAuditLogPages;
+  const totalAuditLogPages = HAS_REMOTE_BACKEND ? effectiveRemoteAuditLogTotalPages : localTotalAuditLogPages;
   const currentAuditLogPage = Math.min(auditLogPage, totalAuditLogPages);
   const pagedAuditLogs = HAS_REMOTE_BACKEND
-    ? remoteAuditLogs
+    ? effectiveAuditLogs.slice(
+      (currentAuditLogPage - 1) * AUDIT_LOG_PAGE_SIZE,
+      currentAuditLogPage * AUDIT_LOG_PAGE_SIZE,
+    )
     : filteredAuditLogs.slice(
       (currentAuditLogPage - 1) * AUDIT_LOG_PAGE_SIZE,
       currentAuditLogPage * AUDIT_LOG_PAGE_SIZE,
@@ -3669,7 +3736,6 @@ export default function App() {
             (entry) =>
               Boolean(entry.executionSubmitted)
               && isExecutionReadyForCompletion(entry)
-              && !entry.reviewRequested
               && String(entry.reviewChecked ?? "미검토").trim() !== "검토 완료",
           )
           .map((entry) => ({
@@ -3712,6 +3778,30 @@ export default function App() {
     [controls],
   );
   const performedExecutionCount = isRemoteWorkspaceLoading ? null : performedExecutionControls.length;
+  useEffect(() => {
+    if (!isWorkbenchView || workbenchTab !== "control-review" || isRemoteWorkspaceLoading) {
+      return;
+    }
+    if ((reviewPendingCount ?? 0) > 0) {
+      return;
+    }
+    if ((performedExecutionCount ?? 0) > 0) {
+      handleWorkbenchTabChange("performed-complete");
+      return;
+    }
+    if ((completedExecutionCount ?? 0) > 0) {
+      handleWorkbenchTabChange("controls-complete");
+      return;
+    }
+    handleWorkbenchTabChange("controls");
+  }, [
+    completedExecutionCount,
+    isRemoteWorkspaceLoading,
+    isWorkbenchView,
+    performedExecutionCount,
+    reviewPendingCount,
+    workbenchTab,
+  ]);
   const workbenchFlowSteps = [
     { key: "register", label: "통제 등록/수정", helper: "통제 기준 정보 정리", badgeCount: 0 },
     { key: "controls", label: "통제 작성", helper: "수행 내용과 증적 작성", badgeCount: controlExecutionDraftCount },
@@ -4334,7 +4424,7 @@ export default function App() {
             ? remoteLoginDomains
             : (localLoginDomains.length > 0 ? localLoginDomains : parseDomainList(defaultData.loginDomains)),
           people: remotePeople,
-          auditLogs: remoteAuditLogs,
+          auditLogs: mergeAuditLogs(remoteAuditLogs, Array.isArray(currentWorkspace.auditLogs) ? currentWorkspace.auditLogs : []),
         };
 
         setIntegrationStatus((current) => ({
@@ -5448,8 +5538,8 @@ export default function App() {
 
   async function handleAssignmentSubmit(event) {
     event.preventDefault();
-    if (!canOperateControl) {
-      showCenterAlert("reviewer 이상 권한만 통제 수행/검토가 가능합니다.");
+    if (!hasPerformPermissionForControl(selectedControl)) {
+      showCenterAlert("회원 관리에 등록된 본인 유닛이 해당 통제의 수행 유닛과 일치해야 통제 수행 작성이 가능합니다.");
       return;
     }
     if (!selectedControl) return;
@@ -5584,7 +5674,7 @@ export default function App() {
     writeAuditLog(
       "EXECUTION_SAVED",
       selectedControl.id,
-      `${selectedControl.title} 등록 완료`,
+      `${selectedControl.title} 등록 완료${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
       nextWorkspace,
     );
     setAssignmentExecutionNote("");
@@ -5597,7 +5687,11 @@ export default function App() {
     setControlListPage(1);
     setSelectedCompletedExecutionKey(completedExecutionKey);
     setSelectedControlId(selectedControl.id);
-    setExecutionSavePopupMessage("수행 결과 등록이 완료되었습니다.");
+    setExecutionSavePopupMessage(
+      `수행 결과 등록이 완료되었습니다.${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}${
+        GOOGLE_DRIVE_FOLDER_ID ? `\nDrive Folder URL: ${getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)}` : ""
+      }`,
+    );
   }
 
   function handleRequestReviewFromCompleted() {
@@ -5695,7 +5789,7 @@ export default function App() {
 
   async function handleCompletedEditSubmit(event) {
     event.preventDefault();
-    if (!canOperateControl || !selectedCompletedControl) {
+    if (!selectedCompletedControl || !hasPerformPermissionForControl(selectedCompletedControl)) {
       return;
     }
 
@@ -5790,7 +5884,12 @@ export default function App() {
       }),
     };
 
-    writeAuditLog("EXECUTION_SAVED", selectedCompletedControl.id, `${selectedCompletedControl.title} 등록 완료 수정`, nextWorkspace);
+    writeAuditLog(
+      "EXECUTION_SAVED",
+      selectedCompletedControl.id,
+      `${selectedCompletedControl.title} 등록 완료 수정${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
+      nextWorkspace,
+    );
     setCompletedEditMode(false);
     setCompletedEditYear(executionYear);
     setCompletedEditPeriod(executionPeriod);
@@ -5799,13 +5898,17 @@ export default function App() {
     setCompletedEvidenceInputCount(1);
     setCompletedPendingEvidenceCount(0);
     setSelectedCompletedExecutionKey(nextExecutionKey);
-    setExecutionSavePopupMessage("등록 완료 내용이 수정되었습니다.");
+    setExecutionSavePopupMessage(
+      `등록 완료 내용이 수정되었습니다.${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}${
+        GOOGLE_DRIVE_FOLDER_ID ? `\nDrive Folder URL: ${getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)}` : ""
+      }`,
+    );
   }
 
   function handleReviewSubmit(event) {
     event.preventDefault();
-    if (!canOperateControl) {
-      showCenterAlert("reviewer 이상 권한만 통제 수행/검토가 가능합니다.");
+    if (!canReviewControl) {
+      showCenterAlert("reviewer 이상 권한만 통제 검토가 가능합니다.");
       return;
     }
     if (!selectedReviewControl) return;
@@ -7097,7 +7200,7 @@ export default function App() {
                           {assignmentExecutionNote.trim() ? null : (
                             <span className="status-badge review-pending">수행 내역 없음</span>
                           )}
-                          {assignmentPendingEvidenceCount > 0 ? null : (
+                          {totalAssignmentEvidenceCount > 0 ? null : (
                             <span className="status-badge evidence-missing">증적 파일 없음</span>
                           )}
                           <span className="status-badge unit-assignee-badge">
@@ -7180,6 +7283,17 @@ export default function App() {
                         <div className="evidence-upload-group execution-form-item">
                           <label>
                             <span className="evidence-upload-label">증적 파일 첨부</span>
+                            {GOOGLE_DRIVE_FOLDER_ID ? (
+                              <span className="field-help">
+                                업로드 대상 Drive Folder ID: {GOOGLE_DRIVE_FOLDER_ID}
+                                {" · "}
+                                <a href={getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)} target="_blank" rel="noreferrer">
+                                  폴더 열기
+                                </a>
+                              </span>
+                            ) : (
+                              <span className="field-help">Drive Folder ID가 설정되지 않았습니다.</span>
+                            )}
                             <div className="evidence-input-stack">
                               {Array.from({ length: evidenceInputCount }, (_, index) => (
                                 <div className="evidence-input-row" key={index}>
@@ -7300,6 +7414,9 @@ export default function App() {
                         <div className="badge-row">
                           <span className={`status-badge ${statusClass(selectedCompletedControl.status)}`}>{selectedCompletedControl.status}</span>
                           <span className={`status-badge ${evidenceClass(selectedCompletedControl.evidenceStatus)}`}>{evidenceBadgeLabel(selectedCompletedControl, "review")}</span>
+                          {selectedCompletedControl.reviewRequested ? (
+                            <span className="status-badge pending-badge">검토 요청됨</span>
+                          ) : null}
                           <span className="status-badge unit-assignee-badge">
                             수행: {resolveExecutionAuthorDisplay(selectedCompletedControl)}
                           </span>
@@ -7317,7 +7434,7 @@ export default function App() {
                             <span className="review-meta-separator">|</span>
                             <span className="review-meta-chip review-meta-period">주기: {selectedCompletedControl.executionPeriod || "-"}</span>
                             <span className="review-meta-separator">|</span>
-                            <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorDisplay(selectedCompletedControl)}</span>
+                            <span className="review-meta-chip review-meta-owner">수행 유닛: {resolveExecutionAuthorDisplay(selectedCompletedControl)}</span>
                             <span className="review-meta-separator">|</span>
                             <span className="review-meta-chip review-meta-owner">검토 유닛: {resolveReviewDeptDisplay(selectedCompletedControl)}</span>
                           </div>
@@ -7347,6 +7464,7 @@ export default function App() {
                                       <button
                                         className="system-chip evidence-file-chip"
                                         type="button"
+                                        title={buildEvidenceTraceLabel(file)}
                                         onClick={() => {
                                           if (isImageEvidence(file) || isPdfEvidence(file)) {
                                             handleOpenEvidencePreview(file);
@@ -7409,6 +7527,17 @@ export default function App() {
                               <div className="evidence-upload-group execution-form-item">
                                 <label>
                                   <span className="evidence-upload-label">증적 파일 첨부</span>
+                                  {GOOGLE_DRIVE_FOLDER_ID ? (
+                                    <span className="field-help">
+                                      업로드 대상 Drive Folder ID: {GOOGLE_DRIVE_FOLDER_ID}
+                                      {" · "}
+                                      <a href={getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)} target="_blank" rel="noreferrer">
+                                        폴더 열기
+                                      </a>
+                                    </span>
+                                  ) : (
+                                    <span className="field-help">Drive Folder ID가 설정되지 않았습니다.</span>
+                                  )}
                                   <div className="evidence-input-stack">
                                     {Array.from({ length: completedEvidenceInputCount }, (_, index) => (
                                       <div className="evidence-input-row" key={index}>
@@ -7446,6 +7575,7 @@ export default function App() {
                                       <button
                                         className="system-chip evidence-file-chip"
                                         type="button"
+                                        title={buildEvidenceTraceLabel(file)}
                                         onClick={() => {
                                           if (isImageEvidence(file) || isPdfEvidence(file)) {
                                             handleOpenEvidencePreview(file);
@@ -7484,16 +7614,17 @@ export default function App() {
                       </div>
                       {!completedEditMode ? (
                         <div className="execution-form-action completed-request-action">
-                          <button className="secondary-button completed-edit-button" type="button" onClick={handleEditCompletedExecution} disabled={!canOperateControl}>
+                          <button className="secondary-button completed-edit-button" type="button" onClick={handleEditCompletedExecution} disabled={!hasPerformPermissionForControl(selectedCompletedControl)}>
                             수정
                           </button>
                           <button
                             className="primary-button"
                             type="button"
                             onClick={handleRequestReviewFromCompleted}
+                            disabled={selectedCompletedControl.reviewRequested}
                             style={{ color: "#ffffff", WebkitTextFillColor: "#ffffff" }}
                           >
-                            검토 요청
+                            {selectedCompletedControl.reviewRequested ? "검토 요청됨" : "검토 요청"}
                           </button>
                         </div>
                       ) : null}
@@ -7613,7 +7744,7 @@ export default function App() {
                           <span className="review-meta-separator">|</span>
                           <span className="review-meta-chip review-meta-period">주기: {selectedReviewControl.executionPeriod || "-"}</span>
                           <span className="review-meta-separator">|</span>
-                          <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorDisplay(selectedReviewControl)}</span>
+                          <span className="review-meta-chip review-meta-owner">수행 유닛: {resolveExecutionAuthorDisplay(selectedReviewControl)}</span>
                         </div>
                       </div>
                       <div className="execution-meta-item">
@@ -7639,6 +7770,7 @@ export default function App() {
                                 <button
                                   className="system-chip evidence-file-chip"
                                   type="button"
+                                  title={buildEvidenceTraceLabel(file)}
                                   onClick={() => {
                                     if (isImageEvidence(file) || isPdfEvidence(file)) {
                                       handleOpenEvidencePreview(file);
@@ -7681,7 +7813,7 @@ export default function App() {
                           </select>
                         </label>
                         <div className="review-complete-inline-action">
-                          <button className="primary-button review-complete-submit-button" type="submit" disabled={!canOperateControl}>검토 완료</button>
+                          <button className="primary-button review-complete-submit-button" type="submit" disabled={!canReviewControl}>검토 완료</button>
                         </div>
                       </div>
                     </form>
@@ -7776,7 +7908,7 @@ export default function App() {
                             <span className="review-meta-separator">|</span>
                             <span className="review-meta-chip review-meta-period">주기: {selectedPerformedControl.executionPeriod || "-"}</span>
                             <span className="review-meta-separator">|</span>
-                            <span className="review-meta-chip review-meta-owner">통제 수행자: {resolveExecutionAuthorDisplay(selectedPerformedControl)}</span>
+                            <span className="review-meta-chip review-meta-owner">수행 유닛: {resolveExecutionAuthorDisplay(selectedPerformedControl)}</span>
                             <span className="review-meta-separator">|</span>
                             <span className="review-meta-chip review-meta-owner">검토자: {resolveReviewActorDisplay(selectedPerformedControl)}</span>
                           </div>
@@ -7806,6 +7938,7 @@ export default function App() {
                                           <button
                                             className="system-chip evidence-file-chip"
                                             type="button"
+                                            title={buildEvidenceTraceLabel(file)}
                                             onClick={() => {
                                               if (isImageEvidence(file) || isPdfEvidence(file)) {
                                                 handleOpenEvidencePreview(file);
@@ -8174,7 +8307,7 @@ export default function App() {
           {executionSavePopupMessage ? (
             <div className="center-alert-overlay" role="dialog" aria-modal="true" aria-label="수행 내역 저장 안내">
               <div className="center-alert-modal">
-                <p>{executionSavePopupMessage}</p>
+                <p style={{ whiteSpace: "pre-line" }}>{executionSavePopupMessage}</p>
                 <button className="primary-button" type="button" onClick={() => setExecutionSavePopupMessage("")}>
                   확인
                 </button>
