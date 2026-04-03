@@ -694,6 +694,18 @@ function buildEvidenceUploadAuditSuffix(files) {
   return ` · 업로드 파일: ${summary}${folderId ? ` · Drive Folder ID: ${folderId}` : ""}`;
 }
 
+function getSupabaseProjectHost(url) {
+  const normalized = String(url ?? "").trim();
+  if (!normalized) {
+    return "";
+  }
+  try {
+    return new URL(normalized).host;
+  } catch {
+    return normalized;
+  }
+}
+
 function normalizeCompactText(value) {
   return String(value ?? "")
     .replace(/\s+/g, " ")
@@ -2759,6 +2771,7 @@ export default function App() {
   const [evidencePreviewFile, setEvidencePreviewFile] = useState(null);
   const [executionSavePopupMessage, setExecutionSavePopupMessage] = useState("");
   const [memberSavePopupMessage, setMemberSavePopupMessage] = useState("");
+  const [lastAuditSyncErrorMessage, setLastAuditSyncErrorMessage] = useState("");
   const [centerAlertMessage, setCenterAlertMessage] = useState("");
   const [centerConfirmMessage, setCenterConfirmMessage] = useState("");
   const [memberDrafts, setMemberDrafts] = useState({});
@@ -3855,6 +3868,8 @@ export default function App() {
     reviewVisibleControls.find((control) => control.reviewExecutionKey === selectedReviewExecutionKey)
     ?? reviewPagedControls[0]
     ?? null;
+  const runtimeOrigin = typeof window !== "undefined" ? window.location.origin : "";
+  const runtimeSupabaseHost = getSupabaseProjectHost(SUPABASE_URL);
   const menuItems = [
     { key: "dashboard", label: "대시보드", icon: <DashboardIcon /> },
     { key: "control-list", label: "통제 목록", icon: <ControlIcon /> },
@@ -4529,12 +4544,17 @@ export default function App() {
     }
   }
 
-  function syncRemoteAuditLog(logEntry) {
+  function syncRemoteAuditLog(logEntry, options = {}) {
     if (!HAS_REMOTE_BACKEND) {
-      return;
+      return Promise.resolve({ ok: true, skipped: true });
     }
 
-    createSupabaseAuditLog(logEntry)
+    const {
+      notifyOnFailure = false,
+      failureMessage = "감사 로그 원격 저장에 실패했습니다.",
+    } = options;
+
+    return createSupabaseAuditLog(logEntry)
       .then((savedLog) => {
         const currentWorkspace = workspaceRef.current;
         const nextWorkspace = {
@@ -4545,16 +4565,25 @@ export default function App() {
           ),
         };
         commitWorkspace(nextWorkspace, { syncRemote: false });
+        setLastAuditSyncErrorMessage("");
+        return { ok: true, log: savedLog };
       })
-      .catch(() => {
+      .catch((error) => {
         setIntegrationStatus((current) => ({
           ...current,
           spreadsheet: current.spreadsheet === "연결됨" ? current.spreadsheet : "오류",
         }));
+        const errorText = String(error?.message ?? "unknown_error");
+        const nextMessage = `${failureMessage}\n[debug] ${errorText}`;
+        setLastAuditSyncErrorMessage(nextMessage);
+        if (notifyOnFailure) {
+          showCenterAlert(nextMessage);
+        }
+        return { ok: false, error: errorText };
       });
   }
 
-  function writeAuditLog(action, target, detail, baseWorkspace = null, actorOverride = null, alertContext = null) {
+  function writeAuditLog(action, target, detail, baseWorkspace = null, actorOverride = null, alertContext = null, options = {}) {
     const currentWorkspace = baseWorkspace ?? workspaceRef.current;
     const actorName = actorOverride?.actorName ?? authUser?.name ?? "";
     const actorEmail = actorOverride?.actorEmail ?? authUser?.email ?? "";
@@ -4579,7 +4608,7 @@ export default function App() {
     };
 
     commitWorkspace(nextWorkspace, { syncRemote: baseWorkspace !== null });
-    syncRemoteAuditLog(nextLog);
+    syncRemoteAuditLog(nextLog, options.auditSyncOptions);
     sendGoogleChatControlAlert({
       action,
       target,
@@ -5676,6 +5705,14 @@ export default function App() {
       selectedControl.id,
       `${selectedControl.title} 등록 완료${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
       nextWorkspace,
+      null,
+      null,
+      {
+        auditSyncOptions: {
+          notifyOnFailure: true,
+          failureMessage: "수행 결과는 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+        },
+      },
     );
     setAssignmentExecutionNote("");
     setAssignmentExecutionYear("");
@@ -5742,6 +5779,12 @@ export default function App() {
           selectedCompletedExecutionKey: "",
           selectedReviewExecutionKey: selectedCompletedControl.completedExecutionKey,
         }),
+      },
+      {
+        auditSyncOptions: {
+          notifyOnFailure: true,
+          failureMessage: "검토 요청은 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+        },
       },
     );
     setCurrentView("control-workbench");
@@ -5889,6 +5932,14 @@ export default function App() {
       selectedCompletedControl.id,
       `${selectedCompletedControl.title} 등록 완료 수정${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
       nextWorkspace,
+      null,
+      null,
+      {
+        auditSyncOptions: {
+          notifyOnFailure: true,
+          failureMessage: "등록 완료 수정은 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+        },
+      },
     );
     setCompletedEditMode(false);
     setCompletedEditYear(executionYear);
@@ -8361,6 +8412,22 @@ export default function App() {
                     <h2>감사 로그</h2>
                   </div>
                 </div>
+                <div className="info-block audit-diagnostics-block">
+                  <span>런타임 진단</span>
+                  <strong>
+                    origin: {runtimeOrigin || "-"}
+                    {" | "}
+                    backend: {DATA_BACKEND}
+                    {" | "}
+                    supabase: {runtimeSupabaseHost || "-"}
+                  </strong>
+                </div>
+                {lastAuditSyncErrorMessage ? (
+                  <div className="info-block audit-diagnostics-block">
+                    <span>마지막 감사 로그 저장 오류</span>
+                    <strong style={{ whiteSpace: "pre-line" }}>{lastAuditSyncErrorMessage}</strong>
+                  </div>
+                ) : null}
                 <div className="report-toolbar audit-toolbar">
                   <input
                     className="audit-search-input"
