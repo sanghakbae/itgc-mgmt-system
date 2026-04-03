@@ -1089,31 +1089,48 @@ export async function createSupabaseAuditLog(log) {
     createdAt: String(log?.createdAt ?? "").trim(),
     createdAtTs: String(log?.createdAtTs ?? "").trim(),
   };
+  const nowIso = new Date().toISOString();
+  const mapAuditRowToLog = (row) => ({
+    id: row?.log_id ?? payload.id,
+    action: row?.action ?? payload.action,
+    target: row?.target ?? payload.target,
+    detail: row?.detail ?? payload.detail,
+    actorName: row?.actor_name ?? payload.actorName,
+    actorEmail: row?.actor_email ?? payload.actorEmail,
+    ip: row?.ip ?? "-",
+    createdAt: row?.created_at ?? payload.createdAt,
+    createdAtTs: row?.created_at_ts ?? payload.createdAtTs,
+  });
 
   const { data, error } = await supabase.functions.invoke("audit-log", {
     body: payload,
   });
 
-  if (error) {
-    throw new Error(`audit_log_function_failed:${error.message}`);
+  if (!error && data?.log) {
+    return mapAuditRowToLog(data.log);
   }
 
-  const row = data?.log;
-  if (!row) {
-    throw new Error("audit_log_function_invalid_response");
+  const fallbackRow = mapAuditToRow({
+    ...payload,
+    ip: "-",
+  }, nowIso);
+  const { data: insertedRows, error: fallbackError } = await supabase
+    .from(ITGC_AUDIT_TABLE)
+    .upsert([fallbackRow], { onConflict: "log_id" })
+    .select("*")
+    .limit(1);
+
+  if (fallbackError) {
+    const functionErrorText = error ? `audit_log_function_failed:${error.message}` : "audit_log_function_invalid_response";
+    throw new Error(`${functionErrorText}|fallback_failed:${fallbackError.message}`);
   }
 
-  return {
-    id: row.log_id ?? payload.id,
-    action: row.action ?? payload.action,
-    target: row.target ?? payload.target,
-    detail: row.detail ?? payload.detail,
-    actorName: row.actor_name ?? payload.actorName,
-    actorEmail: row.actor_email ?? payload.actorEmail,
-    ip: row.ip ?? "-",
-    createdAt: row.created_at ?? payload.createdAt,
-    createdAtTs: row.created_at_ts ?? payload.createdAtTs,
-  };
+  const insertedRow = Array.isArray(insertedRows) ? insertedRows[0] : insertedRows;
+  if (!insertedRow) {
+    throw new Error(error ? `audit_log_function_failed:${error.message}|fallback_failed:no_row_returned` : "audit_log_function_invalid_response|fallback_failed:no_row_returned");
+  }
+
+  return mapAuditRowToLog(insertedRow);
 }
 
 export async function uploadEvidenceToSupabase(controlId, files) {
