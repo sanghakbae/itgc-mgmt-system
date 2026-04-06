@@ -3035,56 +3035,6 @@ export default function App() {
   }, [workbenchTab]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || typeof document === "undefined") {
-      return undefined;
-    }
-
-    let frameId = 0;
-    const selector = [
-      "h1",
-      "h2",
-      "h3",
-      "h4",
-      "h5",
-      "h6",
-      "p",
-      "span",
-      "button",
-      "label",
-      "small",
-      "li",
-      "td",
-      "th",
-      "strong",
-      "em",
-      "a",
-      "input",
-      "select",
-      "textarea",
-    ].join(", ");
-
-    const updateFontDebugLabels = () => {
-      document.body.classList.add("font-debug-active");
-      document.querySelectorAll(selector).forEach((element) => {
-        const text = "value" in element
-          ? String(element.value ?? "").trim()
-          : String(element.textContent ?? "").trim();
-        if (!text) {
-          element.removeAttribute("data-font-debug");
-          return;
-        }
-        const fontSize = window.getComputedStyle(element).fontSize;
-        element.setAttribute("data-font-debug", fontSize);
-      });
-    };
-
-    frameId = window.requestAnimationFrame(updateFontDebugLabels);
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  });
-
-  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
@@ -8232,7 +8182,7 @@ export default function App() {
                 </div>
                 <div className="report-toolbar login-domain-toolbar">
                   <div className="login-domain-inline">
-                    <label className="filter-label" style={{ minWidth: "320px" }}>
+                    <label className="filter-label" style={{ minWidth: "420px" }}>
                       <span>로그인 허용 도메인 (콤마 구분)</span>
                       <input
                         type="text"

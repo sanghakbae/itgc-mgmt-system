@@ -49,70 +49,6 @@ body {
   overflow-y: scroll;
 }
 
-body.font-debug-active :is(
-  h1,
-  h2,
-  h3,
-  h4,
-  h5,
-  h6,
-  p,
-  span,
-  button,
-  label,
-  small,
-  li,
-  td,
-  th,
-  strong,
-  em,
-  a,
-  input,
-  select,
-  textarea
-)[data-font-debug] {
-  position: relative;
-  outline: 1px dashed rgba(220, 38, 38, 0.18);
-  outline-offset: 1px;
-}
-
-body.font-debug-active :is(
-  h1,
-  h2,
-  h3,
-  h4,
-  h5,
-  h6,
-  p,
-  span,
-  button,
-  label,
-  small,
-  li,
-  td,
-  th,
-  strong,
-  em,
-  a
-)[data-font-debug]::after {
-  content: attr(data-font-debug);
-  position: absolute;
-  top: 0;
-  right: 0;
-  transform: translateY(-100%);
-  padding: 1px 4px;
-  border-radius: 4px;
-  background: rgba(17, 24, 39, 0.92);
-  color: #ffffff;
-  font-size: 10px !important;
-  font-weight: 700;
-  line-height: 1.2;
-  letter-spacing: 0;
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 9999;
-}
-
 button,
 input,
 select,
@@ -2084,21 +2020,21 @@ th {
 }
 
 .audit-table .audit-col-action {
-  width: 184px;
-  min-width: 184px;
-  max-width: 184px;
+  width: 240px;
+  min-width: 240px;
+  max-width: 240px;
 }
 
 .audit-table .audit-col-ip {
-  width: 48px;
-  min-width: 48px;
-  max-width: 48px;
+  width: 96px;
+  min-width: 96px;
+  max-width: 96px;
 }
 
 .audit-table .audit-col-target {
-  width: 136px;
-  min-width: 136px;
-  max-width: 136px;
+  width: 180px;
+  min-width: 180px;
+  max-width: 180px;
 }
 
 .audit-table .audit-col-detail {
@@ -2127,6 +2063,15 @@ th {
   flex-wrap: wrap;
 }
 
+.login-domain-inline .filter-label > span,
+.member-management-actions > .secondary-button {
+  font-size: 12px;
+}
+
+.login-domain-inline .filter-label input {
+  font-size: 14px;
+}
+
 .member-management-actions {
   display: grid;
   grid-template-columns: repeat(4, minmax(58px, 84px));
@@ -2145,15 +2090,14 @@ th {
   min-width: 0;
   min-height: 28px;
   padding: 0 4px;
-  font-size: 0.62rem;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .login-domain-inline .filter-label {
-  width: 280px;
-  min-width: 280px !important;
+  width: 420px;
+  min-width: 420px !important;
 }
 
 .login-domain-inline .filter-label input {
@@ -2161,7 +2105,6 @@ th {
   min-height: 30px;
   height: 30px;
   padding: 0 10px;
-  font-size: 0.78rem;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fffdf9;
@@ -2300,6 +2243,12 @@ th {
 
 .report-toolbar .registration-filter-field select {
   font-size: 14px;
+}
+
+.report-toolbar .report-completion-button,
+.report-toolbar .primary-button,
+.report-toolbar .secondary-button {
+  font-size: 12px;
 }
 
 .report-summary-card {
@@ -2597,7 +2546,7 @@ th {
   min-height: 24px;
   height: 24px;
   padding: 0 6px;
-  font-size: 0.72rem;
+  font-size: 12px;
   line-height: 1;
 }
 
