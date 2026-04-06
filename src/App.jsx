@@ -3261,20 +3261,12 @@ export default function App() {
         .includes(normalizedQuery),
     );
   }, [auditLogQuery, auditLogs]);
-  const mergedRemoteAuditLogs = useMemo(
-    () => (HAS_REMOTE_BACKEND ? mergeAuditLogs(remoteAuditLogs, auditLogs) : []),
-    [auditLogs, remoteAuditLogs],
-  );
-  const effectiveAuditLogs = HAS_REMOTE_BACKEND ? mergedRemoteAuditLogs : filteredAuditLogs;
-  const effectiveRemoteAuditLogTotalPages = Math.max(remoteAuditLogTotalPages, Math.ceil(effectiveAuditLogs.length / AUDIT_LOG_PAGE_SIZE), 1);
-  const localTotalAuditLogPages = Math.max(1, Math.ceil(filteredAuditLogs.length / AUDIT_LOG_PAGE_SIZE));
-  const totalAuditLogPages = HAS_REMOTE_BACKEND ? effectiveRemoteAuditLogTotalPages : localTotalAuditLogPages;
+  const totalAuditLogPages = HAS_REMOTE_BACKEND
+    ? Math.max(remoteAuditLogTotalPages, 1)
+    : Math.max(1, Math.ceil(filteredAuditLogs.length / AUDIT_LOG_PAGE_SIZE));
   const currentAuditLogPage = Math.min(auditLogPage, totalAuditLogPages);
   const pagedAuditLogs = HAS_REMOTE_BACKEND
-    ? effectiveAuditLogs.slice(
-      (currentAuditLogPage - 1) * AUDIT_LOG_PAGE_SIZE,
-      currentAuditLogPage * AUDIT_LOG_PAGE_SIZE,
-    )
+    ? remoteAuditLogs
     : filteredAuditLogs.slice(
       (currentAuditLogPage - 1) * AUDIT_LOG_PAGE_SIZE,
       currentAuditLogPage * AUDIT_LOG_PAGE_SIZE,
@@ -6408,7 +6400,6 @@ export default function App() {
                           className={className}
                           onClick={() => {
                             setDashboardCalendarMonth(bucket.month);
-                            moveToDashboardTarget("dashboard-month-card-list");
                           }}
                         >
                           <span>{bucket.month}월</span>
@@ -8533,16 +8524,6 @@ export default function App() {
                   <div>
                     <h2>감사 로그</h2>
                   </div>
-                </div>
-                <div className="info-block audit-diagnostics-block">
-                  <span>런타임 진단</span>
-                  <strong>
-                    origin: {runtimeOrigin || "-"}
-                    {" | "}
-                    backend: {DATA_BACKEND}
-                    {" | "}
-                    supabase: {runtimeSupabaseHost || "-"}
-                  </strong>
                 </div>
                 {lastAuditSyncErrorMessage ? (
                   <div className="info-block audit-diagnostics-block">
