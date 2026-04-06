@@ -18,7 +18,6 @@ const LOGIN_DOMAIN_STORAGE_KEY = "itgc-login-domain-v1";
 const DELETED_MEMBER_EMAILS_STORAGE_KEY = "itgc-deleted-member-emails-v1";
 const CURRENT_VIEW_STORAGE_KEY = "itgc-current-view-v1";
 const WORKBENCH_TAB_STORAGE_KEY = "itgc-workbench-tab-v1";
-const UI_THEME_STORAGE_KEY = "itgc-ui-theme-v1";
 const AUDIT_LOG_MAX_ITEMS = 3000;
 const AUDIT_LOG_PAGE_SIZE = 30;
 const LOGIN_DOMAIN_ERROR_MESSAGE = "허용된 도메인만 로그인할 수 있습니다.";
@@ -60,19 +59,6 @@ const DATA_BACKEND = (() => {
 const HAS_REMOTE_BACKEND = DATA_BACKEND !== "local";
 const VIEW_KEYS = ["dashboard", "dashboard-delay-detail", "control-list", "control-workbench", "report", "people", "audit", "register", "controls", "control-review", "roles"];
 const WORKBENCH_TAB_KEYS = ["register", "controls", "controls-complete", "control-review", "performed-complete"];
-const UI_THEME_OPTIONS = [
-  { value: "classic", label: "Classic" },
-  { value: "editorial", label: "Editorial White" },
-  { value: "navy", label: "Navy Pro" },
-  { value: "glass", label: "Soft Glass" },
-  { value: "forest", label: "Forest" },
-  { value: "sunset", label: "Sunset" },
-  { value: "mono", label: "Monochrome" },
-  { value: "mint", label: "Mint" },
-  { value: "coral", label: "Coral" },
-  { value: "midnight", label: "Midnight" },
-];
-const UI_THEME_VALUES = new Set(UI_THEME_OPTIONS.map((option) => option.value));
 const CONTROL_UNIT_FILTER_ORDER = ["개발유닛", "인프라유닛", "정보보호유닛", "QA유닛"];
 const DASHBOARD_DELAY_BUCKET_CONFIG = {
   annual: {
@@ -831,6 +817,15 @@ function resolveReviewActorDisplay(control) {
     return reviewAuthorEmail;
   }
   return resolveReviewDeptDisplay(control);
+}
+
+function formatActorWithUnit(name, unit) {
+  const normalizedName = String(name ?? "").trim();
+  const normalizedUnit = String(unit ?? "").trim();
+  if (normalizedName && normalizedName !== "-" && normalizedUnit && normalizedUnit !== "-") {
+    return `${normalizedName}(${normalizedUnit})`;
+  }
+  return normalizedName || normalizedUnit || "-";
 }
 
 function resolveExecutionDetailTestMethod(control) {
@@ -2689,16 +2684,6 @@ function loadPersistedWorkbenchTab() {
   return "register";
 }
 
-function loadPersistedUiTheme() {
-  try {
-    const saved = window.localStorage.getItem(UI_THEME_STORAGE_KEY);
-    if (saved && UI_THEME_VALUES.has(saved)) {
-      return saved;
-    }
-  } catch {}
-  return "classic";
-}
-
 function loadNavigationStateFromUrl() {
   if (typeof window === "undefined") {
     return {};
@@ -2816,7 +2801,6 @@ export default function App() {
   const [dashboardCategoryFocus, setDashboardCategoryFocus] = useState("전체");
   const [dashboardDelayDetailKey, setDashboardDelayDetailKey] = useState("monthly");
   const [workbenchTab, setWorkbenchTab] = useState(() => initialNavigationState.workbenchTab || loadPersistedWorkbenchTab());
-  const [uiTheme, setUiTheme] = useState(() => loadPersistedUiTheme());
   const [dashboardCalendarMonth, setDashboardCalendarMonth] = useState(() => {
     const month = new Date().getMonth() + 1;
     return Number.isInteger(month) && month >= 1 && month <= 12 ? month : 1;
@@ -2956,6 +2940,11 @@ export default function App() {
     }
     return resolveExecutionAuthorDisplay(control);
   };
+  const resolveExecutionActorWithUnitDisplay = (control) =>
+    formatActorWithUnit(
+      resolveExecutionActorDisplay(control),
+      String(control?.executionAuthorUnit ?? resolveExecutionAuthorDisplay(control)).trim(),
+    );
   const resolveExecutionAuthorDisplay = (control) => {
     const catalog = controlCatalog[String(control?.id ?? "").trim()] ?? {};
     const rawUnit = String(control?.performDept ?? catalog.performDept ?? "").trim();
@@ -2967,6 +2956,11 @@ export default function App() {
     const rawUnit = String(control?.reviewDept ?? catalog.reviewDept ?? "").trim();
     return normalizeUnitLabel(rawUnit) || rawUnit || "-";
   };
+  const resolveReviewActorWithUnitDisplay = (control) =>
+    formatActorWithUnit(
+      resolveReviewActorDisplay(control),
+      String(control?.reviewAuthorUnit ?? resolveReviewDeptDisplay(control)).trim(),
+    );
   const normalizedAuthEmail = String(authUser?.email ?? "").trim().toLowerCase();
   const currentMemberRecord = memberDirectory.find(
     (person) => String(person.email ?? "").trim().toLowerCase() === normalizedAuthEmail,
@@ -3041,6 +3035,56 @@ export default function App() {
   }, [workbenchTab]);
 
   useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return undefined;
+    }
+
+    let frameId = 0;
+    const selector = [
+      "h1",
+      "h2",
+      "h3",
+      "h4",
+      "h5",
+      "h6",
+      "p",
+      "span",
+      "button",
+      "label",
+      "small",
+      "li",
+      "td",
+      "th",
+      "strong",
+      "em",
+      "a",
+      "input",
+      "select",
+      "textarea",
+    ].join(", ");
+
+    const updateFontDebugLabels = () => {
+      document.body.classList.add("font-debug-active");
+      document.querySelectorAll(selector).forEach((element) => {
+        const text = "value" in element
+          ? String(element.value ?? "").trim()
+          : String(element.textContent ?? "").trim();
+        if (!text) {
+          element.removeAttribute("data-font-debug");
+          return;
+        }
+        const fontSize = window.getComputedStyle(element).fontSize;
+        element.setAttribute("data-font-debug", fontSize);
+      });
+    };
+
+    frameId = window.requestAnimationFrame(updateFontDebugLabels);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  });
+
+  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
@@ -3061,15 +3105,6 @@ export default function App() {
     selectedCompletedExecutionKey,
     selectedReviewExecutionKey,
   ]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(UI_THEME_STORAGE_KEY, uiTheme);
-    } catch {}
-    if (typeof document !== "undefined") {
-      document.body.setAttribute("data-ui-theme", uiTheme);
-    }
-  }, [uiTheme]);
 
   useEffect(() => {
     const workspaceDomains = parseDomainList(workspace.loginDomains);
@@ -3176,14 +3211,16 @@ export default function App() {
   const selectedAssignmentEvidenceCount = Array.isArray(selectedAssignmentEntry?.evidenceFiles)
     ? selectedAssignmentEntry.evidenceFiles.length
     : 0;
+  const pendingAssignmentUploadCount = assignmentPendingEvidenceCount + assignmentDroppedFiles.length;
   const totalAssignmentEvidenceCount =
-    selectedAssignmentEvidenceCount + assignmentPendingEvidenceCount + assignmentDroppedFiles.length;
+    selectedAssignmentEvidenceCount + pendingAssignmentUploadCount;
+  const pendingCompletedUploadCount = completedPendingEvidenceCount + completedDroppedFiles.length;
   const canSubmitAssignment =
     hasPerformPermissionForControl(selectedControl)
     && assignmentExecutionYear.trim().length > 0
     && assignmentExecutionPeriod.trim().length > 0
     && assignmentExecutionNote.trim().length > 0
-    && totalAssignmentEvidenceCount > 0;
+    && pendingAssignmentUploadCount > 0;
   const canRecallSelectedExecution =
     !!selectedControl
     && normalizedAuthEmail.length > 0
@@ -3864,6 +3901,12 @@ export default function App() {
   const selectedCompletedControl = selectedCompletedExecutionKey
     ? (completedExecutionControls.find((control) => control.completedExecutionKey === selectedCompletedExecutionKey) ?? null)
     : (completedPagedControls[0] ?? null);
+  const canSubmitCompletedEdit =
+    hasPerformPermissionForControl(selectedCompletedControl)
+    && completedEditYear.trim().length > 0
+    && completedEditPeriod.trim().length > 0
+    && completedEditNote.trim().length > 0
+    && pendingCompletedUploadCount > 0;
   const totalPerformedPages = Math.max(1, Math.ceil(performedExecutionControls.length / listPageSize));
   const currentPerformedPage = Math.min(controlListPage, totalPerformedPages);
   const performedPagedControls = performedExecutionControls.slice(
@@ -5621,20 +5664,6 @@ export default function App() {
     });
   }
 
-  function handleUiThemeChange(nextTheme) {
-    if (!canManageMembers) {
-      return;
-    }
-    if (!UI_THEME_VALUES.has(nextTheme)) {
-      return;
-    }
-    if (nextTheme === uiTheme) {
-      return;
-    }
-    setUiTheme(nextTheme);
-    writeAuditLog("MEMBER_UPDATED", "ui-theme", `UI 테마 변경: ${uiTheme} -> ${nextTheme}`);
-  }
-
   async function handleAssignmentSubmit(event) {
     event.preventDefault();
     if (!hasPerformPermissionForControl(selectedControl)) {
@@ -5680,6 +5709,11 @@ export default function App() {
 
     if (!executionNote) {
       showCenterAlert("수행 내역을 입력하세요.");
+      return;
+    }
+
+    if (files.length === 0) {
+      showCenterAlert("증적 파일을 1개 이상 첨부해야 등록 완료할 수 있습니다.");
       return;
     }
 
@@ -5946,6 +5980,11 @@ export default function App() {
 
     if (!executionNote) {
       showCenterAlert("수행 내역을 입력하세요.");
+      return;
+    }
+
+    if (files.length === 0) {
+      showCenterAlert("증적 파일을 1개 이상 새로 첨부해야 수정 저장할 수 있습니다.");
       return;
     }
 
@@ -6312,7 +6351,7 @@ export default function App() {
   }
 
   return (
-    <div className={isSidebarOpen ? `app-shell theme-${uiTheme}` : `app-shell sidebar-collapsed theme-${uiTheme}`}>
+    <div className={isSidebarOpen ? "app-shell" : "app-shell sidebar-collapsed"}>
       <button
         type="button"
         className={isSidebarOpen ? "sidebar-overlay visible" : "sidebar-overlay"}
@@ -6389,7 +6428,14 @@ export default function App() {
             로그아웃
           </button>
         </div>
-        <main className={isWorkbenchView || currentView === "register" || currentView === "control-list" || currentView === "controls" || currentView === "control-review" || currentView === "report" || currentView === "people" || currentView === "audit" ? "layout workbench-layout" : "layout"}>
+        <main className={[
+          isWorkbenchView || currentView === "register" || currentView === "control-list" || currentView === "controls" || currentView === "control-review" || currentView === "report" || currentView === "people" || currentView === "audit"
+            ? "layout workbench-layout"
+            : "layout",
+          isWorkbenchView || currentView === "register" || currentView === "control-list" || currentView === "controls" || currentView === "control-review"
+            ? "control-management-font-scope"
+            : "",
+        ].filter(Boolean).join(" ")}>
           {currentView === "dashboard" ? (
             <>
               <section className={`dashboard-card control-progress-section dashboard-view-${dashboardView}`}>
@@ -6537,107 +6583,109 @@ export default function App() {
                     </select>
                   </label>
                 </div>
-                {dashboardView === "frequency" ? (
-                  <div className="control-progress-group-list" id="dashboard-frequency-root">
-                    {visibleControlProgressGroups.map((group) => (
-                      <section
-                        className={`control-progress-group tone-${toDashboardAnchor(group.frequency)}`}
-                        key={group.frequency}
-                        id={`dashboard-frequency-${toDashboardAnchor(group.frequency)}`}
-                      >
-                        <div className="control-progress-group-head">
-                          <strong>{group.label}</strong>
-                          <span>{`진행률: ${group.progressRate}%`}</span>
-                        </div>
-                        <div className="control-progress-list">
-                          {group.items.map((item) => (
-                            <button
-                              type="button"
-                              className="control-progress-card"
-                              key={item.id}
-                              onClick={() => openControlOperation(item.id)}
-                            >
-                              <div className="control-progress-head">
-                                <strong>{item.id}</strong>
-                                <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
-                              </div>
-                              <AutoFitTitle>{item.title}</AutoFitTitle>
-                              <div className="progress-track" aria-hidden="true">
-                                <span style={{ width: `${item.progress}%` }} />
-                              </div>
-                              <div className="progress-caption">
-                                <span>현재 현황</span>
-                                <strong>{item.progress}%</strong>
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      </section>
-                    ))}
+                <div className={`dashboard-view-content dashboard-view-content-${dashboardView}`}>
+                  <div className={dashboardView === "frequency" ? "dashboard-view-panel active" : "dashboard-view-panel"} aria-hidden={dashboardView !== "frequency"}>
+                    <div className="control-progress-group-list" id="dashboard-frequency-root">
+                      {visibleControlProgressGroups.map((group) => (
+                        <section
+                          className={`control-progress-group tone-${toDashboardAnchor(group.frequency)}`}
+                          key={group.frequency}
+                          id={`dashboard-frequency-${toDashboardAnchor(group.frequency)}`}
+                        >
+                          <div className="control-progress-group-head">
+                            <strong>{group.label}</strong>
+                            <span>{`진행률: ${group.progressRate}%`}</span>
+                          </div>
+                          <div className="control-progress-list">
+                            {group.items.map((item) => (
+                              <button
+                                type="button"
+                                className="control-progress-card"
+                                key={item.id}
+                                onClick={() => openControlOperation(item.id)}
+                              >
+                                <div className="control-progress-head">
+                                  <strong>{item.id}</strong>
+                                  <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
+                                </div>
+                                <AutoFitTitle>{item.title}</AutoFitTitle>
+                                <div className="progress-track" aria-hidden="true">
+                                  <span style={{ width: `${item.progress}%` }} />
+                                </div>
+                                <div className="progress-caption">
+                                  <span>현재 현황</span>
+                                  <strong>{item.progress}%</strong>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </section>
+                      ))}
+                    </div>
                   </div>
-                ) : null}
-                {dashboardView === "control" ? (
-                  <div className="control-progress-group-list" id="dashboard-control-root">
-                    {visibleDashboardControlGroups.map((group) => (
-                      <section className={`control-progress-group tone-${toDashboardAnchor(group.group)}`} key={group.group}>
-                        <div className="control-progress-group-head">
-                          <strong>{group.group}</strong>
-                          <span>{`진행률: ${group.progressRate}%`}</span>
-                        </div>
-                        <div className="control-progress-list control-progress-list-by-control">
-                          {group.items.map((item) => (
-                            <button
-                              type="button"
-                              className="control-progress-card"
-                              key={item.id}
-                              id={`dashboard-control-${toDashboardAnchor(item.id)}`}
-                              onClick={() => openControlOperationByGroup(group.group)}
-                            >
-                              <div className="control-progress-head">
-                                <strong>{item.id}</strong>
-                                <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
-                              </div>
-                              <AutoFitTitle>{item.title}</AutoFitTitle>
-                              <div className="progress-track" aria-hidden="true">
-                                <span style={{ width: `${item.progress}%` }} />
-                              </div>
-                              <div className="progress-caption">
-                                <span>현재 현황</span>
-                                <strong>{item.progress}%</strong>
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      </section>
-                    ))}
+                  <div className={dashboardView === "control" ? "dashboard-view-panel active" : "dashboard-view-panel"} aria-hidden={dashboardView !== "control"}>
+                    <div className="control-progress-group-list" id="dashboard-control-root">
+                      {visibleDashboardControlGroups.map((group) => (
+                        <section className={`control-progress-group tone-${toDashboardAnchor(group.group)}`} key={group.group}>
+                          <div className="control-progress-group-head">
+                            <strong>{group.group}</strong>
+                            <span>{`진행률: ${group.progressRate}%`}</span>
+                          </div>
+                          <div className="control-progress-list control-progress-list-by-control">
+                            {group.items.map((item) => (
+                              <button
+                                type="button"
+                                className="control-progress-card"
+                                key={item.id}
+                                id={`dashboard-control-${toDashboardAnchor(item.id)}`}
+                                onClick={() => openControlOperationByGroup(group.group)}
+                              >
+                                <div className="control-progress-head">
+                                  <strong>{item.id}</strong>
+                                  <span className={`status-badge ${statusClass(item.status)}`}>{item.status}</span>
+                                </div>
+                                <AutoFitTitle>{item.title}</AutoFitTitle>
+                                <div className="progress-track" aria-hidden="true">
+                                  <span style={{ width: `${item.progress}%` }} />
+                                </div>
+                                <div className="progress-caption">
+                                  <span>현재 현황</span>
+                                  <strong>{item.progress}%</strong>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </section>
+                      ))}
+                    </div>
                   </div>
-                ) : null}
-                {dashboardView === "category" ? (
-                  <div className="control-progress-list category-progress-list" id="dashboard-category-root">
-                    {visibleDashboardProcessSummary.map((item) => (
-                      <button
-                        type="button"
-                        className={`control-progress-card category-progress-card tone-${toDashboardAnchor(item.process)}`}
-                        key={item.process}
-                        id={`dashboard-category-${toDashboardAnchor(item.process)}`}
-                        onClick={() => openRegistrationByCategory(item.process)}
-                      >
-                        <div className="control-progress-head category-progress-head">
-                          <strong>{item.process}</strong>
-                          <span>{`진행률: ${item.progressRate}%`}</span>
-                        </div>
-                        <small>현재 현황 · 완료 {item.done} · 관리 필요 {item.pending}</small>
-                        <div className="progress-track" aria-hidden="true">
-                          <span style={{ width: `${item.progressRate}%` }} />
-                        </div>
-                        <div className="progress-caption">
-                          <span>현재 현황</span>
-                          <strong>{item.progressRate}%</strong>
-                        </div>
-                      </button>
-                    ))}
+                  <div className={dashboardView === "category" ? "dashboard-view-panel active" : "dashboard-view-panel"} aria-hidden={dashboardView !== "category"}>
+                    <div className="control-progress-list category-progress-list" id="dashboard-category-root">
+                      {visibleDashboardProcessSummary.map((item) => (
+                        <button
+                          type="button"
+                          className={`control-progress-card category-progress-card tone-${toDashboardAnchor(item.process)}`}
+                          key={item.process}
+                          id={`dashboard-category-${toDashboardAnchor(item.process)}`}
+                          onClick={() => openRegistrationByCategory(item.process)}
+                        >
+                          <div className="control-progress-head category-progress-head">
+                            <strong>{item.process}</strong>
+                            <span>{`진행률: ${item.progressRate}%`}</span>
+                          </div>
+                          <small>현재 현황 · 완료 {item.done} · 관리 필요 {item.pending}</small>
+                          <div className="progress-track" aria-hidden="true">
+                            <span style={{ width: `${item.progressRate}%` }} />
+                          </div>
+                          <div className="progress-caption">
+                            <span>현재 현황</span>
+                            <strong>{item.progressRate}%</strong>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                ) : null}
+                </div>
               </section>
             </>
           ) : null}
@@ -7265,6 +7313,9 @@ export default function App() {
                 </div>
                 <div className="control-list">
                   {limitedControls.map((control) => {
+                    const latestExecutionEntry = getPreferredExecutionEntry(control);
+                    const evidenceBadgeSource = latestExecutionEntry ?? control;
+
                     return (
                       <button
                         type="button"
@@ -7339,7 +7390,7 @@ export default function App() {
                           {assignmentExecutionNote.trim() ? null : (
                             <span className="status-badge review-pending">수행 내역 없음</span>
                           )}
-                          {totalAssignmentEvidenceCount > 0 ? null : (
+                          {pendingAssignmentUploadCount > 0 ? null : (
                             <span className="status-badge evidence-missing">증적 파일 없음</span>
                           )}
                           <span className="status-badge unit-assignee-badge">
@@ -7788,7 +7839,7 @@ export default function App() {
                                 <button className="secondary-button completed-edit-button" type="button" onClick={handleCancelCompletedEdit}>
                                   취소
                                 </button>
-                                <button className="primary-button" type="submit" style={{ color: "#ffffff", WebkitTextFillColor: "#ffffff" }}>
+                                <button className="primary-button" type="submit" disabled={!canSubmitCompletedEdit} style={{ color: "#ffffff", WebkitTextFillColor: "#ffffff" }}>
                                   수정 저장
                                 </button>
                               </div>
@@ -8077,10 +8128,10 @@ export default function App() {
                           <span className={`status-badge ${statusClass(selectedPerformedControl.status)}`}>{selectedPerformedControl.status}</span>
                           <span className="status-badge normal-badge">{selectedPerformedControl.reviewChecked || "검토 완료"}</span>
                           <span className="status-badge unit-assignee-badge">
-                            수행: {resolveExecutionAuthorDisplay(selectedPerformedControl)}
+                            수행: {resolveExecutionActorWithUnitDisplay(selectedPerformedControl)}
                           </span>
                           <span className="status-badge unit-assignee-badge">
-                            검토: {resolveReviewActorDisplay(selectedPerformedControl)}
+                            검토: {resolveReviewActorWithUnitDisplay(selectedPerformedControl)}
                           </span>
                         </div>
                       </div>
@@ -8092,9 +8143,9 @@ export default function App() {
                             <span className="review-meta-separator">|</span>
                             <span className="review-meta-chip review-meta-period">주기: {selectedPerformedControl.executionPeriod || "-"}</span>
                             <span className="review-meta-separator">|</span>
-                            <span className="review-meta-chip review-meta-owner">수행 유닛: {resolveExecutionAuthorDisplay(selectedPerformedControl)}</span>
+                            <span className="review-meta-chip review-meta-owner">수행: {resolveExecutionActorWithUnitDisplay(selectedPerformedControl)}</span>
                             <span className="review-meta-separator">|</span>
-                            <span className="review-meta-chip review-meta-owner">검토자: {resolveReviewActorDisplay(selectedPerformedControl)}</span>
+                            <span className="review-meta-chip review-meta-owner">검토: {resolveReviewActorWithUnitDisplay(selectedPerformedControl)}</span>
                           </div>
                         </div>
                         <div className="table-wrap performed-detail-table-wrap">
@@ -8181,18 +8232,6 @@ export default function App() {
                 </div>
                 <div className="report-toolbar login-domain-toolbar">
                   <div className="login-domain-inline">
-                    <label className="filter-label" style={{ minWidth: "220px" }}>
-                      <span>UI 테마 (10종)</span>
-                      <select
-                        value={uiTheme}
-                        onChange={(event) => handleUiThemeChange(event.target.value)}
-                        disabled={!canManageMembers}
-                      >
-                        {UI_THEME_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>{option.label}</option>
-                        ))}
-                      </select>
-                    </label>
                     <label className="filter-label" style={{ minWidth: "320px" }}>
                       <span>로그인 허용 도메인 (콤마 구분)</span>
                       <input

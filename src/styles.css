@@ -19,6 +19,8 @@
   --type-body-size: 0.9rem;
   --type-meta-size: 0.8rem;
   --type-badge-size: 0.72rem;
+  --circle-number-size: 28px;
+  --circle-number-font-size: 0.92rem;
   font-family: "IBM Plex Sans KR", sans-serif;
   font-size: 14px;
 }
@@ -45,6 +47,70 @@ body {
     linear-gradient(135deg, var(--bg), #f8f6f1 45%, var(--bg-accent));
   min-height: 100vh;
   overflow-y: scroll;
+}
+
+body.font-debug-active :is(
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  p,
+  span,
+  button,
+  label,
+  small,
+  li,
+  td,
+  th,
+  strong,
+  em,
+  a,
+  input,
+  select,
+  textarea
+)[data-font-debug] {
+  position: relative;
+  outline: 1px dashed rgba(220, 38, 38, 0.18);
+  outline-offset: 1px;
+}
+
+body.font-debug-active :is(
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  p,
+  span,
+  button,
+  label,
+  small,
+  li,
+  td,
+  th,
+  strong,
+  em,
+  a
+)[data-font-debug]::after {
+  content: attr(data-font-debug);
+  position: absolute;
+  top: 0;
+  right: 0;
+  transform: translateY(-100%);
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(17, 24, 39, 0.92);
+  color: #ffffff;
+  font-size: 10px !important;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 9999;
 }
 
 button,
@@ -230,7 +296,7 @@ textarea {
 
 .sidebar-brand h1 {
   margin: 0;
-  font-size: 1.2rem;
+  font-size: 18px;
   letter-spacing: 0.01em;
   text-align: right;
 }
@@ -257,6 +323,7 @@ textarea {
   display: grid;
   gap: 8px;
   align-content: start;
+  margin-top: 28px;
 }
 
 .nav-button {
@@ -297,6 +364,8 @@ textarea {
 
 .nav-button-label {
   white-space: nowrap;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .menu-pending-badge {
@@ -304,13 +373,13 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
+  min-width: var(--circle-number-size);
+  height: var(--circle-number-size);
+  padding: 0 6px;
   border-radius: 999px;
   background: #dc2626;
   color: #ffffff;
-  font-size: 0.66rem;
+  font-size: var(--circle-number-font-size);
   font-weight: 700;
   line-height: 1;
 }
@@ -319,30 +388,27 @@ textarea {
   position: absolute;
   top: 6px;
   right: 6px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
 }
 
 .tab-pending-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 24px;
-  height: 24px;
+  min-width: var(--circle-number-size);
+  height: var(--circle-number-size);
   margin-left: 6px;
-  padding: 0 7px;
+  padding: 0 6px;
   border-radius: 999px;
   background: #dc2626;
   color: #ffffff;
-  font-size: 0.78rem;
+  font-size: var(--circle-number-font-size);
   font-weight: 700;
   line-height: 1;
 }
 
 .tab-pending-badge-draft {
   background: #facc15;
-  color: #111111;
+  color: #dc2626;
 }
 
 .sidebar-footer {
@@ -658,6 +724,31 @@ textarea {
   overflow: hidden;
 }
 
+.control-management-font-scope :is(
+  h1,
+  p,
+  span,
+  div,
+  button,
+  input,
+  select,
+  textarea,
+  label,
+  small,
+  li,
+  td,
+  th,
+  strong,
+  em,
+  a
+) {
+  font-size: 12px !important;
+}
+
+.control-management-font-scope :is(h1, h2, h3, h4, h5, h6) {
+  font-size: 14px !important;
+}
+
 .dashboard-card,
 .panel {
   background: var(--panel);
@@ -784,7 +875,7 @@ textarea {
 .workbench-flow-eyebrow {
   margin: 0;
   color: #111111;
-  font-size: 1rem;
+  font-size: 14px;
   font-weight: 800;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -821,7 +912,7 @@ textarea {
 
 .workbench-step-button {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) 28px;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
   align-items: center;
   gap: 8px;
   min-height: 64px;
@@ -870,13 +961,19 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: var(--circle-number-size);
+  height: var(--circle-number-size);
   border-radius: 999px;
   background: rgba(17, 40, 79, 0.08);
   color: var(--navy);
-  font-size: 0.72rem;
+  font-size: 14px !important;
   font-weight: 800;
+}
+
+.control-management-font-scope .workbench-step-index,
+.control-management-font-scope .workbench-step-button .workbench-step-index,
+.control-management-font-scope .tab-button.workbench-step-button .workbench-step-index {
+  font-size: 14px !important;
 }
 
 .workbench-step-button.completed .workbench-step-index {
@@ -898,9 +995,15 @@ textarea {
 
 .workbench-step-label {
   color: var(--text);
-  font-size: 1.01rem;
+  font-size: 14px !important;
   font-weight: 800;
   line-height: 1.2;
+}
+
+.control-management-font-scope .workbench-step-button .workbench-step-label,
+.control-management-font-scope .tab-button.workbench-step-button .workbench-step-label,
+.control-management-font-scope .workbench-step-button.active .workbench-step-label {
+  font-size: 14px !important;
 }
 
 .workbench-step-helper {
@@ -963,10 +1066,10 @@ textarea {
 }
 
 .dashboard-tabs .tab-button {
-  width: 92px;
-  min-width: 92px;
-  max-width: 92px;
-  font-size: 0.84rem;
+  width: 120px;
+  min-width: 120px;
+  max-width: 120px;
+  font-size: 14px;
   font-weight: 700;
 }
 
@@ -977,7 +1080,7 @@ textarea {
 }
 
 .tab-button.workbench-step-button {
-  grid-template-columns: 24px minmax(0, 1fr) 28px;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
   gap: 8px;
   min-height: 64px;
   padding: 9px 14px;
@@ -1344,7 +1447,7 @@ textarea {
   background: #f4efe6;
   border: 1px solid rgba(24, 49, 83, 0.08);
   color: var(--text);
-  font-size: 0.72rem;
+  font-size: 11px;
   transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
 }
 
@@ -1374,7 +1477,7 @@ textarea {
   border-radius: 3px;
   background: rgba(24, 49, 83, 0.08);
   color: var(--navy);
-  font-size: 0.72rem;
+  font-size: 11px;
   font-weight: 700;
   text-align: center;
 }
@@ -1445,6 +1548,7 @@ textarea {
 .execution-inline-select-row {
   display: grid;
   gap: 10px;
+  padding: 10px 12px;
 }
 
 .execution-inline-select-controls,
@@ -1467,6 +1571,7 @@ textarea {
   flex: 1 1 180px;
   min-width: 0;
   font-size: 0.82rem;
+  padding: 5px 10px;
 }
 
 .review-compact-meta strong {
@@ -1932,11 +2037,12 @@ th {
 .member-table th {
   text-align: center;
   font-weight: 700;
-  font-size: calc(0.76rem + 2px);
+  font-size: 14px;
 }
 
 .audit-table th {
   text-align: center;
+  font-size: 14px;
 }
 
 .audit-table {
@@ -2185,6 +2291,17 @@ th {
   border-bottom: 1px solid var(--line);
 }
 
+.report-toolbar .registration-filter-field > span,
+.report-toolbar .report-completion-filter > span {
+  color: #111111;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.report-toolbar .registration-filter-field select {
+  font-size: 14px;
+}
+
 .report-summary-card {
   display: grid;
   gap: 2px;
@@ -2201,12 +2318,12 @@ th {
 }
 
 .report-summary-card span {
-  font-size: 0.76rem;
+  font-size: 16px;
   color: var(--muted);
 }
 
 .report-summary-card strong {
-  font-size: 1rem;
+  font-size: 18px;
   line-height: 1.1;
 }
 
@@ -2224,6 +2341,7 @@ th {
 
 .report-table th {
   font-weight: 700;
+  font-size: 14px;
   color: #1f2a28;
   background: #f2ede2;
   border: 1px solid rgba(39, 52, 46, 0.3);
@@ -2239,6 +2357,10 @@ th {
 
 .report-table th:nth-child(2) {
   text-align: center;
+}
+
+.report-table th:nth-child(-n + 5) {
+  font-size: 14px;
 }
 
 .report-table th:not(:nth-child(8)):not(:nth-child(9)),
@@ -2447,6 +2569,7 @@ th {
 
 .member-table td {
   text-align: center;
+  font-size: 14px;
 }
 
 .member-table input,
@@ -2458,6 +2581,7 @@ th {
   margin: 0 auto;
   text-align: center;
   text-align-last: center;
+  font-size: 14px;
 }
 
 .member-table input[type="checkbox"] {
@@ -2687,7 +2811,14 @@ th {
 
 .dashboard-view-category .control-progress-group-list,
 .dashboard-view-category .control-progress-list.category-progress-list {
-  min-height: 0;
+  min-height: 420px;
+}
+
+#dashboard-frequency-root,
+#dashboard-control-root,
+#dashboard-category-root {
+  min-height: 420px;
+  align-content: start;
 }
 
 .control-progress-group {
@@ -2781,6 +2912,25 @@ th {
   margin: 6px 0 22px;
 }
 
+.dashboard-view-content {
+  position: relative;
+  min-height: 520px;
+  align-content: start;
+}
+
+.dashboard-view-panel {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.dashboard-view-panel.active {
+  position: relative;
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .dashboard-month-calendar {
   display: grid;
   gap: 14px;
@@ -2805,7 +2955,8 @@ th {
 }
 
 .dashboard-month-calendar-head strong {
-  font-size: 0.9rem;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .dashboard-month-calendar-head span {
@@ -2844,12 +2995,12 @@ th {
 
 .dashboard-month-button span {
   color: #334155;
-  font-size: 0.9rem;
+  font-size: 14px;
   font-weight: 700;
 }
 
 .dashboard-month-button strong {
-  font-size: 1rem;
+  font-size: 16px;
   color: #0b63c8;
 }
 
@@ -2888,7 +3039,41 @@ th {
 }
 
 .dashboard-month-control-card {
-  gap: 4px;
+  gap: 0;
+}
+
+.dashboard-month-calendar .dashboard-month-control-card,
+.dashboard-view-category .dashboard-month-calendar .dashboard-month-control-card,
+.dashboard-view-frequency .dashboard-month-calendar .dashboard-month-control-card,
+.dashboard-view-control .dashboard-month-calendar .dashboard-month-control-card {
+  gap: 0 !important;
+}
+
+.dashboard-month-control-card .control-progress-head {
+  margin-bottom: 0;
+}
+
+.dashboard-month-calendar .dashboard-month-control-card .control-progress-head,
+.dashboard-view-category .dashboard-month-calendar .dashboard-month-control-card .control-progress-head,
+.dashboard-view-frequency .dashboard-month-calendar .dashboard-month-control-card .control-progress-head,
+.dashboard-view-control .dashboard-month-calendar .dashboard-month-control-card .control-progress-head {
+  margin-bottom: 0 !important;
+}
+
+.dashboard-month-control-card .auto-fit-title {
+  margin-top: 0 !important;
+  padding-top: 0;
+  font-size: 12px !important;
+  line-height: 1.3;
+}
+
+.dashboard-month-calendar .dashboard-month-control-card .auto-fit-title,
+.dashboard-view-category .dashboard-month-calendar .dashboard-month-control-card .auto-fit-title,
+.dashboard-view-frequency .dashboard-month-calendar .dashboard-month-control-card .auto-fit-title,
+.dashboard-view-control .dashboard-month-calendar .dashboard-month-control-card .auto-fit-title {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+  min-height: 15.6px;
 }
 
 .dashboard-month-control-card small {
@@ -3032,14 +3217,16 @@ th {
 
 .control-progress-summary-card span {
   color: #52606d;
-  font-size: 0.64rem;
+  font-size: 14px;
+  font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .control-progress-summary-card strong {
-  font-size: 0.86rem;
+  font-size: 32px;
+  font-weight: 700;
   line-height: 1.1;
   display: inline-flex;
   align-items: center;
@@ -3048,6 +3235,11 @@ th {
   overflow-wrap: normal;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.dashboard-view-category .control-progress-summary-card span,
+.dashboard-view-category .control-progress-summary-card strong {
+  color: #111111;
 }
 
 .category-progress-list {
@@ -3071,6 +3263,14 @@ th {
   border-color: rgba(24, 49, 83, 0.12);
 }
 
+.dashboard-view-frequency .control-progress-card:not(.dashboard-month-control-card) {
+  gap: 2px;
+}
+
+.dashboard-view-frequency .control-progress-card:not(.dashboard-month-control-card) .control-progress-head {
+  margin-bottom: 0;
+}
+
 .dashboard-view-frequency .control-progress-group-head {
   align-items: center;
   padding: 7px 10px;
@@ -3084,6 +3284,11 @@ th {
 
 .dashboard-view-frequency .progress-track span {
   background: linear-gradient(90deg, #183153, #2b5876);
+}
+
+.dashboard-view-frequency .control-progress-card:not(.dashboard-month-control-card) .auto-fit-title {
+  margin-top: 0 !important;
+  line-height: 1.2;
 }
 
 .dashboard-view-control .control-progress-group,
@@ -3117,7 +3322,7 @@ th {
 
 .dashboard-view-frequency .control-progress-group-head strong,
 .dashboard-view-control .control-progress-group-head strong {
-  font-size: 0.94rem;
+  font-size: 14px;
   letter-spacing: -0.01em;
 }
 
@@ -3171,7 +3376,7 @@ th {
 }
 
 .dashboard-view-category .category-progress-head strong {
-  font-size: 0.94rem;
+  font-size: 14px;
   letter-spacing: -0.01em;
 }
 
@@ -3192,6 +3397,11 @@ th {
 
 .dashboard-view-category .progress-track span {
   background: linear-gradient(90deg, #b7791f, #d69e2e);
+}
+
+.dashboard-view-category .category-progress-card small {
+  font-size: 12px;
+  color: #111111;
 }
 
 .dashboard-view-category .control-progress-card.tone-pwc .category-progress-head,
@@ -3522,12 +3732,13 @@ th {
 }
 
 .dashboard-delay-inline-summary span {
-  font-size: 0.98rem;
+  font-size: 14px;
   font-weight: 700;
 }
 
 .dashboard-delay-inline-summary strong {
-  font-size: 3rem;
+  font-size: 32px;
+  font-weight: 700;
   line-height: 1;
 }
 
@@ -3570,11 +3781,12 @@ th {
 
 .progress-caption strong {
   font-family: "Space Grotesk", sans-serif;
+  font-size: 12px;
 }
 
 .progress-caption span {
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: 12px;
 }
 
 .detail-meta-grid,
@@ -3948,16 +4160,30 @@ th {
   border-collapse: collapse;
   table-layout: fixed;
   background: #fffdf9;
-  border: 1px solid var(--line);
+  border: 1px solid #cbd5e1;
   border-radius: 8px;
   overflow: hidden;
+}
+
+.dashboard-delay-inline-summary span,
+.dashboard-progress-inline-summary span {
+  font-size: 14px;
+}
+
+.dashboard-delay-inline-summary strong,
+.dashboard-progress-inline-summary strong {
+  font-size: 32px;
 }
 
 .performed-detail-table th,
 .performed-detail-table td {
   padding: 10px 12px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid #d1d5db;
   vertical-align: top;
+}
+
+.performed-detail-table th {
+  border-right: 1px solid #d1d5db;
 }
 
 .performed-detail-table tr:last-child th,
@@ -3985,10 +4211,15 @@ th {
 
 .performed-detail-table .evidence-file-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 6px;
   margin: 0 !important;
   padding: 0 !important;
+}
+
+.performed-detail-table .evidence-file-chip-wrap {
+  display: flex;
 }
 
 .review-detail-body {
@@ -4158,6 +4389,7 @@ th {
   border-radius: 0 !important;
   background: transparent !important;
   border: 0 !important;
+  font-size: 11px !important;
   text-align: left;
   box-shadow: none !important;
 }
@@ -6230,8 +6462,13 @@ body[data-ui-theme="midnight"] { background: linear-gradient(140deg, #060912 0%,
     padding: 10px;
   }
 
+  .dashboard-view-content {
+    min-height: 0;
+  }
+
   .dashboard-month-calendar-head strong {
-    font-size: 0.76rem;
+    font-size: 16px;
+    font-weight: 700;
   }
 
   .dashboard-month-calendar-head span {
@@ -6341,13 +6578,13 @@ body[data-ui-theme="midnight"] { background: linear-gradient(140deg, #060912 0%,
   }
 
   .dashboard-delay-inline-summary span {
-    font-size: 0.62rem;
+    font-size: 14px;
     white-space: nowrap;
     word-break: keep-all;
   }
 
   .dashboard-delay-inline-summary strong {
-    font-size: 0.68rem;
+    font-size: 32px;
     white-space: nowrap;
     word-break: keep-all;
   }
@@ -6767,21 +7004,21 @@ textarea,
   }
 
   .workbench-step-button {
-    grid-template-columns: 24px minmax(0, 1fr) auto;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
     min-height: 54px;
     padding: 8px 12px;
     gap: 6px;
   }
 
   .tab-button.workbench-step-button {
-    grid-template-columns: 24px minmax(0, 1fr) auto;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
     min-height: 54px;
     padding: 8px 12px;
     gap: 6px;
   }
 
   .workbench-step-button .workbench-step-label {
-    font-size: 0.9rem;
+    font-size: 14px;
     line-height: 1.15;
   }
 
@@ -6821,6 +7058,10 @@ textarea,
 .control-browser-list .registration-control-item .auto-fit-title,
 .control-operation-card .auto-fit-title {
   margin-top: 8px !important;
+}
+
+.dashboard-view-frequency .control-progress-card .auto-fit-title {
+  margin-top: 2px !important;
 }
 
 .control-browser-list .registration-control-item .control-item-subtext,
@@ -6915,6 +7156,7 @@ textarea,
 .control-detail-card .control-detail-grid-view span,
 .control-detail-card .target-systems-meta .system-chip {
   color: #111111 !important;
+  font-size: 11px !important;
   font-weight: 400 !important;
 }
 
@@ -7201,7 +7443,7 @@ textarea,
 
 .control-execution-panel > .guide-scroll-card .registration-section-head h2 {
   color: #ffffff !important;
-  font-size: 1.125rem !important;
+  font-size: 14px !important;
   line-height: 1.3 !important;
 }
 
@@ -7212,7 +7454,7 @@ textarea,
 
 .control-execution-panel > .guide-scroll-card .registration-guide-list li {
   color: #ffffff !important;
-  font-size: 0.965rem !important;
+  font-size: 14px !important;
   line-height: 1.65 !important;
 }
 
