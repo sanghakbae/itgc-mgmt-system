@@ -659,6 +659,7 @@ export async function fetchSupabaseWorkspace() {
     { data: evidenceRows, error: evidenceError },
     { data: workflowRows, error: workflowError },
     { data: memberRows, error: memberError },
+    { data: auditRows, error: auditError },
     configRows,
   ] = await Promise.all([
     supabase.from(ITGC_CONTROL_MASTER_TABLE).select("*").order("sort_order", { ascending: true }),
@@ -666,6 +667,7 @@ export async function fetchSupabaseWorkspace() {
     supabase.from(ITGC_EVIDENCE_TABLE).select("*").order("uploaded_at", { ascending: false }),
     supabase.from(ITGC_WORKFLOWS_TABLE).select("*").order("due_date", { ascending: true }),
     supabase.from(ITGC_MEMBER_TABLE).select("*").order("member_name", { ascending: true }),
+    supabase.from(ITGC_AUDIT_TABLE).select("*").order("created_at_ts", { ascending: false }).limit(AUDIT_LOG_MAX_ITEMS),
     fetchConfigRowsMaybe(),
   ]);
 
@@ -683,6 +685,9 @@ export async function fetchSupabaseWorkspace() {
   }
   if (memberError) {
     throw new Error(`members_fetch_failed:${memberError.message}`);
+  }
+  if (auditError) {
+    throw new Error(`audit_fetch_failed:${auditError.message}`);
   }
   const executionRowsByControlId = new Map();
   for (const row of executionRows ?? []) {
@@ -906,11 +911,28 @@ export async function fetchSupabaseWorkspace() {
     };
   });
 
+  const auditLogs = (auditRows ?? []).map((row) => {
+    const payload = typeof row.audit_payload === "object" && row.audit_payload ? row.audit_payload : {};
+
+    return {
+      ...payload,
+      id: row.log_id,
+      action: row.action,
+      target: row.target,
+      detail: row.detail,
+      actorName: row.actor_name,
+      actorEmail: row.actor_email,
+      ip: row.ip,
+      createdAt: row.created_at,
+      createdAtTs: row.created_at_ts,
+    };
+  });
+
   return {
     controls,
     workflows,
     people,
-    auditLogs: [],
+    auditLogs,
     loginDomains,
   };
 }
@@ -992,6 +1014,7 @@ export async function syncSupabaseWorkspace(workspace) {
   const controlIds = controls.map((control) => control.id).filter(Boolean);
   const memberRows = people.map((member) => mapMemberToRow(member, nowIso));
   const configRow = mapLoginDomainConfigToConfigRow(loginDomains, nowIso);
+  const auditRows = auditLogs.map((log) => mapAuditToRow(log, nowIso));
 
   await upsertRows(ITGC_CONTROL_MASTER_TABLE, controlRows, "control_id");
   try {
@@ -1004,6 +1027,7 @@ export async function syncSupabaseWorkspace(workspace) {
   }
   await upsertRows(ITGC_EVIDENCE_TABLE, evidenceRows, "evidence_id");
   await upsertRows(ITGC_WORKFLOWS_TABLE, workflowRows, "workflow_id");
+  await upsertRows(ITGC_AUDIT_TABLE, auditRows, "log_id");
   await reconcileScopedRows(ITGC_CONTROL_EXECUTION_TABLE, executionRows, "execution_id", "control_id", {
     scopeValues: controlIds,
   });
