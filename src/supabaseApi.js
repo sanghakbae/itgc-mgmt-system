@@ -47,6 +47,38 @@ function toPipeList(values) {
   return values.map((value) => String(value).trim()).filter(Boolean).join("|");
 }
 
+function normalizeCompactText(value) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeUnitLabel(value) {
+  const normalized = normalizeCompactText(value);
+  if (!normalized) {
+    return "";
+  }
+
+  const compact = normalized.toLowerCase().replace(/\s+/g, "");
+  if (compact.includes("개발5")) {
+    return "인프라";
+  }
+  if (compact.includes("정보보호")) {
+    return "정보보호";
+  }
+  if (compact.includes("인프라")) {
+    return "인프라";
+  }
+  if (compact === "qa유닛" || compact === "qa") {
+    return "QA";
+  }
+  if (compact === "ta유닛" || compact === "ta") {
+    return "TA";
+  }
+
+  return normalized.replace(/유닛/g, "").trim();
+}
+
 function normalizeDate(dateLike) {
   const value = String(dateLike ?? "").trim();
   if (!value) {
@@ -152,12 +184,12 @@ function normalizeExecutionEntry(entry, control = {}) {
         : false,
     executionAuthorName: String(entry?.executionAuthorName ?? "").trim(),
     executionAuthorEmail: String(entry?.executionAuthorEmail ?? "").trim().toLowerCase(),
-    executionAuthorUnit: String(entry?.executionAuthorUnit ?? control?.performDept ?? control?.performer ?? control?.ownerDept ?? "").trim(),
+    executionAuthorUnit: normalizeUnitLabel(entry?.executionAuthorUnit ?? control?.performDept ?? control?.performer ?? control?.ownerDept ?? ""),
     reviewChecked: String(entry?.reviewChecked ?? "미검토").trim() || "미검토",
     reviewResult: String(entry?.reviewResult ?? "").trim(),
     reviewAuthorName: String(entry?.reviewAuthorName ?? "").trim(),
     reviewAuthorEmail: String(entry?.reviewAuthorEmail ?? "").trim().toLowerCase(),
-    reviewAuthorUnit: String(entry?.reviewAuthorUnit ?? control?.reviewDept ?? control?.reviewer ?? "").trim(),
+    reviewAuthorUnit: normalizeUnitLabel(entry?.reviewAuthorUnit ?? control?.reviewDept ?? control?.reviewer ?? ""),
     note: String(entry?.note ?? "").trim(),
     status: String(entry?.status ?? "점검 예정").trim() || "점검 예정",
     evidenceFiles: Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : [],
@@ -297,8 +329,8 @@ function mapControlToMasterRow(control, index, nowIso) {
     frequency: control.frequency ?? "",
     control_type: control.controlType ?? "예방",
     automation_level: control.automationLevel ?? "",
-    perform_dept: control.performDept ?? control.performer ?? control.ownerDept ?? "",
-    review_dept: control.reviewDept ?? control.reviewer ?? "",
+    perform_dept: normalizeUnitLabel(control.performDept ?? control.performer ?? control.ownerDept ?? ""),
+    review_dept: normalizeUnitLabel(control.reviewDept ?? control.reviewer ?? ""),
     target_systems: toPipeList(control.targetSystems),
     evidence_text: control.evidenceText ?? toPipeList(control.evidences) ?? "",
     test_method: control.testMethod ?? "",
@@ -338,14 +370,14 @@ function mapControlToExecutionRows(control, nowIso) {
         ? normalizeDate(entry.reviewDate ?? entry.updatedAt ?? nowIso)
         : null,
     review_note: entry.note ?? "",
-    performed_by: entry.executionAuthorUnit ?? control.performDept ?? control.performer ?? control.ownerDept ?? "",
-    reviewed_by: entry.reviewAuthorUnit ?? control.reviewDept ?? control.reviewer ?? "",
+    performed_by: normalizeUnitLabel(entry.executionAuthorUnit ?? control.performDept ?? control.performer ?? control.ownerDept ?? ""),
+    reviewed_by: normalizeUnitLabel(entry.reviewAuthorUnit ?? control.reviewDept ?? control.reviewer ?? ""),
     performed_by_name: entry.executionAuthorName ?? "",
     performed_by_email: entry.executionAuthorEmail ?? "",
-    performed_by_unit: entry.executionAuthorUnit ?? control.performDept ?? control.performer ?? control.ownerDept ?? "",
+    performed_by_unit: normalizeUnitLabel(entry.executionAuthorUnit ?? control.performDept ?? control.performer ?? control.ownerDept ?? ""),
     reviewed_by_name: entry.reviewAuthorName ?? "",
     reviewed_by_email: entry.reviewAuthorEmail ?? "",
-    reviewed_by_unit: entry.reviewAuthorUnit ?? control.reviewDept ?? control.reviewer ?? "",
+    reviewed_by_unit: normalizeUnitLabel(entry.reviewAuthorUnit ?? control.reviewDept ?? control.reviewer ?? ""),
     drive_folder_id: null,
     last_updated_at: nowIso,
     execution_payload: {
@@ -360,14 +392,14 @@ function mapControlToExecutionRows(control, nowIso) {
       reviewRequested: Boolean(entry.reviewRequested),
       executionAuthorName: entry.executionAuthorName ?? "",
       executionAuthorEmail: entry.executionAuthorEmail ?? "",
-      executionAuthorUnit: entry.executionAuthorUnit ?? control.performDept ?? control.performer ?? control.ownerDept ?? "",
+      executionAuthorUnit: normalizeUnitLabel(entry.executionAuthorUnit ?? control.performDept ?? control.performer ?? control.ownerDept ?? ""),
       note: entry.note ?? "",
-      reviewer: control.reviewer ?? control.reviewDept ?? "",
+      reviewer: normalizeUnitLabel(control.reviewer ?? control.reviewDept ?? ""),
       reviewChecked: entry.reviewChecked ?? "미검토",
       reviewResult: entry.reviewResult ?? "",
       reviewAuthorName: entry.reviewAuthorName ?? "",
       reviewAuthorEmail: entry.reviewAuthorEmail ?? "",
-      reviewAuthorUnit: entry.reviewAuthorUnit ?? control.reviewDept ?? control.reviewer ?? "",
+      reviewAuthorUnit: normalizeUnitLabel(entry.reviewAuthorUnit ?? control.reviewDept ?? control.reviewer ?? ""),
       reviewDate: normalizeDate(entry.reviewDate ?? entry.updatedAt ?? nowIso),
       status: entry.status ?? "점검 예정",
       evidenceStatus: entry.evidenceStatus ?? "미수집",
@@ -378,7 +410,7 @@ function mapControlToExecutionRows(control, nowIso) {
 
 function mapControlToEvidenceRows(control, nowIso) {
   return getControlExecutionHistory(control).flatMap((entry) => {
-    const uploader = control.performDept ?? control.performer ?? control.ownerDept ?? "";
+    const uploader = normalizeUnitLabel(control.performDept ?? control.performer ?? control.ownerDept ?? "");
     const executionId = entry.executionId || createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod);
     const evidenceFiles = Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles : [];
 
@@ -412,8 +444,8 @@ function mapWorkflowToRow(workflow, nowIso) {
     workflow_id: workflow.id,
     control_id: workflow.controlId ?? null,
     step: workflow.step ?? "",
-    assignee: workflow.assignee ?? "",
-    reviewer: workflow.reviewer ?? "",
+    assignee: normalizeUnitLabel(workflow.assignee ?? ""),
+    reviewer: normalizeUnitLabel(workflow.reviewer ?? ""),
     due_date: normalizeDate(workflow.dueDate),
     status: workflow.status ?? "todo",
     memo: workflow.memo ?? "",
@@ -428,7 +460,7 @@ function mapMemberToRow(member, nowIso) {
     member_name: member.name ?? "",
     email: member.email ?? "",
     role: member.role ?? "",
-    unit: member.unit ?? "",
+    unit: normalizeUnitLabel(member.unit ?? ""),
     access_role: member.accessRole ?? "viewer",
     active_yn: "Y",
     member_payload: member,
@@ -520,6 +552,123 @@ function stripExecutionSnapshotColumns(rows) {
       ...legacyRow
     } = row;
     return legacyRow;
+  });
+}
+
+function isBlankValue(value) {
+  if (value === null || value === undefined) {
+    return true;
+  }
+  if (typeof value === "string") {
+    return value.trim().length === 0;
+  }
+  return false;
+}
+
+function mergeExecutionPayload(incomingPayload, existingPayload) {
+  const nextIncoming = typeof incomingPayload === "object" && incomingPayload ? { ...incomingPayload } : {};
+  const nextExisting = typeof existingPayload === "object" && existingPayload ? existingPayload : {};
+  const protectedKeys = [
+    "executionNote",
+    "executionYear",
+    "executionPeriod",
+    "testMethodSnapshot",
+    "populationSnapshot",
+    "evidenceTextSnapshot",
+    "executionAuthorName",
+    "executionAuthorEmail",
+    "executionAuthorUnit",
+    "reviewChecked",
+    "reviewResult",
+    "reviewAuthorName",
+    "reviewAuthorEmail",
+    "reviewAuthorUnit",
+    "reviewDate",
+    "note",
+    "status",
+    "evidenceStatus",
+  ];
+
+  for (const key of protectedKeys) {
+    if (isBlankValue(nextIncoming[key]) && !isBlankValue(nextExisting[key])) {
+      nextIncoming[key] = nextExisting[key];
+    }
+  }
+
+  if (typeof nextIncoming.executionSubmitted !== "boolean" && typeof nextExisting.executionSubmitted === "boolean") {
+    nextIncoming.executionSubmitted = nextExisting.executionSubmitted;
+  }
+  if (typeof nextIncoming.reviewRequested !== "boolean" && typeof nextExisting.reviewRequested === "boolean") {
+    nextIncoming.reviewRequested = nextExisting.reviewRequested;
+  }
+
+  return nextIncoming;
+}
+
+async function protectExecutionRowsFromBlankOverwrite(rows) {
+  if (!rows.length) {
+    return rows;
+  }
+
+  const executionIds = [...new Set(rows.map((row) => String(row.execution_id ?? "").trim()).filter(Boolean))];
+  if (!executionIds.length) {
+    return rows;
+  }
+
+  const { data: existingRows, error } = await supabase
+    .from(ITGC_CONTROL_EXECUTION_TABLE)
+    .select("*")
+    .in("execution_id", executionIds);
+
+  if (error) {
+    throw new Error(`${ITGC_CONTROL_EXECUTION_TABLE}_protect_select_failed:${error.message}`);
+  }
+
+  const existingById = new Map((existingRows ?? []).map((row) => [String(row.execution_id ?? "").trim(), row]));
+  const protectedColumns = [
+    "execution_note",
+    "status",
+    "review_checked",
+    "review_date",
+    "review_note",
+    "performed_by",
+    "reviewed_by",
+    "execution_year",
+    "execution_period",
+    "test_method_snapshot",
+    "population_snapshot",
+    "evidence_text_snapshot",
+    "evidence_status",
+    "performed_by_name",
+    "performed_by_email",
+    "performed_by_unit",
+    "reviewed_by_name",
+    "reviewed_by_email",
+    "reviewed_by_unit",
+  ];
+
+  return rows.map((row) => {
+    const existing = existingById.get(String(row.execution_id ?? "").trim());
+    if (!existing) {
+      return row;
+    }
+
+    const nextRow = { ...row };
+    for (const column of protectedColumns) {
+      if (Object.prototype.hasOwnProperty.call(nextRow, column) && isBlankValue(nextRow[column]) && !isBlankValue(existing[column])) {
+        nextRow[column] = existing[column];
+      }
+    }
+
+    if (typeof nextRow.execution_submitted !== "boolean" && typeof existing.execution_submitted === "boolean") {
+      nextRow.execution_submitted = existing.execution_submitted;
+    }
+    if (typeof nextRow.review_requested !== "boolean" && typeof existing.review_requested === "boolean") {
+      nextRow.review_requested = existing.review_requested;
+    }
+
+    nextRow.execution_payload = mergeExecutionPayload(nextRow.execution_payload, existing.execution_payload);
+    return nextRow;
   });
 }
 
@@ -832,10 +981,10 @@ export async function fetchSupabaseWorkspace() {
       frequency: row.frequency,
       controlType: row.control_type,
       automationLevel: row.automation_level,
-      ownerDept: row.perform_dept,
-      performer: row.perform_dept,
-      reviewDept: row.review_dept,
-      reviewer: row.review_dept,
+      ownerDept: normalizeUnitLabel(row.perform_dept),
+      performer: normalizeUnitLabel(row.perform_dept),
+      reviewDept: normalizeUnitLabel(row.review_dept),
+      reviewer: normalizeUnitLabel(row.review_dept),
       targetSystems: parsePipeList(row.target_systems),
       evidenceText: row.evidence_text ?? row.test_evidence ?? payload.evidenceText ?? "",
       evidences: payload.evidences ?? parsePipeList(row.evidence_text ?? row.test_evidence),
@@ -877,8 +1026,8 @@ export async function fetchSupabaseWorkspace() {
       id: row.workflow_id,
       controlId: row.control_id,
       step: row.step,
-      assignee: row.assignee,
-      reviewer: row.reviewer,
+      assignee: normalizeUnitLabel(row.assignee),
+      reviewer: normalizeUnitLabel(row.reviewer),
       dueDate: row.due_date,
       status: row.status,
       memo: row.memo,
@@ -906,7 +1055,7 @@ export async function fetchSupabaseWorkspace() {
       name: row.member_name,
       email: row.email,
       role: row.role,
-      unit: row.unit,
+      unit: normalizeUnitLabel(row.unit),
       accessRole: row.access_role,
     };
   });
@@ -1008,7 +1157,9 @@ export async function syncSupabaseWorkspace(workspace) {
   const auditLogs = Array.isArray(workspace.auditLogs) ? workspace.auditLogs.slice(0, AUDIT_LOG_MAX_ITEMS) : [];
 
   const controlRows = controls.map((control, index) => mapControlToMasterRow(control, index, nowIso));
-  const executionRows = controls.flatMap((control) => mapControlToExecutionRows(control, nowIso));
+  const executionRows = await protectExecutionRowsFromBlankOverwrite(
+    controls.flatMap((control) => mapControlToExecutionRows(control, nowIso)),
+  );
   const evidenceRows = controls.flatMap((control) => mapControlToEvidenceRows(control, nowIso));
   const workflowRows = workflows.map((workflow) => mapWorkflowToRow(workflow, nowIso));
   const controlIds = controls.map((control) => control.id).filter(Boolean);
@@ -1028,9 +1179,8 @@ export async function syncSupabaseWorkspace(workspace) {
   await upsertRows(ITGC_EVIDENCE_TABLE, evidenceRows, "evidence_id");
   await upsertRows(ITGC_WORKFLOWS_TABLE, workflowRows, "workflow_id");
   await upsertRows(ITGC_AUDIT_TABLE, auditRows, "log_id");
-  await reconcileScopedRows(ITGC_CONTROL_EXECUTION_TABLE, executionRows, "execution_id", "control_id", {
-    scopeValues: controlIds,
-  });
+  // Execution history must never be deleted by client-side reconciliation.
+  // A stale or partial workspace should not be able to wipe remote execution rows.
   await reconcileScopedRows(ITGC_EVIDENCE_TABLE, evidenceRows, "evidence_id", "control_id", {
     scopeValues: controlIds,
     extraSelectColumns: ["storage_path"],
@@ -1095,6 +1245,45 @@ export async function deleteSupabaseControl(controlId) {
 
   if (error) {
     throw new Error(`control_delete_failed:${error.message}`);
+  }
+
+  return { ok: true };
+}
+
+export async function deleteSupabaseExecution(executionId) {
+  assertSupabaseConfigured();
+  const normalizedId = String(executionId ?? "").trim();
+  if (!normalizedId) {
+    throw new Error("invalid_execution_id");
+  }
+
+  const { data: evidenceRows, error: evidenceSelectError } = await supabase
+    .from(ITGC_EVIDENCE_TABLE)
+    .select("storage_path")
+    .eq("execution_id", normalizedId);
+
+  if (evidenceSelectError) {
+    throw new Error(`execution_evidence_select_failed:${evidenceSelectError.message}`);
+  }
+
+  await removeStorageObjects((evidenceRows ?? []).map((row) => row.storage_path));
+
+  const { error: evidenceDeleteError } = await supabase
+    .from(ITGC_EVIDENCE_TABLE)
+    .delete()
+    .eq("execution_id", normalizedId);
+
+  if (evidenceDeleteError) {
+    throw new Error(`execution_evidence_delete_failed:${evidenceDeleteError.message}`);
+  }
+
+  const { error: executionDeleteError } = await supabase
+    .from(ITGC_CONTROL_EXECUTION_TABLE)
+    .delete()
+    .eq("execution_id", normalizedId);
+
+  if (executionDeleteError) {
+    throw new Error(`execution_delete_failed:${executionDeleteError.message}`);
   }
 
   return { ok: true };

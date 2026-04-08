@@ -4171,6 +4171,107 @@ th {
   display: flex;
 }
 
+.performed-detail-panel .completed-inline-edit-area {
+  padding-top: 2px !important;
+}
+
+.performed-detail-panel .completed-inline-edit-area form {
+  gap: 6px;
+}
+
+.performed-detail-panel .completed-inline-edit-area .execution-form-item,
+.performed-detail-panel .completed-inline-edit-area .execution-form-item label,
+.performed-detail-panel .completed-inline-edit-area .field-help,
+.performed-detail-panel .completed-inline-edit-area .evidence-file-list,
+.performed-detail-panel .completed-inline-edit-area .empty-text {
+  font-size: 0.78rem !important;
+  line-height: 1.45 !important;
+}
+
+.performed-detail-panel .completed-inline-edit-area .execution-form-item {
+  padding: 10px 12px;
+}
+
+.performed-detail-panel .completed-inline-edit-area .execution-inline-select-row {
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.performed-detail-panel .completed-inline-edit-area .execution-inline-label {
+  font-size: 0.76rem;
+}
+
+.performed-detail-panel .completed-inline-edit-area .execution-inline-select-controls {
+  gap: 6px;
+}
+
+.performed-detail-panel .completed-inline-edit-area .execution-inline-select-controls select,
+.performed-detail-panel .completed-inline-edit-area .execution-form-item input,
+.performed-detail-panel .completed-inline-edit-area .execution-form-item textarea,
+.performed-detail-panel .completed-inline-edit-area .execution-form-item select {
+  font-size: 0.78rem !important;
+  line-height: 1.4;
+}
+
+.performed-detail-panel .completed-inline-edit-area .execution-form-item textarea,
+.performed-detail-panel .completed-inline-edit-area .execution-form-item input,
+.performed-detail-panel .completed-inline-edit-area .execution-form-item select {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.performed-detail-panel .completed-inline-edit-area .execution-form-item textarea {
+  min-height: 104px;
+}
+
+.performed-detail-panel .completed-inline-edit-area .actor-inline-block {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.performed-detail-panel .completed-inline-edit-area .actor-inline-title {
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.performed-detail-panel .completed-inline-edit-area .actor-inline-fields {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.9fr) minmax(180px, 1.4fr) minmax(88px, 0.7fr);
+  gap: 8px;
+  align-items: end;
+}
+
+.performed-detail-panel .completed-inline-edit-area .actor-inline-fields label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.performed-detail-panel .completed-inline-edit-area .actor-inline-fields label > span {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #475569;
+}
+
+.performed-detail-panel .completed-inline-edit-area .evidence-file-chip {
+  font-size: 0.74rem;
+}
+
+.performed-detail-panel .completed-inline-edit-area .execution-form-action {
+  gap: 8px;
+  padding: 10px 0 0;
+}
+
+.performed-detail-panel .completed-inline-edit-area .execution-form-action .primary-button,
+.performed-detail-panel .completed-inline-edit-area .execution-form-action .secondary-button {
+  min-width: 104px;
+  min-height: 36px;
+  height: 36px;
+  font-size: 0.78rem;
+}
+
 .review-detail-body {
   min-height: 0;
   overflow-y: auto;

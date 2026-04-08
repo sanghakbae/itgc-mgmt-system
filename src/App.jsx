@@ -6,6 +6,7 @@ import {
   syncSupabaseWorkspace,
   createSupabaseAuditLog,
   deleteSupabaseControl,
+  deleteSupabaseExecution,
   deleteSupabaseMember,
 } from "./supabaseApi";
 import { defaultControls30 } from "./defaultControls30";
@@ -59,7 +60,7 @@ const DATA_BACKEND = (() => {
 const HAS_REMOTE_BACKEND = DATA_BACKEND !== "local";
 const VIEW_KEYS = ["dashboard", "dashboard-delay-detail", "control-list", "control-workbench", "report", "people", "audit", "register", "controls", "control-review", "roles"];
 const WORKBENCH_TAB_KEYS = ["register", "controls", "controls-complete", "control-review", "performed-complete"];
-const CONTROL_UNIT_FILTER_ORDER = ["개발유닛", "인프라유닛", "정보보호유닛", "QA유닛"];
+const CONTROL_UNIT_FILTER_ORDER = ["개발", "인프라", "정보보호", "QA", "TA"];
 const DASHBOARD_DELAY_BUCKET_CONFIG = {
   annual: {
     label: "연 지연",
@@ -700,7 +701,29 @@ function normalizeCompactText(value) {
 }
 
 function normalizeUnitLabel(value) {
-  return normalizeCompactText(value).replace(/유닛/g, "").trim();
+  const normalized = normalizeCompactText(value);
+  if (!normalized) {
+    return "";
+  }
+
+  const compact = normalized.toLowerCase().replace(/\s+/g, "");
+  if (compact.includes("개발5")) {
+    return "인프라";
+  }
+  if (compact.includes("정보보호")) {
+    return "정보보호";
+  }
+  if (compact.includes("인프라")) {
+    return "인프라";
+  }
+  if (compact === "qa유닛" || compact === "qa") {
+    return "QA";
+  }
+  if (compact === "ta유닛" || compact === "ta") {
+    return "TA";
+  }
+
+  return normalized.replace(/유닛/g, "").trim();
 }
 
 function normalizeUnitName(value) {
@@ -709,23 +732,27 @@ function normalizeUnitName(value) {
 
 function toControlUnitFilterValue(control) {
   const rawUnit = normalizeCompactText(control?.performDept ?? control?.performer ?? "");
-  const normalized = normalizeUnitName(rawUnit);
-  if (!normalized) {
+  const normalizedLabel = normalizeUnitLabel(rawUnit);
+  const normalized = normalizeUnitName(normalizedLabel);
+  if (!normalizedLabel) {
     return "미지정";
   }
   if (normalized.includes("정보보호")) {
-    return "정보보호유닛";
+    return "정보보호";
   }
   if (normalized.includes("인프라")) {
-    return "인프라유닛";
+    return "인프라";
+  }
+  if (normalized === "qa") {
+    return "QA";
+  }
+  if (normalized === "ta") {
+    return "TA";
   }
   if (normalized.includes("개발")) {
-    return "개발유닛";
+    return "개발";
   }
-  if (normalized.includes("qa") || normalized.includes("ta")) {
-    return "QA유닛";
-  }
-  return rawUnit;
+  return normalizedLabel;
 }
 
 function convertLeadingNumberBulletsToCircled(value) {
@@ -916,6 +943,29 @@ function compareControlsByListOrder(left, right) {
   return compareControlsByRecentExecution(left, right) || String(left?.id ?? "").localeCompare(String(right?.id ?? ""), "ko");
 }
 
+function dedupeExecutionEntries(entries, control = null) {
+  const seen = new Set();
+
+  return (Array.isArray(entries) ? entries : []).filter((entry) => {
+    const controlId = String(entry?.controlId ?? control?.id ?? "").trim();
+    const executionYear = String(entry?.executionYear ?? "").trim();
+    const executionPeriod = String(entry?.executionPeriod ?? "").trim();
+    const executionId = String(entry?.executionId ?? "").trim();
+    const dedupeKey = controlId && executionYear && executionPeriod
+      ? `${controlId}::${executionYear}::${executionPeriod}`
+      : executionId;
+
+    if (!dedupeKey) {
+      return true;
+    }
+    if (seen.has(dedupeKey)) {
+      return false;
+    }
+    seen.add(dedupeKey);
+    return true;
+  });
+}
+
 function createExecutionEntryKey(controlId, executionYear, executionPeriod) {
   return `${String(controlId ?? "").trim()}::${String(executionYear ?? "").trim()}::${String(executionPeriod ?? "").trim()}`;
 }
@@ -1017,9 +1067,12 @@ function buildLegacyExecutionEntry(control) {
 
 function getControlExecutionHistory(control) {
   const source = Array.isArray(control?.executionHistory) ? control.executionHistory : [];
-  const normalized = source
+  const normalized = dedupeExecutionEntries(
+    source
     .map((entry) => normalizeExecutionEntry(entry, control))
-    .filter((entry) => hasExecutionEntryContent(entry) || entry.executionSubmitted || entry.executionAuthorEmail || entry.reviewAuthorEmail);
+    .filter((entry) => hasExecutionEntryContent(entry) || entry.executionSubmitted || entry.executionAuthorEmail || entry.reviewAuthorEmail),
+    control,
+  );
 
   if (normalized.length > 0) {
     return normalized.sort(compareExecutionEntriesDesc);
@@ -1046,6 +1099,14 @@ function hasExecutionRequiredFields(entry) {
     && String(entry?.executionPeriod ?? "").trim().length > 0
     && String(entry?.executionNote ?? "").trim().length > 0
     && (Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0
+  );
+}
+
+function hasExecutionRequiredFieldsForPerformed(entry) {
+  return (
+    String(entry?.executionYear ?? "").trim().length > 0
+    && String(entry?.executionPeriod ?? "").trim().length > 0
+    && String(entry?.executionNote ?? "").trim().length > 0
   );
 }
 
@@ -1092,9 +1153,9 @@ function getPreferredExecutionEntry(control, fallbackEntry = null, match = null)
 }
 
 function mergeExecutionHistoryIntoControl(control, nextHistory, preferredMatch = null) {
-  const normalizedHistory = (Array.isArray(nextHistory) ? nextHistory : [])
+  const normalizedHistory = dedupeExecutionEntries((Array.isArray(nextHistory) ? nextHistory : [])
     .map((entry) => normalizeExecutionEntry(entry, control))
-    .sort(compareExecutionEntriesDesc);
+    .sort(compareExecutionEntriesDesc), control);
   const preferredEntry = getPreferredExecutionEntry({ ...control, executionHistory: normalizedHistory }, normalizedHistory[0] ?? null, preferredMatch);
 
   return {
@@ -2789,6 +2850,24 @@ export default function App() {
   const [completedEditPeriod, setCompletedEditPeriod] = useState("");
   const [completedEditNote, setCompletedEditNote] = useState("");
   const [completedEditEvidenceFiles, setCompletedEditEvidenceFiles] = useState([]);
+  const [performedEditMode, setPerformedEditMode] = useState(false);
+  const [performedEditYear, setPerformedEditYear] = useState("");
+  const [performedEditPeriod, setPerformedEditPeriod] = useState("");
+  const [performedEditStatus, setPerformedEditStatus] = useState("점검 완료");
+  const [performedEditReviewChecked, setPerformedEditReviewChecked] = useState("검토 완료");
+  const [performedEditExecutionAuthorName, setPerformedEditExecutionAuthorName] = useState("");
+  const [performedEditExecutionAuthorEmail, setPerformedEditExecutionAuthorEmail] = useState("");
+  const [performedEditExecutionAuthorUnit, setPerformedEditExecutionAuthorUnit] = useState("");
+  const [performedEditReviewAuthorName, setPerformedEditReviewAuthorName] = useState("");
+  const [performedEditReviewAuthorEmail, setPerformedEditReviewAuthorEmail] = useState("");
+  const [performedEditReviewAuthorUnit, setPerformedEditReviewAuthorUnit] = useState("");
+  const [performedEditNote, setPerformedEditNote] = useState("");
+  const [performedEditReviewResult, setPerformedEditReviewResult] = useState("양호");
+  const [performedEditReviewNote, setPerformedEditReviewNote] = useState("");
+  const [performedEditEvidenceFiles, setPerformedEditEvidenceFiles] = useState([]);
+  const [performedEvidenceInputCount, setPerformedEvidenceInputCount] = useState(1);
+  const [performedPendingEvidenceCount, setPerformedPendingEvidenceCount] = useState(0);
+  const [performedDroppedFiles, setPerformedDroppedFiles] = useState([]);
   const [completedEvidenceInputCount, setCompletedEvidenceInputCount] = useState(1);
   const [completedPendingEvidenceCount, setCompletedPendingEvidenceCount] = useState(0);
   const [completedDroppedFiles, setCompletedDroppedFiles] = useState([]);
@@ -2836,6 +2915,7 @@ export default function App() {
   const reportPreviewFrameRef = useRef(null);
   const assignmentFormRef = useRef(null);
   const completedEditFormRef = useRef(null);
+  const performedEditFormRef = useRef(null);
   const workspaceBackupInputRef = useRef(null);
   const pendingAssignmentPresetRef = useRef(null);
   const confirmResolverRef = useRef(null);
@@ -2921,6 +3001,34 @@ export default function App() {
       ),
     [memberDirectory],
   );
+  const findMemberByName = (name, role = "both") => {
+    const normalizedName = normalizeCompactText(name).replace(/\s+/g, "").toLowerCase();
+    if (!normalizedName) {
+      return null;
+    }
+
+    const roleMatchedSource =
+      role === "performer"
+        ? (performerPeople.length > 0 ? performerPeople : people)
+        : role === "reviewer"
+          ? (reviewerPeople.length > 0 ? reviewerPeople : people)
+          : memberDirectory;
+
+    const roleMatchedPeople = normalizePeopleCollection(roleMatchedSource);
+    const normalizedDirectory = normalizePeopleCollection(memberDirectory);
+    const found =
+      roleMatchedPeople.find((person) => normalizeCompactText(person?.name ?? "").replace(/\s+/g, "").toLowerCase() === normalizedName)
+      ?? normalizedDirectory.find((person) => normalizeCompactText(person?.name ?? "").replace(/\s+/g, "").toLowerCase() === normalizedName)
+      ?? null;
+
+    return found
+      ? {
+          name: String(found.name ?? "").trim(),
+          email: String(found.email ?? "").trim().toLowerCase(),
+          unit: normalizeUnitLabel(found.unit ?? ""),
+        }
+      : null;
+  };
   const formatExecutionDisplayUnit = (value) =>
     normalizeUnitLabel(value);
   const resolveExecutionAuthorName = (control) => {
@@ -3000,6 +3108,26 @@ export default function App() {
   };
   const canManageMembers =
     isAdmin;
+
+  function handlePerformedExecutionAuthorNameChange(value) {
+    setPerformedEditExecutionAuthorName(value);
+    const matched = findMemberByName(value, "performer");
+    if (!matched) {
+      return;
+    }
+    setPerformedEditExecutionAuthorEmail(matched.email);
+    setPerformedEditExecutionAuthorUnit(matched.unit || "미지정");
+  }
+
+  function handlePerformedReviewAuthorNameChange(value) {
+    setPerformedEditReviewAuthorName(value);
+    const matched = findMemberByName(value, "reviewer");
+    if (!matched) {
+      return;
+    }
+    setPerformedEditReviewAuthorEmail(matched.email);
+    setPerformedEditReviewAuthorUnit(matched.unit || "미지정");
+  }
 
   useEffect(() => {
     if (!authUser?.email) {
@@ -3771,7 +3899,7 @@ export default function App() {
           .filter(
             (entry) =>
               Boolean(entry.executionSubmitted)
-              && hasExecutionRequiredFields(entry)
+              && hasExecutionRequiredFieldsForPerformed(entry)
               && String(entry.reviewChecked ?? "미검토").trim() === "검토 완료",
           )
           .map((entry) => ({
@@ -3858,6 +3986,14 @@ export default function App() {
   const selectedPerformedControl = selectedPerformedExecutionKey
     ? (performedExecutionControls.find((control) => control.performedExecutionKey === selectedPerformedExecutionKey) ?? null)
     : (performedPagedControls[0] ?? null);
+  const pendingPerformedUploadCount = performedPendingEvidenceCount + performedDroppedFiles.length;
+  const canSubmitPerformedEdit =
+    isAdmin
+    && performedEditYear.trim().length > 0
+    && performedEditPeriod.trim().length > 0
+    && performedEditNote.trim().length > 0
+    && performedEditReviewChecked.trim().length > 0
+    && performedEditStatus.trim().length > 0;
   const reviewVisibleControls =
     reviewUnitFilter === "전체"
       ? reviewQueueControls
@@ -4469,16 +4605,6 @@ export default function App() {
         });
         const remoteControls = correctedRemoteWorkspace.controls;
         if (remoteControls.length === 0) {
-          const seededWorkspace = {
-            controls: structuredClone(defaultData.controls),
-            workflows: structuredClone(defaultData.workflows),
-            loginDomains: parseDomainList(defaultData.loginDomains),
-            people: structuredClone(defaultPeople),
-            auditLogs: [],
-          };
-
-          updateWorkspace(seededWorkspace);
-          syncRemoteWorkspaceByBackend(seededWorkspace).catch(() => {});
           return;
         }
 
@@ -4501,7 +4627,7 @@ export default function App() {
           ...current,
           spreadsheet: "연결됨",
         }));
-        updateWorkspace(nextWorkspace);
+        commitWorkspace(nextWorkspace, { syncRemote: false });
         if (changed) {
           syncRemoteWorkspaceByBackend(nextWorkspace).catch(() => {});
         }
@@ -5189,6 +5315,91 @@ export default function App() {
       setRoleAssignmentControlId(nextControls[0]?.id ?? "");
     }
     showCenterAlert(HAS_REMOTE_BACKEND ? "통제가 삭제되고 DB에도 반영되었습니다." : "통제를 삭제했습니다.");
+  }
+
+  async function handlePerformedExecutionDelete() {
+    if (!isAdmin) {
+      showCenterAlert("admin 권한만 수행 완료 이력을 삭제할 수 있습니다.");
+      return;
+    }
+
+    const targetControl = selectedPerformedControl ?? null;
+    const targetExecutionId = String(targetControl?.performedExecutionKey ?? "").trim();
+    if (!targetControl || !targetExecutionId) {
+      showCenterAlert("삭제할 수행 완료 이력을 먼저 선택하세요.");
+      return;
+    }
+
+    const confirmed = await showCenterConfirm(`${targetControl.id} 수행 완료 이력을 삭제할까요?`);
+    if (!confirmed) {
+      return;
+    }
+
+    const verificationCode = createDeleteVerificationCode();
+    const enteredCode = typeof window !== "undefined"
+      ? window.prompt(
+        `삭제 확인값을 입력하세요.\n확인값: ${verificationCode}`,
+        "",
+      )
+      : null;
+
+    if (enteredCode === null) {
+      showCenterAlert("수행 완료 이력 삭제를 취소했습니다.");
+      return;
+    }
+    if (enteredCode.trim().toUpperCase() !== verificationCode) {
+      showCenterAlert("확인값이 일치하지 않아 삭제하지 않았습니다.");
+      return;
+    }
+
+    if (HAS_REMOTE_BACKEND) {
+      try {
+        await deleteSupabaseExecution(targetExecutionId);
+      } catch {
+        showCenterAlert("수행 완료 이력 삭제를 DB에 반영하지 못했습니다. 다시 시도해주세요.");
+        return;
+      }
+    }
+
+    const nextControls = controls.map((control) => {
+      if (control.id !== targetControl.id) {
+        return control;
+      }
+      const nextHistory = getControlExecutionHistory(control).filter((entry) => entry.executionId !== targetExecutionId);
+      return mergeExecutionHistoryIntoControl(control, nextHistory);
+    });
+
+    const nextWorkspace = {
+      ...workspace,
+      controls: nextControls,
+    };
+    writeAuditLog(
+      "EXECUTION_DELETED",
+      targetControl.id,
+      `${targetControl.title} 수행 완료 이력 삭제 · ${targetExecutionId}`,
+      nextWorkspace,
+    );
+
+    const nextPerformedControls = nextControls.flatMap((control) =>
+      getControlExecutionHistory(control)
+        .filter(
+          (entry) =>
+            Boolean(entry.executionSubmitted)
+            && hasExecutionRequiredFieldsForPerformed(entry)
+            && String(entry.reviewChecked ?? "미검토").trim() === "검토 완료",
+        )
+        .map((entry) => ({
+          ...mergeExecutionHistoryIntoControl(control, getControlExecutionHistory(control), {
+            executionYear: entry.executionYear,
+            executionPeriod: entry.executionPeriod,
+          }),
+          performedExecutionKey: entry.executionId,
+        })),
+    ).sort(compareControlsByRecentReview);
+
+    setSelectedPerformedExecutionKey(nextPerformedControls[0]?.performedExecutionKey ?? "");
+    setSelectedControlId(nextPerformedControls[0]?.id ?? nextControls[0]?.id ?? "");
+    showCenterAlert(HAS_REMOTE_BACKEND ? "수행 완료 이력이 삭제되고 DB에도 반영되었습니다." : "수행 완료 이력을 삭제했습니다.");
   }
 
   useEffect(() => {
@@ -5893,6 +6104,96 @@ export default function App() {
     setCompletedEditEvidenceFiles((current) => current.filter((_, index) => index !== fileIndex));
   }
 
+  function handleEditPerformedExecution() {
+    if (!selectedPerformedControl || !isAdmin) {
+      return;
+    }
+    setPerformedEditYear(selectedPerformedControl.executionYear ?? "");
+    setPerformedEditPeriod(selectedPerformedControl.executionPeriod ?? "");
+    setPerformedEditStatus(selectedPerformedControl.status ?? "점검 완료");
+    setPerformedEditReviewChecked(selectedPerformedControl.reviewChecked ?? "검토 완료");
+    setPerformedEditExecutionAuthorName(selectedPerformedControl.executionAuthorName ?? "");
+    setPerformedEditExecutionAuthorEmail(selectedPerformedControl.executionAuthorEmail ?? "");
+    setPerformedEditExecutionAuthorUnit(
+      selectedPerformedControl.executionAuthorUnit
+        ?? selectedPerformedControl.performDept
+        ?? selectedPerformedControl.performer
+        ?? "",
+    );
+    setPerformedEditReviewAuthorName(selectedPerformedControl.reviewAuthorName ?? "");
+    setPerformedEditReviewAuthorEmail(selectedPerformedControl.reviewAuthorEmail ?? "");
+    setPerformedEditReviewAuthorUnit(
+      selectedPerformedControl.reviewAuthorUnit
+        ?? selectedPerformedControl.reviewDept
+        ?? selectedPerformedControl.reviewer
+        ?? "",
+    );
+    setPerformedEditNote(selectedPerformedControl.executionNote ?? "");
+    setPerformedEditReviewResult(selectedPerformedControl.reviewResult ?? "양호");
+    setPerformedEditReviewNote(selectedPerformedControl.note ?? "");
+    setPerformedEditEvidenceFiles(Array.isArray(selectedPerformedControl.evidenceFiles) ? selectedPerformedControl.evidenceFiles : []);
+    setPerformedEvidenceInputCount(1);
+    setPerformedPendingEvidenceCount(0);
+    setPerformedDroppedFiles([]);
+    setPerformedEditMode(true);
+  }
+
+  function handleCancelPerformedEdit() {
+    setPerformedEditMode(false);
+    setPerformedEditYear(selectedPerformedControl?.executionYear ?? "");
+    setPerformedEditPeriod(selectedPerformedControl?.executionPeriod ?? "");
+    setPerformedEditStatus(selectedPerformedControl?.status ?? "점검 완료");
+    setPerformedEditReviewChecked(selectedPerformedControl?.reviewChecked ?? "검토 완료");
+    setPerformedEditExecutionAuthorName(selectedPerformedControl?.executionAuthorName ?? "");
+    setPerformedEditExecutionAuthorEmail(selectedPerformedControl?.executionAuthorEmail ?? "");
+    setPerformedEditExecutionAuthorUnit(
+      selectedPerformedControl?.executionAuthorUnit
+        ?? selectedPerformedControl?.performDept
+        ?? selectedPerformedControl?.performer
+        ?? "",
+    );
+    setPerformedEditReviewAuthorName(selectedPerformedControl?.reviewAuthorName ?? "");
+    setPerformedEditReviewAuthorEmail(selectedPerformedControl?.reviewAuthorEmail ?? "");
+    setPerformedEditReviewAuthorUnit(
+      selectedPerformedControl?.reviewAuthorUnit
+        ?? selectedPerformedControl?.reviewDept
+        ?? selectedPerformedControl?.reviewer
+        ?? "",
+    );
+    setPerformedEditNote(selectedPerformedControl?.executionNote ?? "");
+    setPerformedEditReviewResult(selectedPerformedControl?.reviewResult ?? "양호");
+    setPerformedEditReviewNote(selectedPerformedControl?.note ?? "");
+    setPerformedEditEvidenceFiles(Array.isArray(selectedPerformedControl?.evidenceFiles) ? selectedPerformedControl.evidenceFiles : []);
+    setPerformedEvidenceInputCount(1);
+    setPerformedPendingEvidenceCount(0);
+    setPerformedDroppedFiles([]);
+  }
+
+  function syncPerformedPendingEvidenceCount() {
+    const evidenceInputs = Array.from(
+      performedEditFormRef.current?.querySelectorAll('input[name="performedEvidenceFiles"]') ?? [],
+    );
+    const nextCount = evidenceInputs.reduce((count, input) => count + (input.files?.length ?? 0), 0);
+    setPerformedPendingEvidenceCount(nextCount);
+  }
+
+  function handlePerformedEvidenceDrop(event) {
+    event.preventDefault();
+    const nextFiles = Array.from(event.dataTransfer?.files ?? []).filter((file) => file.size > 0);
+    if (nextFiles.length === 0) {
+      return;
+    }
+    setPerformedDroppedFiles((current) => [...current, ...nextFiles]);
+  }
+
+  function handleRemovePerformedDroppedFile(fileIndex) {
+    setPerformedDroppedFiles((current) => current.filter((_, index) => index !== fileIndex));
+  }
+
+  function handleRemovePerformedEvidenceFile(fileIndex) {
+    setPerformedEditEvidenceFiles((current) => current.filter((_, index) => index !== fileIndex));
+  }
+
   async function handleCompletedEditSubmit(event) {
     event.preventDefault();
     if (!selectedCompletedControl || !hasPerformPermissionForControl(selectedCompletedControl)) {
@@ -6021,6 +6322,150 @@ export default function App() {
     setSelectedCompletedExecutionKey(nextExecutionKey);
     setExecutionSavePopupMessage(
       `등록 완료 내용이 수정되었습니다.${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}${
+        GOOGLE_DRIVE_FOLDER_ID ? `\nDrive Folder URL: ${getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)}` : ""
+      }`,
+    );
+  }
+
+  async function handlePerformedEditSubmit(event) {
+    event.preventDefault();
+    if (!selectedPerformedControl || !isAdmin) {
+      showCenterAlert("admin 권한만 수행 완료 이력을 수정할 수 있습니다.");
+      return;
+    }
+
+    const formData = new FormData(event.currentTarget);
+    const formFiles = formData
+      .getAll("performedEvidenceFiles")
+      .filter((value) => value instanceof File && value.size > 0);
+    const files = [...formFiles, ...performedDroppedFiles];
+    const executionYear = performedEditYear.trim();
+    const executionPeriod = performedEditPeriod.trim();
+    const executionStatus = performedEditStatus.trim();
+    const reviewChecked = performedEditReviewChecked.trim();
+    const executionNote = performedEditNote.trim();
+    const reviewResult = performedEditReviewResult.trim() || "양호";
+    const reviewNote = performedEditReviewNote.trim();
+    let nextEvidenceFiles = [...performedEditEvidenceFiles];
+    let uploaded = false;
+
+    if (!executionYear) {
+      showCenterAlert("년도는 필수입니다.");
+      return;
+    }
+    if (!executionPeriod) {
+      showCenterAlert("주기는 필수입니다.");
+      return;
+    }
+    if (!executionNote) {
+      showCenterAlert("수행 내역을 입력하세요.");
+      return;
+    }
+
+    if (files.length > 0) {
+      try {
+        const uploadResult = await uploadEvidenceFiles(selectedPerformedControl.id, files);
+        nextEvidenceFiles = [...nextEvidenceFiles, ...uploadResult.files];
+        uploaded = uploadResult.uploaded;
+        setIntegrationStatus((current) => ({
+          ...current,
+          drive: uploadResult.uploaded ? "연결됨" : current.drive,
+        }));
+      } catch (error) {
+        const code = String(error?.message ?? "");
+        showCenterAlert(`증적 파일을 Google Drive에 저장하지 못했습니다.\n[debug] ${code || "unknown_error"}`);
+        return;
+      }
+    }
+
+    const nextExecutionKey = createExecutionEntryKey(selectedPerformedControl.id, executionYear, executionPeriod);
+    const savedAt = new Date().toISOString();
+    const nextWorkspace = {
+      ...workspace,
+      controls: controls.map((control) => {
+        if (control.id !== selectedPerformedControl.id) {
+          return control;
+        }
+
+        const currentHistory = getControlExecutionHistory(control);
+        const currentEntry = currentHistory.find(
+          (entry) => entry.executionId === selectedPerformedControl.performedExecutionKey,
+        );
+        const nextHistory = [
+          ...currentHistory.filter((entry) => {
+            const isSamePeriod = entry.executionYear === executionYear && entry.executionPeriod === executionPeriod;
+            return entry.executionId !== selectedPerformedControl.performedExecutionKey && !isSamePeriod;
+          }),
+          {
+            ...(currentEntry ?? {}),
+            executionId: nextExecutionKey,
+            executionYear,
+            executionPeriod,
+            executionNote,
+            testMethodSnapshot: String(currentEntry?.testMethodSnapshot ?? control.testMethod ?? "").trim(),
+            populationSnapshot: String(currentEntry?.populationSnapshot ?? control.population ?? "").trim(),
+            evidenceTextSnapshot: String(currentEntry?.evidenceTextSnapshot ?? control.evidenceText ?? "").trim(),
+            executionSubmitted: true,
+            reviewRequested: false,
+            executionAuthorName: performedEditExecutionAuthorName.trim(),
+            executionAuthorEmail: performedEditExecutionAuthorEmail.trim().toLowerCase(),
+            executionAuthorUnit: performedEditExecutionAuthorUnit.trim(),
+            reviewChecked,
+            reviewResult,
+            reviewAuthorName: performedEditReviewAuthorName.trim(),
+            reviewAuthorEmail: performedEditReviewAuthorEmail.trim().toLowerCase(),
+            reviewAuthorUnit: performedEditReviewAuthorUnit.trim(),
+            note: reviewNote,
+            status: executionStatus || deriveAssignmentStatus(executionNote, reviewChecked),
+            evidenceFiles: nextEvidenceFiles,
+            evidenceStatus:
+              nextEvidenceFiles.length > 0 && uploaded
+                ? "준비 완료"
+                : nextEvidenceFiles.length > 0
+                  ? "수집 중"
+                  : "미수집",
+            reviewDate: String(currentEntry?.reviewDate ?? "").trim() || savedAt,
+            createdAt: String(currentEntry?.createdAt ?? "").trim() || savedAt,
+            updatedAt: savedAt,
+          },
+        ];
+
+        return mergeExecutionHistoryIntoControl(control, nextHistory, {
+          executionYear,
+          executionPeriod,
+        });
+      }),
+    };
+
+    writeAuditLog(
+      "EXECUTION_SAVED",
+      selectedPerformedControl.id,
+      `${selectedPerformedControl.title} 수행 완료 수정${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
+      nextWorkspace,
+      null,
+      null,
+      {
+        auditSyncOptions: {
+          notifyOnFailure: true,
+          failureMessage: "수행 완료 수정은 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+        },
+      },
+    );
+    setPerformedEditMode(false);
+    setPerformedEditYear(executionYear);
+    setPerformedEditPeriod(executionPeriod);
+    setPerformedEditStatus(executionStatus);
+    setPerformedEditReviewChecked(reviewChecked);
+    setPerformedEditNote(executionNote);
+    setPerformedEditReviewResult(reviewResult);
+    setPerformedEditReviewNote(reviewNote);
+    setPerformedEditEvidenceFiles(nextEvidenceFiles);
+    setPerformedEvidenceInputCount(1);
+    setPerformedPendingEvidenceCount(0);
+    setPerformedDroppedFiles([]);
+    setSelectedPerformedExecutionKey(nextExecutionKey);
+    setExecutionSavePopupMessage(
+      `수행 완료 내용이 수정되었습니다.${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}${
         GOOGLE_DRIVE_FOLDER_ID ? `\nDrive Folder URL: ${getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)}` : ""
       }`,
     );
@@ -8069,90 +8514,347 @@ export default function App() {
                           <span className={`status-badge ${statusClass(selectedPerformedControl.status)}`}>{selectedPerformedControl.status}</span>
                           <span className="status-badge normal-badge">{selectedPerformedControl.reviewChecked || "검토 완료"}</span>
                           <span className="status-badge unit-assignee-badge">
-                            수행: {resolveExecutionActorWithUnitDisplay(selectedPerformedControl)}
+                            수행: {`${String(selectedPerformedControl.executionAuthorName ?? "").trim() || String(selectedPerformedControl.executionAuthorEmail ?? "").trim() || "-"}(${String(selectedPerformedControl.executionAuthorUnit ?? selectedPerformedControl.performDept ?? selectedPerformedControl.performer ?? "-").trim() || "-"})`}
                           </span>
-                          <span className="status-badge unit-assignee-badge">
-                            검토: {resolveReviewActorWithUnitDisplay(selectedPerformedControl)}
+                          <span className="status-badge unit-review-badge">
+                            검토: {`${String(selectedPerformedControl.reviewAuthorName ?? "").trim() || String(selectedPerformedControl.reviewAuthorEmail ?? "").trim() || "-"}(${String(selectedPerformedControl.reviewAuthorUnit ?? selectedPerformedControl.reviewDept ?? selectedPerformedControl.reviewer ?? "-").trim() || "-"})`}
                           </span>
                         </div>
                       </div>
                       <p className="detail-purpose">{selectedPerformedControl.id} · {selectedPerformedControl.title}</p>
                       <div className="review-detail-body">
-                        <div className="execution-meta-item review-row-full review-compact-meta-item">
-                          <div className="detail-body-text review-compact-meta-line">
-                            <span className="review-meta-chip review-meta-year">년도: {selectedPerformedControl.executionYear ? `${selectedPerformedControl.executionYear}년` : "-"}</span>
-                            <span className="review-meta-separator">|</span>
-                            <span className="review-meta-chip review-meta-period">주기: {selectedPerformedControl.executionPeriod || "-"}</span>
-                            <span className="review-meta-separator">|</span>
-                            <span className="review-meta-chip review-meta-owner">수행: {resolveExecutionActorWithUnitDisplay(selectedPerformedControl)}</span>
-                            <span className="review-meta-separator">|</span>
-                            <span className="review-meta-chip review-meta-owner">검토: {resolveReviewActorWithUnitDisplay(selectedPerformedControl)}</span>
+                        {!performedEditMode ? (
+                          <div className="table-wrap performed-detail-table-wrap">
+                            <table className="performed-detail-table">
+                              <tbody>
+                                <tr>
+                                  <th>년도</th>
+                                  <td>{selectedPerformedControl.executionYear ? `${selectedPerformedControl.executionYear}년` : "-"}</td>
+                                </tr>
+                                <tr>
+                                  <th>주기</th>
+                                  <td>{selectedPerformedControl.executionPeriod || "-"}</td>
+                                </tr>
+                                <tr>
+                                  <th>수행 유닛</th>
+                                  <td>{resolveExecutionAuthorDisplay(selectedPerformedControl)}</td>
+                                </tr>
+                                <tr>
+                                  <th>검토 유닛</th>
+                                  <td>{resolveReviewDeptDisplay(selectedPerformedControl)}</td>
+                                </tr>
+                                <tr>
+                                  <th>수행 내역</th>
+                                  <td>{preserveDisplayLineBreaks(selectedPerformedControl.executionNote) || "-"}</td>
+                                </tr>
+                                <tr>
+                                  <th>증적 파일</th>
+                                  <td>
+                                    <div className="evidence-file-list">
+                                      {(selectedPerformedControl.evidenceFiles ?? []).length > 0 ? (
+                                        (selectedPerformedControl.evidenceFiles ?? []).map((file, index) => (
+                                          <span className="evidence-file-chip-wrap" key={`${file.name ?? "evidence"}-${index}`}>
+                                            <span className="system-chip evidence-file-chip">
+                                              {String(file?.name ?? "").trim() || `증적 ${index + 1}`}
+                                            </span>
+                                          </span>
+                                        ))
+                                      ) : (
+                                        <span className="empty-text">첨부된 증적 없음</span>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                                <tr>
+                                  <th>검토자</th>
+                                  <td>
+                                    {String(selectedPerformedControl.reviewAuthorName ?? "").trim()
+                                      || String(selectedPerformedControl.reviewAuthorEmail ?? "").trim()
+                                      || "-"}
+                                  </td>
+                                </tr>
+                                <tr>
+                                  <th>검토 결과</th>
+                                  <td>{selectedPerformedControl.reviewResult || "양호"}</td>
+                                </tr>
+                                <tr>
+                                  <th>검토 의견</th>
+                                  <td>{preserveDisplayLineBreaks(selectedPerformedControl.note) || "-"}</td>
+                                </tr>
+                              </tbody>
+                            </table>
                           </div>
-                        </div>
-                        <div className="table-wrap performed-detail-table-wrap">
-                          <table className="performed-detail-table">
-                            <tbody>
-                              <tr>
-                                <th>테스트 방법</th>
-                                <td>{preserveDisplayLineBreaks(resolveExecutionDetailTestMethod(selectedPerformedControl)) || "-"}</td>
-                              </tr>
-                              <tr>
-                                <th>모집단</th>
-                                <td>{preserveDisplayLineBreaks(resolveExecutionDetailPopulation(selectedPerformedControl)) || "-"}</td>
-                              </tr>
-                              <tr>
-                                <th>수행 내역</th>
-                                <td>{preserveDisplayLineBreaks(selectedPerformedControl.executionNote) || "-"}</td>
-                              </tr>
-                              <tr>
-                                <th>증적 파일</th>
-                                <td>
-                                  <div className="evidence-file-list">
-                                    {(selectedPerformedControl.evidenceFiles ?? []).length > 0 ? (
-                                      (selectedPerformedControl.evidenceFiles ?? []).map((file, index) => (
-                                        <span className="evidence-file-chip-wrap" key={`${file.name}-${index}`}>
-                                          <button
-                                            className="system-chip evidence-file-chip"
-                                            type="button"
-                                            title={buildEvidenceTraceLabel(file)}
-                                            onClick={() => {
-                                              if (isImageEvidence(file) || isPdfEvidence(file)) {
-                                                handleOpenEvidencePreview(file);
-                                                return;
-                                              }
-                                              handleDownloadEvidence(file);
-                                            }}
-                                          >
-                                            {file.url ? file.name : `${file.name} (대기)`}
-                                          </button>
-                                        </span>
-                                      ))
-                                    ) : (
-                                      <span className="empty-text">첨부된 증적 없음</span>
-                                    )}
+                        ) : (
+                          <div className="review-row-full completed-inline-edit-area">
+                            <form ref={performedEditFormRef} className="stack-form execution-form" onSubmit={handlePerformedEditSubmit}>
+                              <div className="execution-form-item execution-inline-select-row">
+                                <div className="execution-inline-select-controls">
+                                  <span className="execution-inline-label">년도:</span>
+                                  <select
+                                    name="performedExecutionYear"
+                                    value={performedEditYear}
+                                    onChange={(event) => setPerformedEditYear(event.target.value)}
+                                    required
+                                  >
+                                    <option value="">년도 선택</option>
+                                    {executionYearOptions.map((year) => (
+                                      <option key={year} value={year}>{year}년</option>
+                                    ))}
+                                  </select>
+                                  <span className="execution-inline-label">주기:</span>
+                                  <select
+                                    name="performedExecutionPeriod"
+                                    value={performedEditPeriod}
+                                    onChange={(event) => setPerformedEditPeriod(event.target.value)}
+                                    required
+                                  >
+                                    <option value="">주기 선택</option>
+                                    {buildExecutionPeriodOptions(selectedPerformedControl.frequency).map((period) => (
+                                      <option key={period} value={period}>{period}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+                              <div className="execution-form-item execution-inline-select-row">
+                                <div className="execution-inline-select-controls">
+                                  <span className="execution-inline-label">상태:</span>
+                                  <select
+                                    name="performedStatus"
+                                    value={performedEditStatus}
+                                    onChange={(event) => setPerformedEditStatus(event.target.value)}
+                                  >
+                                    {["점검 예정", "점검 중", "점검 완료", "정상", "개선 필요", "반려"].map((status) => (
+                                      <option key={status} value={status}>{status}</option>
+                                    ))}
+                                  </select>
+                                  <span className="execution-inline-label">검토 상태:</span>
+                                  <select
+                                    name="performedReviewChecked"
+                                    value={performedEditReviewChecked}
+                                    onChange={(event) => setPerformedEditReviewChecked(event.target.value)}
+                                  >
+                                    {["미검토", "검토 완료", "반려"].map((value) => (
+                                      <option key={value} value={value}>{value}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+                              <div className="execution-form-item actor-inline-block">
+                                <span className="execution-inline-label actor-inline-title">수행자</span>
+                                <div className="actor-inline-fields">
+                                  <label>
+                                    <span>이름</span>
+                                    <input
+                                      name="performedExecutionAuthorName"
+                                      type="text"
+                                      value={performedEditExecutionAuthorName}
+                                      onChange={(event) => handlePerformedExecutionAuthorNameChange(event.target.value)}
+                                      placeholder="이름"
+                                    />
+                                  </label>
+                                  <label>
+                                    <span>이메일</span>
+                                    <input
+                                      name="performedExecutionAuthorEmail"
+                                      type="email"
+                                      value={performedEditExecutionAuthorEmail}
+                                      onChange={(event) => setPerformedEditExecutionAuthorEmail(event.target.value)}
+                                      placeholder="email@example.com"
+                                    />
+                                  </label>
+                                  <label>
+                                    <span>유닛</span>
+                                    <input
+                                      name="performedExecutionAuthorUnit"
+                                      type="text"
+                                      value={performedEditExecutionAuthorUnit}
+                                      onChange={(event) => setPerformedEditExecutionAuthorUnit(event.target.value)}
+                                      placeholder="수행 유닛"
+                                    />
+                                  </label>
+                                </div>
+                              </div>
+                              <div className="execution-form-item actor-inline-block">
+                                <span className="execution-inline-label actor-inline-title">검토자</span>
+                                <div className="actor-inline-fields">
+                                  <label>
+                                    <span>이름</span>
+                                    <input
+                                      name="performedReviewAuthorName"
+                                      type="text"
+                                      value={performedEditReviewAuthorName}
+                                      onChange={(event) => handlePerformedReviewAuthorNameChange(event.target.value)}
+                                      placeholder="이름"
+                                    />
+                                  </label>
+                                  <label>
+                                    <span>이메일</span>
+                                    <input
+                                      name="performedReviewAuthorEmail"
+                                      type="email"
+                                      value={performedEditReviewAuthorEmail}
+                                      onChange={(event) => setPerformedEditReviewAuthorEmail(event.target.value)}
+                                      placeholder="email@example.com"
+                                    />
+                                  </label>
+                                  <label>
+                                    <span>유닛</span>
+                                    <input
+                                      name="performedReviewAuthorUnit"
+                                      type="text"
+                                      value={performedEditReviewAuthorUnit}
+                                      onChange={(event) => setPerformedEditReviewAuthorUnit(event.target.value)}
+                                      placeholder="검토 유닛"
+                                    />
+                                  </label>
+                                </div>
+                              </div>
+                              <label className="execution-form-item execution-note-label">
+                                수행 내역
+                                <textarea
+                                  name="performedExecutionNote"
+                                  rows="8"
+                                  value={performedEditNote}
+                                  onChange={(event) => setPerformedEditNote(event.target.value)}
+                                  placeholder="수행한 작업 내용을 입력"
+                                />
+                              </label>
+                              <div className="execution-form-item execution-inline-select-row">
+                                <div className="execution-inline-select-controls">
+                                  <span className="execution-inline-label">검토 결과:</span>
+                                  <select
+                                    name="performedReviewResult"
+                                    value={performedEditReviewResult}
+                                    onChange={(event) => setPerformedEditReviewResult(event.target.value)}
+                                  >
+                                    {["양호", "개선 필요", "반려"].map((value) => (
+                                      <option key={value} value={value}>{value}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </div>
+                              <label className="execution-form-item execution-note-label">
+                                검토 의견
+                                <textarea
+                                  name="performedReviewNote"
+                                  rows="5"
+                                  value={performedEditReviewNote}
+                                  onChange={(event) => setPerformedEditReviewNote(event.target.value)}
+                                  placeholder="검토 의견"
+                                />
+                              </label>
+                              <div className="evidence-upload-group execution-form-item">
+                                <label>
+                                  <span className="evidence-upload-label">증적 파일 첨부</span>
+                                  {GOOGLE_DRIVE_FOLDER_ID ? (
+                                    <span className="field-help">
+                                      업로드 대상 Drive Folder ID: {GOOGLE_DRIVE_FOLDER_ID}
+                                      {" · "}
+                                      <a href={getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)} target="_blank" rel="noreferrer">
+                                        폴더 열기
+                                      </a>
+                                    </span>
+                                  ) : (
+                                    <span className="field-help">Drive Folder ID가 설정되지 않았습니다.</span>
+                                  )}
+                                  <div className="evidence-input-stack">
+                                    {Array.from({ length: performedEvidenceInputCount }, (_, index) => (
+                                      <div className="evidence-input-row" key={index}>
+                                        <input
+                                          className="file-input"
+                                          name="performedEvidenceFiles"
+                                          type="file"
+                                          onChange={syncPerformedPendingEvidenceCount}
+                                        />
+                                      </div>
+                                    ))}
+                                    <span className="evidence-upload-actions">
+                                      <button
+                                        className="secondary-button evidence-count-button"
+                                        type="button"
+                                        onClick={() => setPerformedEvidenceInputCount((count) => Math.max(1, count - 1))}
+                                      >
+                                        -
+                                      </button>
+                                      <button
+                                        className="secondary-button evidence-count-button"
+                                        type="button"
+                                        onClick={() => setPerformedEvidenceInputCount((count) => Math.min(5, count + 1))}
+                                      >
+                                        +
+                                      </button>
+                                    </span>
                                   </div>
-                                </td>
-                              </tr>
-                              <tr>
-                                <th>검토자</th>
-                                <td>
-                                  {String(selectedPerformedControl.reviewAuthorName ?? "").trim()
-                                    || String(selectedPerformedControl.reviewAuthorEmail ?? "").trim()
-                                    || "-"}
-                                </td>
-                              </tr>
-                              <tr>
-                                <th>검토 결과</th>
-                                <td>{selectedPerformedControl.reviewResult || "양호"}</td>
-                              </tr>
-                              <tr>
-                                <th>검토 의견</th>
-                                <td>{preserveDisplayLineBreaks(selectedPerformedControl.note) || "-"}</td>
-                              </tr>
-                            </tbody>
-                          </table>
-                        </div>
+                                  <div
+                                    className="evidence-input-row"
+                                    onDragOver={(event) => event.preventDefault()}
+                                    onDrop={handlePerformedEvidenceDrop}
+                                  >
+                                    <span className="field-help">파일을 여기로 끌어다 놓아도 업로드됩니다.</span>
+                                  </div>
+                                </label>
+                              </div>
+                              <div className="evidence-file-list execution-form-item">
+                                {performedEditEvidenceFiles.length > 0 || performedDroppedFiles.length > 0 ? (
+                                  <>
+                                    {performedEditEvidenceFiles.map((file, index) => (
+                                      <span className="evidence-file-chip-wrap" key={`${file.name}-${index}`}>
+                                        <span className="system-chip evidence-file-chip">
+                                          {file.url ? file.name : `${file.name} (대기)`}
+                                        </span>
+                                        <button
+                                          className="evidence-file-delete"
+                                          type="button"
+                                          aria-label={`${file.name} 삭제`}
+                                          onClick={() => handleRemovePerformedEvidenceFile(index)}
+                                        >
+                                          X
+                                        </button>
+                                      </span>
+                                    ))}
+                                    {performedDroppedFiles.map((file, index) => (
+                                      <span className="evidence-file-chip-wrap" key={`${file.name}-${file.size}-${index}`}>
+                                        <span className="system-chip evidence-file-chip">{file.name} (드롭됨)</span>
+                                        <button
+                                          className="evidence-file-delete"
+                                          type="button"
+                                          aria-label={`${file.name} 삭제`}
+                                          onClick={() => handleRemovePerformedDroppedFile(index)}
+                                        >
+                                          X
+                                        </button>
+                                      </span>
+                                    ))}
+                                  </>
+                                ) : (
+                                  <span className="empty-text">첨부된 증적 없음</span>
+                                )}
+                              </div>
+                              {pendingPerformedUploadCount > 0 ? (
+                                <div className="field-help execution-form-item">추가 업로드 대기 파일 {pendingPerformedUploadCount}건</div>
+                              ) : null}
+                              <div className="execution-form-action completed-request-action">
+                                <button className="secondary-button completed-edit-button" type="button" onClick={handleCancelPerformedEdit}>
+                                  취소
+                                </button>
+                                <button className="primary-button" type="submit" disabled={!canSubmitPerformedEdit} style={{ color: "#ffffff", WebkitTextFillColor: "#ffffff" }}>
+                                  수정 저장
+                                </button>
+                              </div>
+                            </form>
+                          </div>
+                        )}
                       </div>
+                      {!performedEditMode && isAdmin ? (
+                        <div className="execution-form-action completed-request-action">
+                          <button className="secondary-button completed-edit-button" type="button" onClick={handleEditPerformedExecution}>
+                            수정
+                          </button>
+                          <button className="secondary-button destructive-button" type="button" onClick={handlePerformedExecutionDelete}>
+                            삭제
+                          </button>
+                        </div>
+                      ) : null}
                     </>
                   ) : (
                     <p className="empty-text">검토 완료된 수행 이력이 없습니다.</p>
