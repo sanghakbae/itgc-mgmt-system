@@ -1,5 +1,3 @@
-import { supabase, supabaseConfigured } from "./supabaseClient";
-
 export const ITGC_CONTROL_MASTER_TABLE = "itgc_control_master";
 export const ITGC_CONTROL_EXECUTION_TABLE = "itgc_control_execution";
 export const ITGC_EVIDENCE_TABLE = "itgc_evidence_files";
@@ -8,15 +6,61 @@ export const ITGC_MEMBER_TABLE = "itgc_member_master";
 export const ITGC_AUDIT_TABLE = "itgc_audit_log";
 export const ITGC_CONFIG_TABLE = "itgc_app_config";
 export const ITGC_EVIDENCE_BUCKET = "itgc_evidence_files";
+const DATA_BACKEND = (import.meta.env.VITE_DATA_BACKEND ?? "").trim().toLowerCase();
+const POSTGRES_API_BASE_URL = (import.meta.env.VITE_POSTGRES_API_BASE_URL ?? "").trim();
+const USE_POSTGRES_BACKEND = DATA_BACKEND === "postgres";
 const AUDIT_LOG_MAX_ITEMS = 3000;
 const LOGIN_DOMAIN_CONFIG_MEMBER_ID = "CFG-LOGIN-DOMAINS";
 const LOGIN_DOMAIN_CONFIG_KEY = "login_domains";
 const AUDIT_LOG_FETCH_LIMIT_MAX = 100;
+const QUERY_TEST_FETCH_LIMIT = 100;
 
-function assertSupabaseConfigured() {
-  if (!supabaseConfigured || !supabase) {
-    throw new Error("supabase_not_configured");
+async function fetchPostgresBackend(path, options = {}) {
+  const requestUrl = POSTGRES_API_BASE_URL ? new URL(path, POSTGRES_API_BASE_URL) : path;
+  const response = await fetch(requestUrl, {
+    headers: {
+      Accept: "application/json",
+      ...(options.headers ?? {}),
+    },
+    ...options,
+  });
+
+  const text = await response.text();
+  let payload = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { message: text };
+    }
   }
+
+  if (!response.ok) {
+    const message = payload?.error || payload?.message || response.statusText || "request_failed";
+    throw new Error(`postgres_backend_failed:${message}`);
+  }
+
+  return payload;
+}
+
+async function fetchPostgresDatabaseInfoRequest() {
+  return fetchPostgresBackend("/api/db-info");
+}
+
+async function fetchPostgresQueryTest(query) {
+  const payload = await fetchPostgresBackend("/api/query-test", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ query }),
+  });
+
+  return {
+    rows: Array.isArray(payload?.rows) ? payload.rows : [],
+    rowCount: Number(payload?.rowCount) || 0,
+    limitedTo: Number(payload?.limitedTo) || QUERY_TEST_FETCH_LIMIT,
+  };
 }
 
 function randomSuffix() {
@@ -183,7 +227,7 @@ function normalizeExecutionEntry(entry, control = {}) {
         ? entry.reviewRequested
         : false,
     executionAuthorName: String(entry?.executionAuthorName ?? "").trim(),
-    executionAuthorEmail: String(entry?.executionAuthorEmail ?? "").trim().toLowerCase(),
+    executionAuthorEmail: String(entry?.executionAuthorEmail ?? "").trim(),
     executionAuthorUnit: normalizeUnitLabel(entry?.executionAuthorUnit ?? control?.performDept ?? control?.performer ?? control?.ownerDept ?? ""),
     reviewChecked: String(entry?.reviewChecked ?? "미검토").trim() || "미검토",
     reviewResult: String(entry?.reviewResult ?? "").trim(),
@@ -317,6 +361,7 @@ function buildMasterControlPayload(control) {
 }
 
 function mapControlToMasterRow(control, index, nowIso) {
+  const createdAt = String(control.createdAt ?? control.created_at ?? nowIso).trim() || nowIso;
   return {
     control_id: control.id,
     category: control.process ?? "",
@@ -343,6 +388,7 @@ function mapControlToMasterRow(control, index, nowIso) {
     active_yn: "Y",
     sort_order: index + 1,
     control_payload: buildMasterControlPayload(control),
+    created_at: createdAt,
     updated_at: nowIso,
   };
 }
@@ -350,6 +396,7 @@ function mapControlToMasterRow(control, index, nowIso) {
 function mapControlToExecutionRows(control, nowIso) {
   return getControlExecutionHistory(control)
     .map((entry) => ({
+    created_at: String(entry.createdAt ?? nowIso).trim() || nowIso,
     execution_id: entry.executionId || createExecutionEntryKey(control.id, entry.executionYear, entry.executionPeriod),
     control_id: control.id,
     execution_year: entry.executionYear ?? "",
@@ -415,6 +462,7 @@ function mapControlToEvidenceRows(control, nowIso) {
     const evidenceFiles = Array.isArray(entry.evidenceFiles) ? entry.evidenceFiles : [];
 
     return evidenceFiles.map((file, index) => ({
+      created_at: String(file.createdAt ?? file.uploadedAt ?? nowIso).trim() || nowIso,
       evidence_id: file.evidenceId ?? `EVD-${executionId}-${String(index + 1).padStart(3, "0")}`,
       execution_id: executionId,
       control_id: control.id,
@@ -427,7 +475,7 @@ function mapControlToEvidenceRows(control, nowIso) {
       storage_bucket: ITGC_EVIDENCE_BUCKET,
       storage_path: file.storagePath ?? null,
       storage_url: file.url ?? null,
-      provider: file.provider ?? (file.storagePath ? "supabase" : "google"),
+      provider: file.provider ?? (file.storagePath ? "postgres" : "google"),
       evidence_payload: {
         ...file,
         executionId,
@@ -441,6 +489,7 @@ function mapControlToEvidenceRows(control, nowIso) {
 
 function mapWorkflowToRow(workflow, nowIso) {
   return {
+    created_at: String(workflow.createdAt ?? workflow.created_at ?? nowIso).trim() || nowIso,
     workflow_id: workflow.id,
     control_id: workflow.controlId ?? null,
     step: workflow.step ?? "",
@@ -606,238 +655,30 @@ function mergeExecutionPayload(incomingPayload, existingPayload) {
 }
 
 async function protectExecutionRowsFromBlankOverwrite(rows) {
-  if (!rows.length) {
-    return rows;
-  }
-
-  const executionIds = [...new Set(rows.map((row) => String(row.execution_id ?? "").trim()).filter(Boolean))];
-  if (!executionIds.length) {
-    return rows;
-  }
-
-  const { data: existingRows, error } = await supabase
-    .from(ITGC_CONTROL_EXECUTION_TABLE)
-    .select("*")
-    .in("execution_id", executionIds);
-
-  if (error) {
-    throw new Error(`${ITGC_CONTROL_EXECUTION_TABLE}_protect_select_failed:${error.message}`);
-  }
-
-  const existingById = new Map((existingRows ?? []).map((row) => [String(row.execution_id ?? "").trim(), row]));
-  const protectedColumns = [
-    "execution_note",
-    "status",
-    "review_checked",
-    "review_date",
-    "review_note",
-    "performed_by",
-    "reviewed_by",
-    "execution_year",
-    "execution_period",
-    "test_method_snapshot",
-    "population_snapshot",
-    "evidence_text_snapshot",
-    "evidence_status",
-    "performed_by_name",
-    "performed_by_email",
-    "performed_by_unit",
-    "reviewed_by_name",
-    "reviewed_by_email",
-    "reviewed_by_unit",
-  ];
-
-  return rows.map((row) => {
-    const existing = existingById.get(String(row.execution_id ?? "").trim());
-    if (!existing) {
-      return row;
-    }
-
-    const nextRow = { ...row };
-    for (const column of protectedColumns) {
-      if (Object.prototype.hasOwnProperty.call(nextRow, column) && isBlankValue(nextRow[column]) && !isBlankValue(existing[column])) {
-        nextRow[column] = existing[column];
-      }
-    }
-
-    if (typeof nextRow.execution_submitted !== "boolean" && typeof existing.execution_submitted === "boolean") {
-      nextRow.execution_submitted = existing.execution_submitted;
-    }
-    if (typeof nextRow.review_requested !== "boolean" && typeof existing.review_requested === "boolean") {
-      nextRow.review_requested = existing.review_requested;
-    }
-
-    nextRow.execution_payload = mergeExecutionPayload(nextRow.execution_payload, existing.execution_payload);
-    return nextRow;
-  });
+  return Array.isArray(rows) ? rows : [];
 }
 
-async function upsertRows(table, rows, pk) {
-  if (!rows.length) {
-    return;
+export async function fetchPostgresIntegrationStatus() {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
   }
 
-  const { error: upsertError } = await supabase
-    .from(table)
-    .upsert(rows, { onConflict: pk });
-
-  if (upsertError) {
-    throw new Error(`${table}_upsert_failed:${upsertError.message}`);
-  }
-}
-
-async function removeStorageObjects(paths) {
-  const normalizedPaths = [...new Set((paths ?? []).map((path) => String(path ?? "").trim()).filter(Boolean))];
-  if (!normalizedPaths.length) {
-    return;
-  }
-
-  const { error } = await supabase.storage
-    .from(ITGC_EVIDENCE_BUCKET)
-    .remove(normalizedPaths);
-
-  if (error) {
-    throw new Error(`storage_remove_failed:${error.message}`);
-  }
-}
-
-async function reconcileScopedRows(table, rows, pk, scopeColumn, options = {}) {
-  const {
-    extraSelectColumns = [],
-    beforeDelete = null,
-    scopeValues: providedScopeValues = null,
-  } = options;
-  const scopeValues = providedScopeValues
-    ? [...new Set(providedScopeValues.map((value) => String(value ?? "").trim()).filter(Boolean))]
-    : [...new Set(rows.map((row) => row[scopeColumn]).filter(Boolean))];
-  if (!scopeValues.length) {
-    return;
-  }
-
-  const selectColumns = [pk, scopeColumn, ...extraSelectColumns].join(",");
-  const { data: existingRows, error: selectError } = await supabase
-    .from(table)
-    .select(selectColumns)
-    .in(scopeColumn, scopeValues);
-
-  if (selectError) {
-    throw new Error(`${table}_select_failed:${selectError.message}`);
-  }
-
-  const currentIds = new Set(rows.map((row) => row[pk]));
-  const staleIds = (existingRows ?? [])
-    .map((row) => row[pk])
-    .filter((id) => id && !currentIds.has(id));
-
-  if (!staleIds.length) {
-    return;
-  }
-
-  if (typeof beforeDelete === "function") {
-    const staleRows = (existingRows ?? []).filter((row) => staleIds.includes(row[pk]));
-    await beforeDelete(staleRows);
-  }
-
-  const { error: deleteError } = await supabase
-    .from(table)
-    .delete()
-    .in(pk, staleIds);
-
-  if (deleteError) {
-    throw new Error(`${table}_delete_failed:${deleteError.message}`);
-  }
-}
-
-async function fetchConfigRowsMaybe() {
-  const { data, error } = await supabase
-    .from(ITGC_CONFIG_TABLE)
-    .select("*");
-
-  if (error) {
-    if (isMissingRelationError(error)) {
-      return [];
-    }
-    throw new Error(`config_fetch_failed:${error.message}`);
-  }
-
-  return data ?? [];
-}
-
-async function upsertConfigRowMaybe(row) {
-  const { error } = await supabase
-    .from(ITGC_CONFIG_TABLE)
-    .upsert([row], { onConflict: "config_key" });
-
-  if (error) {
-    if (isMissingRelationError(error)) {
-      return false;
-    }
-    throw new Error(`config_upsert_failed:${error.message}`);
-  }
-
-  return true;
-}
-
-export async function fetchSupabaseIntegrationStatus() {
-  assertSupabaseConfigured();
-
-  const [{ error: controlError }, { error: workflowError }, { error: storageError }] = await Promise.all([
-    supabase
-      .from(ITGC_CONTROL_MASTER_TABLE)
-      .select("control_id", { head: true, count: "exact" })
-      .limit(1),
-    supabase
-      .from(ITGC_WORKFLOWS_TABLE)
-      .select("workflow_id", { head: true, count: "exact" })
-      .limit(1),
-    supabase.storage.from(ITGC_EVIDENCE_BUCKET).list("", { limit: 1 }),
-  ]);
-
+  const payload = await fetchPostgresBackend("/api/integration-status");
   return {
-    spreadsheet: !controlError && !workflowError,
-    drive: !storageError,
+    spreadsheet: Boolean(payload?.spreadsheet),
+    drive: Boolean(payload?.drive),
   };
 }
 
-export async function fetchSupabaseWorkspace() {
-  assertSupabaseConfigured();
-
-  const [
-    { data: controlRows, error: controlError },
-    { data: executionRows, error: executionError },
-    { data: evidenceRows, error: evidenceError },
-    { data: workflowRows, error: workflowError },
-    { data: memberRows, error: memberError },
-    { data: auditRows, error: auditError },
-    configRows,
-  ] = await Promise.all([
-    supabase.from(ITGC_CONTROL_MASTER_TABLE).select("*").order("sort_order", { ascending: true }),
-    supabase.from(ITGC_CONTROL_EXECUTION_TABLE).select("*").order("last_updated_at", { ascending: false }),
-    supabase.from(ITGC_EVIDENCE_TABLE).select("*").order("uploaded_at", { ascending: false }),
-    supabase.from(ITGC_WORKFLOWS_TABLE).select("*").order("due_date", { ascending: true }),
-    supabase.from(ITGC_MEMBER_TABLE).select("*").order("member_name", { ascending: true }),
-    supabase.from(ITGC_AUDIT_TABLE).select("*").order("created_at_ts", { ascending: false }).limit(AUDIT_LOG_MAX_ITEMS),
-    fetchConfigRowsMaybe(),
-  ]);
-
-  if (controlError) {
-    throw new Error(`controls_fetch_failed:${controlError.message}`);
-  }
-  if (executionError) {
-    throw new Error(`executions_fetch_failed:${executionError.message}`);
-  }
-  if (evidenceError) {
-    throw new Error(`evidence_fetch_failed:${evidenceError.message}`);
-  }
-  if (workflowError) {
-    throw new Error(`workflows_fetch_failed:${workflowError.message}`);
-  }
-  if (memberError) {
-    throw new Error(`members_fetch_failed:${memberError.message}`);
-  }
-  if (auditError) {
-    throw new Error(`audit_fetch_failed:${auditError.message}`);
-  }
+function buildWorkspaceFromRawRows({
+  controlRows = [],
+  executionRows = [],
+  evidenceRows = [],
+  workflowRows = [],
+  memberRows = [],
+  auditRows = [],
+  configRows = [],
+}) {
   const executionRowsByControlId = new Map();
   for (const row of executionRows ?? []) {
     const current = executionRowsByControlId.get(row.control_id) ?? [];
@@ -969,6 +810,7 @@ export async function fetchSupabaseWorkspace() {
     const latestExecution = executions[0];
 
     return {
+      ...row,
       ...payload,
       id: row.control_id,
       process: row.category,
@@ -1022,6 +864,7 @@ export async function fetchSupabaseWorkspace() {
     const payload = typeof row.workflow_payload === "object" && row.workflow_payload ? row.workflow_payload : {};
 
     return {
+      ...row,
       ...payload,
       id: row.workflow_id,
       controlId: row.control_id,
@@ -1047,23 +890,30 @@ export async function fetchSupabaseWorkspace() {
   const people = (memberRows ?? [])
     .filter((row) => row.member_id !== LOGIN_DOMAIN_CONFIG_MEMBER_ID)
     .map((row) => {
-    const payload = typeof row.member_payload === "object" && row.member_payload ? row.member_payload : {};
+      const payload = typeof row.member_payload === "object" && row.member_payload ? row.member_payload : {};
 
-    return {
-      ...payload,
-      id: row.member_id,
-      name: row.member_name,
-      email: row.email,
-      role: row.role,
-      unit: normalizeUnitLabel(row.unit),
-      accessRole: row.access_role,
-    };
-  });
+      return {
+        ...row,
+        ...payload,
+        id: row.member_id,
+        name: row.member_name,
+        email: row.email,
+        role: row.role,
+        team: row.team,
+        unit: row.unit,
+        accessRole: row.access_role,
+        activeYn: row.active_yn,
+        memberPayload: row.member_payload,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+    });
 
   const auditLogs = (auditRows ?? []).map((row) => {
     const payload = typeof row.audit_payload === "object" && row.audit_payload ? row.audit_payload : {};
 
     return {
+      ...row,
       ...payload,
       id: row.log_id,
       action: row.action,
@@ -1086,46 +936,36 @@ export async function fetchSupabaseWorkspace() {
   };
 }
 
-export async function fetchSupabaseAuditLogsPage(options = {}) {
-  assertSupabaseConfigured();
+export async function fetchPostgresWorkspace() {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
+  }
+
+  const payload = await fetchPostgresBackend("/api/workspace");
+  return buildWorkspaceFromRawRows(payload);
+}
+
+export async function fetchPostgresAuditLogsPage(options = {}) {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
+  }
 
   const page = Math.max(1, Number(options.page) || 1);
   const pageSize = Math.min(AUDIT_LOG_FETCH_LIMIT_MAX, Math.max(1, Number(options.pageSize) || 30));
   const query = String(options.query ?? "").trim();
-  const from = (page - 1) * pageSize;
-  const to = from + pageSize - 1;
-
-  let request = supabase
-    .from(ITGC_AUDIT_TABLE)
-    .select("*", { count: "exact" })
-    .order("created_at_ts", { ascending: false })
-    .range(from, to);
-
+  const params = new URLSearchParams({
+    page: String(page),
+    pageSize: String(pageSize),
+  });
   if (query) {
-    const escaped = query.replace(/[%_,]/g, (char) => `\\${char}`);
-    request = request.or(
-      [
-        `created_at.ilike.%${escaped}%`,
-        `actor_name.ilike.%${escaped}%`,
-        `actor_email.ilike.%${escaped}%`,
-        `action.ilike.%${escaped}%`,
-        `target.ilike.%${escaped}%`,
-        `detail.ilike.%${escaped}%`,
-        `ip.ilike.%${escaped}%`,
-      ].join(","),
-    );
+    params.set("query", query);
   }
-
-  const { data, count, error } = await request;
-  if (error) {
-    throw new Error(`audit_fetch_failed:${error.message}`);
-  }
-
-  const logs = (data ?? []).map((row) => {
-    const payload = typeof row.audit_payload === "object" && row.audit_payload ? row.audit_payload : {};
+  const payload = await fetchPostgresBackend(`/api/audit-logs?${params.toString()}`);
+  const logs = (Array.isArray(payload?.rows) ? payload.rows : []).map((row) => {
+    const payloadRow = typeof row.audit_payload === "object" && row.audit_payload ? row.audit_payload : {};
 
     return {
-      ...payload,
+      ...payloadRow,
       id: row.log_id,
       action: row.action,
       target: row.target,
@@ -1140,248 +980,202 @@ export async function fetchSupabaseAuditLogsPage(options = {}) {
 
   return {
     logs,
-    totalCount: Number(count) || 0,
-    totalPages: Math.max(1, Math.ceil((Number(count) || 0) / pageSize)),
+    totalCount: Number(payload?.totalCount) || 0,
+    totalPages: Number(payload?.totalPages) || 1,
   };
 }
 
-export async function syncSupabaseWorkspace(workspace) {
-  assertSupabaseConfigured();
+export async function fetchPostgresDatabaseInfo() {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
+  }
+
+  return fetchPostgresDatabaseInfoRequest();
+}
+
+export async function runPostgresQueryTest(query) {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
+  }
+
+  return fetchPostgresQueryTest(query);
+}
+
+export async function syncPostgresWorkspace(workspace) {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
+  }
 
   const nowIso = new Date().toISOString();
   const controls = Array.isArray(workspace.controls) ? workspace.controls : [];
   const workflows = Array.isArray(workspace.workflows) ? workspace.workflows : [];
-  const people = (Array.isArray(workspace.people) ? workspace.people : [])
-    .filter((member) => String(member?.id ?? "").startsWith("MBR-"));
-  const loginDomains = normalizeDomainList(workspace.loginDomains);
-  const auditLogs = Array.isArray(workspace.auditLogs) ? workspace.auditLogs.slice(0, AUDIT_LOG_MAX_ITEMS) : [];
-
   const controlRows = controls.map((control, index) => mapControlToMasterRow(control, index, nowIso));
   const executionRows = await protectExecutionRowsFromBlankOverwrite(
     controls.flatMap((control) => mapControlToExecutionRows(control, nowIso)),
   );
   const evidenceRows = controls.flatMap((control) => mapControlToEvidenceRows(control, nowIso));
   const workflowRows = workflows.map((workflow) => mapWorkflowToRow(workflow, nowIso));
-  const controlIds = controls.map((control) => control.id).filter(Boolean);
-  const memberRows = people.map((member) => mapMemberToRow(member, nowIso));
-  const configRow = mapLoginDomainConfigToConfigRow(loginDomains, nowIso);
-  const auditRows = auditLogs.map((log) => mapAuditToRow(log, nowIso));
-
-  await upsertRows(ITGC_CONTROL_MASTER_TABLE, controlRows, "control_id");
-  try {
-    await upsertRows(ITGC_CONTROL_EXECUTION_TABLE, executionRows, "execution_id");
-  } catch (error) {
-    if (!isMissingExecutionSnapshotColumnError(error)) {
-      throw error;
-    }
-    await upsertRows(ITGC_CONTROL_EXECUTION_TABLE, stripExecutionSnapshotColumns(executionRows), "execution_id");
-  }
-  await upsertRows(ITGC_EVIDENCE_TABLE, evidenceRows, "evidence_id");
-  await upsertRows(ITGC_WORKFLOWS_TABLE, workflowRows, "workflow_id");
-  await upsertRows(ITGC_AUDIT_TABLE, auditRows, "log_id");
-  // Execution history must never be deleted by client-side reconciliation.
-  // A stale or partial workspace should not be able to wipe remote execution rows.
-  await reconcileScopedRows(ITGC_EVIDENCE_TABLE, evidenceRows, "evidence_id", "control_id", {
-    scopeValues: controlIds,
-    extraSelectColumns: ["storage_path"],
-    beforeDelete: async (staleRows) => {
-      await removeStorageObjects(staleRows.map((row) => row.storage_path));
-    },
-  });
-  await reconcileScopedRows(ITGC_WORKFLOWS_TABLE, workflowRows.filter((row) => row.control_id), "workflow_id", "control_id", {
-    scopeValues: controlIds,
-  });
-  await upsertRows(ITGC_MEMBER_TABLE, memberRows, "member_id");
-
-  const configSynced = await upsertConfigRowMaybe(configRow);
-  if (!configSynced) {
-    await upsertRows(ITGC_MEMBER_TABLE, [mapLoginDomainConfigRow(loginDomains, nowIso)], "member_id");
-  }
-
-  return { ok: true };
-}
-
-export async function deleteSupabaseMember(memberId) {
-  assertSupabaseConfigured();
-  const normalizedId = String(memberId ?? "").trim();
-  if (!normalizedId || normalizedId === LOGIN_DOMAIN_CONFIG_MEMBER_ID) {
-    throw new Error("invalid_member_id");
-  }
-
-  const { error } = await supabase
-    .from(ITGC_MEMBER_TABLE)
-    .delete()
-    .eq("member_id", normalizedId);
-
-  if (error) {
-    throw new Error(`member_delete_failed:${error.message}`);
-  }
-
-  return { ok: true };
-}
-
-export async function deleteSupabaseControl(controlId) {
-  assertSupabaseConfigured();
-  const normalizedId = String(controlId ?? "").trim();
-  if (!normalizedId) {
-    throw new Error("invalid_control_id");
-  }
-
-  const { data: evidenceRows, error: evidenceSelectError } = await supabase
-    .from(ITGC_EVIDENCE_TABLE)
-    .select("storage_path")
-    .eq("control_id", normalizedId);
-
-  if (evidenceSelectError) {
-    throw new Error(`control_evidence_select_failed:${evidenceSelectError.message}`);
-  }
-
-  await removeStorageObjects((evidenceRows ?? []).map((row) => row.storage_path));
-
-  const { error } = await supabase
-    .from(ITGC_CONTROL_MASTER_TABLE)
-    .delete()
-    .eq("control_id", normalizedId);
-
-  if (error) {
-    throw new Error(`control_delete_failed:${error.message}`);
-  }
-
-  return { ok: true };
-}
-
-export async function deleteSupabaseExecution(executionId) {
-  assertSupabaseConfigured();
-  const normalizedId = String(executionId ?? "").trim();
-  if (!normalizedId) {
-    throw new Error("invalid_execution_id");
-  }
-
-  const { data: evidenceRows, error: evidenceSelectError } = await supabase
-    .from(ITGC_EVIDENCE_TABLE)
-    .select("storage_path")
-    .eq("execution_id", normalizedId);
-
-  if (evidenceSelectError) {
-    throw new Error(`execution_evidence_select_failed:${evidenceSelectError.message}`);
-  }
-
-  await removeStorageObjects((evidenceRows ?? []).map((row) => row.storage_path));
-
-  const { error: evidenceDeleteError } = await supabase
-    .from(ITGC_EVIDENCE_TABLE)
-    .delete()
-    .eq("execution_id", normalizedId);
-
-  if (evidenceDeleteError) {
-    throw new Error(`execution_evidence_delete_failed:${evidenceDeleteError.message}`);
-  }
-
-  const { error: executionDeleteError } = await supabase
-    .from(ITGC_CONTROL_EXECUTION_TABLE)
-    .delete()
-    .eq("execution_id", normalizedId);
-
-  if (executionDeleteError) {
-    throw new Error(`execution_delete_failed:${executionDeleteError.message}`);
-  }
-
-  return { ok: true };
-}
-
-export async function createSupabaseAuditLog(log) {
-  assertSupabaseConfigured();
+  const loginDomains = normalizeDomainList(workspace.loginDomains);
+  const memberRows = [
+    ...((Array.isArray(workspace.people) ? workspace.people : []).filter((member) => String(member?.id ?? "").startsWith("MBR-"))),
+    mapLoginDomainConfigRow(loginDomains, nowIso),
+  ];
+  const auditRows = Array.isArray(workspace.auditLogs) ? workspace.auditLogs.slice(0, AUDIT_LOG_MAX_ITEMS).map((log) => mapAuditToRow(log, nowIso)) : [];
 
   const payload = {
-    id: String(log?.id ?? "").trim(),
-    action: String(log?.action ?? "").trim(),
-    target: String(log?.target ?? "").trim(),
-    detail: String(log?.detail ?? "").trim(),
-    actorName: String(log?.actorName ?? "").trim(),
-    actorEmail: String(log?.actorEmail ?? "").trim().toLowerCase(),
-    createdAt: String(log?.createdAt ?? "").trim(),
-    createdAtTs: String(log?.createdAtTs ?? "").trim(),
+    tables: {
+      itgc_control_master: controlRows,
+      itgc_control_execution: executionRows,
+      itgc_evidence_files: evidenceRows,
+      itgc_workflows: workflowRows,
+      itgc_member_master: memberRows.map((member) => ({
+        member_id: member.id ?? member.member_id ?? "",
+        member_name: member.name ?? member.member_name ?? "",
+        email: member.email ?? "",
+        role: member.role ?? "",
+        team: member.team ?? "",
+        unit: member.unit ?? "",
+        access_role: member.accessRole ?? member.access_role ?? "viewer",
+        active_yn: member.activeYn ?? member.active_yn ?? "Y",
+        member_payload: member.memberPayload ?? member.member_payload ?? member,
+        created_at: member.createdAt ?? member.created_at ?? nowIso,
+        updated_at: member.updatedAt ?? member.updated_at ?? nowIso,
+      })),
+      itgc_audit_log: auditRows,
+    },
   };
-  const nowIso = new Date().toISOString();
-  const mapAuditRowToLog = (row) => ({
-    id: row?.log_id ?? payload.id,
-    action: row?.action ?? payload.action,
-    target: row?.target ?? payload.target,
-    detail: row?.detail ?? payload.detail,
-    actorName: row?.actor_name ?? payload.actorName,
-    actorEmail: row?.actor_email ?? payload.actorEmail,
-    ip: row?.ip ?? "-",
-    createdAt: row?.created_at ?? payload.createdAt,
-    createdAtTs: row?.created_at_ts ?? payload.createdAtTs,
+
+  const result = await fetchPostgresBackend("/api/sync-workspace", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
   });
-
-  const { data, error } = await supabase.functions.invoke("audit-log", {
-    body: payload,
-  });
-
-  if (!error && data?.log) {
-    return mapAuditRowToLog(data.log);
-  }
-
-  const fallbackRow = mapAuditToRow({
-    ...payload,
-    ip: "-",
-  }, nowIso);
-  const { data: insertedRows, error: fallbackError } = await supabase
-    .from(ITGC_AUDIT_TABLE)
-    .upsert([fallbackRow], { onConflict: "log_id" })
-    .select("*")
-    .limit(1);
-
-  if (fallbackError) {
-    const functionErrorText = error ? `audit_log_function_failed:${error.message}` : "audit_log_function_invalid_response";
-    throw new Error(`${functionErrorText}|fallback_failed:${fallbackError.message}`);
-  }
-
-  const insertedRow = Array.isArray(insertedRows) ? insertedRows[0] : insertedRows;
-  if (!insertedRow) {
-    throw new Error(error ? `audit_log_function_failed:${error.message}|fallback_failed:no_row_returned` : "audit_log_function_invalid_response|fallback_failed:no_row_returned");
-  }
-
-  return mapAuditRowToLog(insertedRow);
+  return { ok: true, ...result };
 }
 
-export async function uploadEvidenceToSupabase(controlId, files) {
-  assertSupabaseConfigured();
-
-  const uploadedFiles = [];
-
-  for (const file of files) {
-    const path = `${controlId}/${Date.now()}-${randomSuffix()}-${safeFileName(file.name)}`;
-
-    const { error } = await supabase.storage
-      .from(ITGC_EVIDENCE_BUCKET)
-      .upload(path, file, {
-        cacheControl: "3600",
-        upsert: false,
-      });
-
-    if (error) {
-      throw new Error(`evidence_upload_failed:${error.message}`);
-    }
-
-    const { data: publicUrlData } = supabase.storage
-      .from(ITGC_EVIDENCE_BUCKET)
-      .getPublicUrl(path);
-
-    uploadedFiles.push({
-      evidenceId: `EVD-${controlId}-${Date.now()}-${randomSuffix()}`,
-      name: file.name,
-      mimeType: file.type || "application/octet-stream",
-      size: file.size,
-      uploadedAt: new Date().toISOString(),
-      url: publicUrlData.publicUrl,
-      storagePath: path,
-      provider: "supabase",
-    });
+export async function savePostgresControlBundle(control, workflows = []) {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
   }
 
-  return {
-    files: uploadedFiles,
+  const nowIso = new Date().toISOString();
+  const controlRows = [mapControlToMasterRow(control, 0, nowIso)];
+  const executionRows = await protectExecutionRowsFromBlankOverwrite(
+    mapControlToExecutionRows(control, nowIso),
+  );
+  const evidenceRows = mapControlToEvidenceRows(control, nowIso);
+  const workflowRows = (Array.isArray(workflows) ? workflows : []).map((workflow) => mapWorkflowToRow(workflow, nowIso));
+  const payload = {
+    controlId: control.id,
+    tables: {
+      itgc_control_master: controlRows,
+      itgc_control_execution: executionRows,
+      itgc_evidence_files: evidenceRows,
+      itgc_workflows: workflowRows,
+    },
   };
+
+  const result = await fetchPostgresBackend("/api/upsert-control-bundle", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  return { ok: true, ...result };
+}
+
+export async function appendPostgresAuditLog(log) {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
+  }
+
+  const nowIso = new Date().toISOString();
+  const payload = await fetchPostgresBackend("/api/append-audit-log", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      row: mapAuditToRow(log, nowIso),
+    }),
+  });
+  return { ok: true, ...payload };
+}
+
+export async function deletePostgresMember(memberId) {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
+  }
+
+  const payload = await fetchPostgresBackend("/api/delete-member", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ memberId }),
+  });
+  return { ok: true, ...payload };
+}
+
+export async function upsertPostgresMember(member) {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
+  }
+
+  const payload = await fetchPostgresBackend("/api/upsert-member", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ member }),
+  });
+  return { ok: true, ...payload };
+}
+
+export async function upsertPostgresControl(control) {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
+  }
+
+  const payload = await fetchPostgresBackend("/api/upsert-control", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ control }),
+  });
+  return { ok: true, ...payload };
+}
+
+export async function deletePostgresControl(controlId) {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
+  }
+
+  const payload = await fetchPostgresBackend("/api/delete-control", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ controlId }),
+  });
+  return { ok: true, ...payload };
+}
+
+export async function deletePostgresExecution(executionId) {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
+  }
+
+  const payload = await fetchPostgresBackend("/api/delete-execution", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ executionId }),
+  });
+  return { ok: true, ...payload };
 }

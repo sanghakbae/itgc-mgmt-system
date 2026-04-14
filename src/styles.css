@@ -2042,6 +2042,114 @@ th {
   text-align: center;
 }
 
+.audit-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 14px;
+}
+
+.audit-subnav .primary-button.slim-button,
+.audit-subnav .secondary-button.slim-button {
+  max-width: none;
+}
+
+.audit-db-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.audit-db-summary-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.audit-query-panel {
+  padding: 16px;
+}
+
+.audit-query-form {
+  display: grid;
+  gap: 12px;
+}
+
+.audit-query-label {
+  width: 100%;
+}
+
+.audit-query-textarea {
+  min-height: 180px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.audit-query-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.audit-query-actions .primary-button.slim-button,
+.audit-query-actions .secondary-button.slim-button {
+  min-width: 110px;
+}
+
+.audit-query-result {
+  display: grid;
+  gap: 10px;
+}
+
+.audit-query-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 4px;
+  background: #fffdf9;
+  border: 1px solid var(--line);
+}
+
+.audit-query-summary span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.audit-query-summary strong {
+  font-size: 0.92rem;
+}
+
+.audit-query-result-wrap {
+  overflow-x: auto;
+}
+
+.audit-query-table {
+  min-width: max-content;
+  table-layout: auto;
+  width: max-content;
+}
+
+.audit-query-table th,
+.audit-query-table td {
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.audit-query-table th {
+  min-width: 140px;
+}
+
+.audit-query-table td {
+  max-width: 260px;
+}
+
 .report-toolbar {
   display: flex;
   justify-content: flex-end;
@@ -5719,6 +5827,33 @@ th {
     white-space: normal;
     word-break: break-word;
     overflow-wrap: anywhere;
+  }
+
+  .audit-subnav {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .audit-subnav .primary-button.slim-button,
+  .audit-subnav .secondary-button.slim-button {
+    width: 100%;
+  }
+
+  .audit-db-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .audit-query-actions {
+    flex-direction: column;
+  }
+
+  .audit-query-actions .primary-button.slim-button,
+  .audit-query-actions .secondary-button.slim-button {
+    width: 100%;
+  }
+
+  .audit-query-textarea {
+    min-height: 140px;
   }
 
   .login-domain-inline {

@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  fetchSupabaseIntegrationStatus,
-  fetchSupabaseAuditLogsPage,
-  fetchSupabaseWorkspace,
-  syncSupabaseWorkspace,
-  createSupabaseAuditLog,
-  deleteSupabaseControl,
-  deleteSupabaseExecution,
-  deleteSupabaseMember,
-} from "./supabaseApi";
-import { defaultControls30 } from "./defaultControls30";
+  appendPostgresAuditLog,
+  fetchPostgresIntegrationStatus,
+  fetchPostgresAuditLogsPage,
+  fetchPostgresDatabaseInfo,
+  fetchPostgresWorkspace,
+  runPostgresQueryTest,
+  savePostgresControlBundle,
+  syncPostgresWorkspace,
+  deletePostgresControl,
+  deletePostgresExecution,
+  deletePostgresMember,
+  upsertPostgresControl,
+  upsertPostgresMember,
+} from "./postgresApi";
 
 const STORAGE_KEY = "itgc-workspace-v8";
 const REGISTRATION_DRAFT_KEY = "itgc-registration-draft-v1";
@@ -25,8 +29,7 @@ const LOGIN_DOMAIN_ERROR_MESSAGE = "허용된 도메인만 로그인할 수 있�
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
 const GOOGLE_DRIVE_FOLDER_ID = (import.meta.env.VITE_GOOGLE_DRIVE_FOLDER_ID ?? "").trim();
 const ALLOWED_DOMAIN_ENV = (import.meta.env.VITE_ALLOWED_DOMAIN ?? "").trim() || "muhayu.com";
-const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL ?? "").trim();
-const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY ?? "").trim();
+const POSTGRES_API_BASE_URL = (import.meta.env.VITE_POSTGRES_API_BASE_URL ?? "").trim();
 const GOOGLE_CHAT_WEBHOOK_URL = (import.meta.env.VITE_GOOGLE_CHAT_WEBHOOK_URL ?? "").trim();
 const GOOGLE_CHAT_ALERT_ACTIONS_ENV = (import.meta.env.VITE_GOOGLE_CHAT_ALERT_ACTIONS ?? "").trim();
 const GOOGLE_CHAT_DEDUP_MS_ENV = Number(import.meta.env.VITE_GOOGLE_CHAT_DEDUP_MS ?? 60000);
@@ -48,11 +51,11 @@ const DEV_LOCAL_LOGIN_ENABLED = Boolean(import.meta.env.DEV);
 const DEFAULT_DEV_LOGIN_EMAIL = `shbae@${ALLOWED_EMAIL_DOMAINS[0] ?? "muhayu.com"}`;
 
 const DATA_BACKEND = (() => {
-  if (DATA_BACKEND_ENV === "supabase") {
-    return "supabase";
+  if (DATA_BACKEND_ENV === "postgres") {
+    return "postgres";
   }
-  if (SUPABASE_URL && SUPABASE_ANON_KEY) {
-    return "supabase";
+  if (POSTGRES_API_BASE_URL) {
+    return "postgres";
   }
   return "local";
 })();
@@ -78,7 +81,7 @@ const DASHBOARD_DELAY_BUCKET_CONFIG = {
 };
 
 const defaultData = {
-  controls: defaultControls30,
+  controls: [],
   loginDomains: ALLOWED_EMAIL_DOMAINS,
   workflows: [
     {
@@ -492,6 +495,22 @@ const registrationRequiredFields = [
   "targetSystems",
 ];
 
+function hasRegistrationDraftValue(form) {
+  if (!form) {
+    return false;
+  }
+
+  return Object.entries(initialRegistrationForm).some(([key, initialValue]) => {
+    const currentValue = form[key];
+    if (Array.isArray(initialValue) || Array.isArray(currentValue)) {
+      const currentList = Array.isArray(currentValue) ? currentValue : [];
+      const initialList = Array.isArray(initialValue) ? initialValue : [];
+      return JSON.stringify(currentList) !== JSON.stringify(initialList);
+    }
+    return String(currentValue ?? "") !== String(initialValue ?? "");
+  });
+}
+
 const registrationExamples = [
   {
     id: "PWC-01",
@@ -680,18 +699,6 @@ function buildEvidenceUploadAuditSuffix(files) {
     .join(", ");
   const folderId = String(GOOGLE_DRIVE_FOLDER_ID ?? "").trim();
   return ` · 업로드 파일: ${summary}${folderId ? ` · Drive Folder ID: ${folderId}` : ""}`;
-}
-
-function getSupabaseProjectHost(url) {
-  const normalized = String(url ?? "").trim();
-  if (!normalized) {
-    return "";
-  }
-  try {
-    return new URL(normalized).host;
-  } catch {
-    return normalized;
-  }
 }
 
 function normalizeCompactText(value) {
@@ -940,7 +947,10 @@ function compareControlsByRecentReview(left, right) {
 }
 
 function compareControlsByListOrder(left, right) {
-  return compareControlsByRecentExecution(left, right) || String(left?.id ?? "").localeCompare(String(right?.id ?? ""), "ko");
+  return String(left?.id ?? "").localeCompare(String(right?.id ?? ""), "ko", {
+    numeric: true,
+    sensitivity: "base",
+  }) || compareControlsByRecentExecution(left, right);
 }
 
 function dedupeExecutionEntries(entries, control = null) {
@@ -984,15 +994,6 @@ function normalizeExecutionId(value, controlId, executionYear, executionPeriod) 
 function normalizeExecutionEntry(entry, fallbackControl = {}) {
   const executionYear = String(entry?.executionYear ?? "").trim();
   const executionPeriod = String(entry?.executionPeriod ?? "").trim();
-  const fallbackControlId = String(fallbackControl?.id ?? "").trim();
-  const forcedAuthorName =
-    fallbackControlId === "C-IT-Cyber-04"
-      ? "이치현"
-      : String(entry?.executionAuthorName ?? "").trim();
-  const forcedAuthorEmail =
-    fallbackControlId === "C-IT-Cyber-04"
-      ? ""
-      : String(entry?.executionAuthorEmail ?? "").trim().toLowerCase();
 
   return {
     executionId: normalizeExecutionId(
@@ -1015,8 +1016,8 @@ function normalizeExecutionEntry(entry, fallbackControl = {}) {
       typeof entry?.reviewRequested === "boolean"
         ? entry.reviewRequested
         : false,
-    executionAuthorName: forcedAuthorName,
-    executionAuthorEmail: forcedAuthorEmail,
+    executionAuthorName: String(entry?.executionAuthorName ?? "").trim(),
+    executionAuthorEmail: String(entry?.executionAuthorEmail ?? "").trim(),
     executionAuthorUnit: String(entry?.executionAuthorUnit ?? fallbackControl?.performDept ?? fallbackControl?.performer ?? fallbackControl?.ownerDept ?? "").trim(),
     reviewChecked: String(entry?.reviewChecked ?? "미검토").trim() || "미검토",
     reviewResult: String(entry?.reviewResult ?? "").trim(),
@@ -1110,30 +1111,40 @@ function hasExecutionRequiredFieldsForPerformed(entry) {
   );
 }
 
+function deriveExecutionStage(entry) {
+  const reviewChecked = String(entry?.reviewChecked ?? "미검토").trim() || "미검토";
+  const executionSubmitted = Boolean(entry?.executionSubmitted);
+  const reviewRequested = Boolean(entry?.reviewRequested);
+
+  if (!hasExecutionEntryContent(entry) && !executionSubmitted) {
+    return "empty";
+  }
+  if (!executionSubmitted) {
+    return "draft";
+  }
+  if (reviewChecked === "검토 완료") {
+    return "performed-complete";
+  }
+  if (reviewChecked === "반려") {
+    return "rejected";
+  }
+  if (reviewRequested) {
+    return "review-requested";
+  }
+  return "submitted";
+}
+
 function isExecutionReadyForCompletion(entry) {
-  return (
-    hasExecutionRequiredFields(entry)
-    && String(entry?.reviewChecked ?? "미검토").trim() !== "검토 완료"
-  );
+  return deriveExecutionStage(entry) === "submitted" && hasExecutionRequiredFields(entry);
 }
 
 function isExecutionInReviewQueue(entry) {
-  return (
-    Boolean(entry?.executionSubmitted)
-    && Boolean(entry?.reviewRequested)
-    && isExecutionReadyForCompletion(entry)
-    && String(entry?.reviewChecked ?? "미검토").trim() === "미검토"
-  );
+  return deriveExecutionStage(entry) === "review-requested" && hasExecutionRequiredFields(entry);
 }
 
 function hasDraftExecutionEntry(control) {
   return getControlExecutionHistory(control).some(
-    (entry) =>
-      !entry?.executionSubmitted
-      && (
-        String(entry?.executionNote ?? "").trim().length > 0
-        || (Array.isArray(entry?.evidenceFiles) ? entry.evidenceFiles : []).length > 0
-      ),
+    (entry) => deriveExecutionStage(entry) === "draft",
   );
 }
 
@@ -1531,15 +1542,33 @@ async function uploadWorkspaceBackupToDrive(workspace) {
 }
 
 async function fetchRemoteIntegrationStatusByBackend() {
-  return fetchSupabaseIntegrationStatus();
+  return fetchPostgresIntegrationStatus();
 }
 
 async function fetchRemoteWorkspaceByBackend() {
-  return fetchSupabaseWorkspace();
+  return fetchPostgresWorkspace();
 }
 
 async function syncRemoteWorkspaceByBackend(workspace) {
-  return syncSupabaseWorkspace(workspace);
+  return syncPostgresWorkspace(workspace);
+}
+
+function normalizeRemoteWorkspace(remoteWorkspace, fallbackWorkspace) {
+  const remoteControls = Array.isArray(remoteWorkspace?.controls) ? remoteWorkspace.controls.map(normalizeControl) : [];
+  const remotePeople = Array.isArray(remoteWorkspace?.people) ? remoteWorkspace.people : [];
+  const remoteAuditLogs = Array.isArray(remoteWorkspace?.auditLogs) ? remoteWorkspace.auditLogs : [];
+  const remoteLoginDomains = parseDomainList(remoteWorkspace?.loginDomains);
+  const fallbackLoginDomains = parseDomainList(fallbackWorkspace?.loginDomains);
+
+  return {
+    controls: remoteControls,
+    workflows: mergeMissingWorkflows(remoteControls, Array.isArray(remoteWorkspace?.workflows) ? remoteWorkspace.workflows : []),
+    loginDomains: remoteLoginDomains.length > 0
+      ? remoteLoginDomains
+      : (fallbackLoginDomains.length > 0 ? fallbackLoginDomains : parseDomainList(defaultData.loginDomains)),
+    people: remotePeople,
+    auditLogs: mergeAuditLogs(remoteAuditLogs, Array.isArray(fallbackWorkspace?.auditLogs) ? fallbackWorkspace.auditLogs : []),
+  };
 }
 
 function createDefaultWorkflowSeeds(controls) {
@@ -1610,45 +1639,45 @@ function mergeMissingWorkflows(controls, workflows) {
 
 function loadWorkspace() {
   if (HAS_REMOTE_BACKEND) {
-    return applyWorkspaceDataCorrections({
+    return {
       ...structuredClone(defaultData),
       loginDomains: parseDomainList(defaultData.loginDomains),
       people: structuredClone(defaultPeople),
       auditLogs: [],
-    }).workspace;
+    };
   }
 
   const saved = window.localStorage.getItem(STORAGE_KEY);
   if (!saved) {
-    return applyWorkspaceDataCorrections({
+    return {
       ...structuredClone(defaultData),
       loginDomains: parseDomainList(defaultData.loginDomains),
       people: structuredClone(defaultPeople),
       auditLogs: [],
-    }).workspace;
+    };
   }
 
   try {
     const parsed = JSON.parse(saved);
     if (parsed && Array.isArray(parsed.controls) && Array.isArray(parsed.workflows)) {
       const parsedLoginDomains = parseDomainList(parsed.loginDomains);
-      return applyWorkspaceDataCorrections({
+      return {
         ...parsed,
         controls: parsed.controls.map(normalizeControl),
         workflows: mergeMissingWorkflows(parsed.controls.map(normalizeControl), parsed.workflows),
         loginDomains: parsedLoginDomains.length > 0 ? parsedLoginDomains : parseDomainList(defaultData.loginDomains),
         people: normalizePeopleCollection(Array.isArray(parsed.people) ? parsed.people : structuredClone(defaultPeople)),
         auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
-      }).workspace;
+      };
     }
   } catch {}
 
-  return applyWorkspaceDataCorrections({
+  return {
     ...structuredClone(defaultData),
     loginDomains: parseDomainList(defaultData.loginDomains),
     people: structuredClone(defaultPeople),
     auditLogs: [],
-  }).workspace;
+  };
 }
 
 function persistWorkspace(workspace) {
@@ -1665,94 +1694,13 @@ function normalizeImportedWorkspace(source) {
   }
 
   const normalizedControls = parsed.controls.map(normalizeControl);
-  return applyWorkspaceDataCorrections({
+  return {
     ...parsed,
     controls: normalizedControls,
     workflows: mergeMissingWorkflows(normalizedControls, Array.isArray(parsed.workflows) ? parsed.workflows : []),
     loginDomains: parseDomainList(parsed.loginDomains).length > 0 ? parseDomainList(parsed.loginDomains) : parseDomainList(defaultData.loginDomains),
     people: normalizePeopleCollection(Array.isArray(parsed.people) ? parsed.people : structuredClone(defaultPeople)),
     auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
-  }).workspace;
-}
-
-function applyWorkspaceDataCorrections(workspace) {
-  if (!workspace || !Array.isArray(workspace.controls)) {
-    return { workspace, changed: false };
-  }
-
-  let changed = false;
-  const nextControls = workspace.controls.map((control) => {
-    const history = getControlExecutionHistory(control);
-    if (history.length === 0) {
-      return control;
-    }
-
-    let nextHistory = history;
-    let historyChanged = false;
-
-    if (control.id === "C-IT-Cyber-02") {
-      nextHistory = nextHistory.map((entry, index) => {
-        const forcedCreatedAt = `2000-01-01T00:00:${String(index).padStart(2, "0")}.000Z`;
-        if (String(entry?.createdAt ?? "").trim() === forcedCreatedAt) {
-          return entry;
-        }
-        historyChanged = true;
-        return {
-          ...entry,
-          createdAt: forcedCreatedAt,
-          updatedAt: String(entry?.updatedAt ?? "").trim() || forcedCreatedAt,
-        };
-      });
-    }
-
-    if (control.id === "C-IT-Cyber-04") {
-      nextHistory = nextHistory.map((entry) => {
-        const isTargetPeriod =
-          String(entry?.executionYear ?? "").trim() === "2026"
-          && ["1월", "2월", "3월"].includes(String(entry?.executionPeriod ?? "").trim());
-        const completedReview = String(entry?.reviewChecked ?? "").trim() === "검토 완료";
-        const targetReviewNote = "공격 시도 이벤트에 대한 조치 내역 및 위협 보고서 검토 결과 특이사항 없음.";
-        if (
-          !isTargetPeriod
-          || !completedReview
-        ) {
-          return entry;
-        }
-        const sameAuthor =
-          String(entry?.executionAuthorName ?? "").trim() === "이치현"
-          && !String(entry?.executionAuthorEmail ?? "").trim();
-        const sameNote = String(entry?.note ?? "").trim() === targetReviewNote;
-        if (sameAuthor && sameNote) {
-          return entry;
-        }
-        historyChanged = true;
-        return {
-          ...entry,
-          executionAuthorName: "이치현",
-          executionAuthorEmail: "",
-          note: targetReviewNote,
-        };
-      });
-    }
-
-    if (!historyChanged) {
-      return control;
-    }
-
-    changed = true;
-    return mergeExecutionHistoryIntoControl(control, nextHistory);
-  });
-
-  if (!changed) {
-    return { workspace, changed: false };
-  }
-
-  return {
-    workspace: {
-      ...workspace,
-      controls: nextControls,
-    },
-    changed: true,
   };
 }
 
@@ -2613,7 +2561,6 @@ function pickPreferredMemberName(currentValue, incomingValue, email = "") {
 }
 
 function mergePeopleByIdOrEmail(primary = [], secondary = []) {
-  const byId = new Map();
   const byEmail = new Map();
   const merged = [];
 
@@ -2621,24 +2568,16 @@ function mergePeopleByIdOrEmail(primary = [], secondary = []) {
     if (!person) {
       return;
     }
-    const id = String(person.id ?? "").trim();
     const email = String(person.email ?? "").trim().toLowerCase();
-
-    let target = null;
-    if (id && byId.has(id)) {
-      target = byId.get(id);
-    } else if (email && byEmail.has(email)) {
-      target = byEmail.get(email);
-    }
+    const target = email && byEmail.has(email) ? byEmail.get(email) : null;
 
     if (!target) {
       const next = {
         ...person,
-        id: id || createMemberId(),
+        id: String(person.id ?? "").trim() || createMemberId(),
         email,
       };
       merged.push(next);
-      byId.set(next.id, next);
       if (email) {
         byEmail.set(email, next);
       }
@@ -2655,7 +2594,7 @@ function mergePeopleByIdOrEmail(primary = [], secondary = []) {
     Object.assign(target, {
       ...target,
       ...person,
-      id: target.id || id || createMemberId(),
+      id: target.id || String(person.id ?? "").trim() || createMemberId(),
       email: target.email || email,
       name: nextName,
       role: nextRole,
@@ -2663,9 +2602,6 @@ function mergePeopleByIdOrEmail(primary = [], secondary = []) {
       accessRole: nextAccessRole,
     });
 
-    if (target.id) {
-      byId.set(target.id, target);
-    }
     if (target.email) {
       byEmail.set(target.email, target);
     }
@@ -2675,17 +2611,17 @@ function mergePeopleByIdOrEmail(primary = [], secondary = []) {
 }
 
 function normalizePeopleCollection(people = []) {
-  return mergePeopleByIdOrEmail(
-    (Array.isArray(people) ? people : []).map((person) => ({
-      ...person,
-      id: String(person?.id ?? "").trim() || createMemberId(),
-      email: String(person?.email ?? "").trim().toLowerCase(),
-      name: String(person?.name ?? "").trim(),
-      role: String(person?.role ?? "").trim() || "both",
-      unit: String(person?.unit ?? person?.team ?? "").trim() || "미지정",
-      accessRole: normalizeAccessRole(person?.accessRole),
-    })),
-  );
+  const normalized = mergePeopleByIdOrEmail([], Array.isArray(people) ? people : []);
+  return normalized.map((person) => ({
+    ...person,
+    id: String(person?.id ?? "").trim() || createMemberId(),
+    email: String(person?.email ?? "").trim().toLowerCase(),
+    name: String(person?.name ?? "").trim(),
+    role: String(person?.role ?? "").trim() || "both",
+    team: String(person?.team ?? "").trim(),
+    unit: String(person?.unit ?? "").trim(),
+    accessRole: normalizeAccessRole(person?.accessRole),
+  }));
 }
 
 function mergeAuditLogs(primary = [], secondary = [], maxItems = AUDIT_LOG_MAX_ITEMS) {
@@ -2759,6 +2695,7 @@ function loadNavigationStateFromUrl() {
       selectedControlId: url.searchParams.get("controlId") ?? "",
       selectedCompletedExecutionKey: url.searchParams.get("completedKey") ?? "",
       selectedReviewExecutionKey: url.searchParams.get("reviewKey") ?? "",
+      selectedPerformedExecutionKey: url.searchParams.get("performedKey") ?? "",
     };
   } catch {
     return {};
@@ -2771,6 +2708,7 @@ function buildAppNavigationUrl({
   selectedControlId,
   selectedCompletedExecutionKey,
   selectedReviewExecutionKey,
+  selectedPerformedExecutionKey,
 }) {
   if (typeof window === "undefined") {
     return "";
@@ -2781,6 +2719,7 @@ function buildAppNavigationUrl({
   url.searchParams.delete("controlId");
   url.searchParams.delete("completedKey");
   url.searchParams.delete("reviewKey");
+  url.searchParams.delete("performedKey");
 
   if (currentView && VIEW_KEYS.includes(currentView)) {
     url.searchParams.set("view", currentView);
@@ -2797,6 +2736,9 @@ function buildAppNavigationUrl({
   if (selectedReviewExecutionKey) {
     url.searchParams.set("reviewKey", selectedReviewExecutionKey);
   }
+  if (selectedPerformedExecutionKey) {
+    url.searchParams.set("performedKey", selectedPerformedExecutionKey);
+  }
   return url.toString();
 }
 
@@ -2810,12 +2752,11 @@ export default function App() {
   const [deletedMemberEmails, setDeletedMemberEmails] = useState(() => loadDeletedMemberEmails());
   const [workspace, setWorkspace] = useState(() => loadWorkspace());
   const workspaceRef = useRef(workspace);
-  const workspaceCorrectionAppliedRef = useRef(false);
   const [currentView, setCurrentView] = useState(() => initialNavigationState.currentView || loadPersistedCurrentView());
   const [selectedControlId, setSelectedControlId] = useState(() => initialNavigationState.selectedControlId || "");
   const [selectedCompletedExecutionKey, setSelectedCompletedExecutionKey] = useState(() => initialNavigationState.selectedCompletedExecutionKey || "");
   const [selectedReviewExecutionKey, setSelectedReviewExecutionKey] = useState(() => initialNavigationState.selectedReviewExecutionKey || "");
-  const [selectedPerformedExecutionKey, setSelectedPerformedExecutionKey] = useState("");
+  const [selectedPerformedExecutionKey, setSelectedPerformedExecutionKey] = useState(() => initialNavigationState.selectedPerformedExecutionKey || "");
   const [processFilter, setProcessFilter] = useState("전체");
   const [controlFrequencyFilter, setControlFrequencyFilter] = useState("전체");
   const [controlIdFilter, setControlIdFilter] = useState("전체");
@@ -2902,6 +2843,19 @@ export default function App() {
   const [memberDrafts, setMemberDrafts] = useState({});
   const [auditLogQuery, setAuditLogQuery] = useState("");
   const [auditLogPage, setAuditLogPage] = useState(1);
+  const [auditSectionView, setAuditSectionView] = useState("logs");
+  const [postgresDatabaseInfo, setPostgresDatabaseInfo] = useState(null);
+  const [postgresDatabaseInfoLoading, setPostgresDatabaseInfoLoading] = useState(false);
+  const [postgresDatabaseInfoError, setPostgresDatabaseInfoError] = useState("");
+  const [queryTestSql, setQueryTestSql] = useState(
+    "select control_id, control_name, category, frequency, review_dept from public.itgc_control_master limit 5",
+  );
+  const [queryTestResult, setQueryTestResult] = useState([]);
+  const [queryTestRowCount, setQueryTestRowCount] = useState(0);
+  const [queryTestLimitedTo, setQueryTestLimitedTo] = useState(100);
+  const [queryTestExecutedSql, setQueryTestExecutedSql] = useState("");
+  const [queryTestLoading, setQueryTestLoading] = useState(false);
+  const [queryTestError, setQueryTestError] = useState("");
   const [remoteAuditLogs, setRemoteAuditLogs] = useState([]);
   const [remoteAuditLogTotalPages, setRemoteAuditLogTotalPages] = useState(1);
   const [remoteAuditLogLoading, setRemoteAuditLogLoading] = useState(false);
@@ -3129,6 +3083,35 @@ export default function App() {
     setPerformedEditReviewAuthorUnit(matched.unit || "미지정");
   }
 
+  async function handleQueryTestSubmit(event, sqlOverride = null) {
+    if (event) {
+      event.preventDefault();
+    }
+    const sql = String(sqlOverride ?? queryTestSql ?? "").trim();
+    if (!sql) {
+      setQueryTestError("쿼리를 입력하세요.");
+      setQueryTestResult([]);
+      setQueryTestRowCount(0);
+      return;
+    }
+
+    setQueryTestLoading(true);
+    setQueryTestError("");
+    try {
+      const result = await runPostgresQueryTest(sql);
+      setQueryTestExecutedSql(sql);
+      setQueryTestResult(Array.isArray(result.rows) ? result.rows : []);
+      setQueryTestRowCount(Number(result.rowCount) || 0);
+      setQueryTestLimitedTo(Number(result.limitedTo) || 100);
+    } catch (error) {
+      setQueryTestResult([]);
+      setQueryTestRowCount(0);
+      setQueryTestError(error?.message || "query_test_failed");
+    } finally {
+      setQueryTestLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (!authUser?.email) {
       return;
@@ -3163,6 +3146,16 @@ export default function App() {
   }, [workbenchTab]);
 
   useEffect(() => {
+    try {
+      if (registrationSelectedControlId) {
+        window.localStorage.removeItem(REGISTRATION_DRAFT_KEY);
+        return;
+      }
+      window.localStorage.setItem(REGISTRATION_DRAFT_KEY, JSON.stringify(registrationForm));
+    } catch {}
+  }, [registrationForm, registrationSelectedControlId]);
+
+  useEffect(() => {
     if (typeof window === "undefined") {
       return;
     }
@@ -3172,6 +3165,7 @@ export default function App() {
       selectedControlId,
       selectedCompletedExecutionKey,
       selectedReviewExecutionKey,
+      selectedPerformedExecutionKey,
     });
     if (nextUrl && nextUrl !== window.location.href) {
       window.history.replaceState(null, "", nextUrl);
@@ -3182,6 +3176,7 @@ export default function App() {
     selectedControlId,
     selectedCompletedExecutionKey,
     selectedReviewExecutionKey,
+    selectedPerformedExecutionKey,
   ]);
 
   useEffect(() => {
@@ -3293,6 +3288,19 @@ export default function App() {
   const totalAssignmentEvidenceCount =
     selectedAssignmentEvidenceCount + pendingAssignmentUploadCount;
   const pendingCompletedUploadCount = completedPendingEvidenceCount + completedDroppedFiles.length;
+  const assignmentSubmitDisabledReason = !selectedControl
+    ? "통제를 먼저 선택하세요."
+    : !hasPerformPermissionForControl(selectedControl)
+      ? "현재 로그인 계정의 수행 권한이 없습니다."
+      : !assignmentExecutionYear.trim()
+        ? "년도를 선택하세요."
+        : !assignmentExecutionPeriod.trim()
+          ? "주기를 선택하세요."
+          : !assignmentExecutionNote.trim()
+            ? "수행 내역을 입력하세요."
+            : pendingAssignmentUploadCount <= 0
+              ? "증적 파일을 1개 이상 첨부하세요."
+              : "";
   const canSubmitAssignment =
     hasPerformPermissionForControl(selectedControl)
     && assignmentExecutionYear.trim().length > 0
@@ -3399,6 +3407,14 @@ export default function App() {
       (currentAuditLogPage - 1) * AUDIT_LOG_PAGE_SIZE,
       currentAuditLogPage * AUDIT_LOG_PAGE_SIZE,
     );
+  const queryTestColumns = useMemo(() => {
+    const firstRow = Array.isArray(queryTestResult) ? queryTestResult[0] : null;
+    if (!firstRow || typeof firstRow !== "object") {
+      return [];
+    }
+    return Object.keys(firstRow);
+  }, [queryTestResult]);
+  const queryTestIsOutdated = Boolean(queryTestExecutedSql) && queryTestSql.trim() !== queryTestExecutedSql.trim();
 
   useEffect(() => {
     setMemberDrafts(
@@ -3434,7 +3450,7 @@ export default function App() {
 
     let active = true;
     setRemoteAuditLogLoading(true);
-    fetchSupabaseAuditLogsPage({
+    fetchPostgresAuditLogsPage({
       page: auditLogPage,
       pageSize: AUDIT_LOG_PAGE_SIZE,
       query: auditLogQuery,
@@ -3465,6 +3481,39 @@ export default function App() {
   }, [auditLogPage, auditLogQuery, currentView]);
 
   useEffect(() => {
+    if (currentView !== "audit" || auditSectionView !== "db") {
+      return;
+    }
+
+    let active = true;
+    setPostgresDatabaseInfoLoading(true);
+    setPostgresDatabaseInfoError("");
+    fetchPostgresDatabaseInfo()
+      .then((result) => {
+        if (!active) {
+          return;
+        }
+        setPostgresDatabaseInfo(result);
+      })
+      .catch((error) => {
+        if (!active) {
+          return;
+        }
+        setPostgresDatabaseInfo(null);
+        setPostgresDatabaseInfoError(error?.message || "db_info_failed");
+      })
+      .finally(() => {
+        if (active) {
+          setPostgresDatabaseInfoLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [auditSectionView, currentView]);
+
+  useEffect(() => {
     if (!authUser?.email) {
       return;
     }
@@ -3478,20 +3527,6 @@ export default function App() {
     }
     const currentMember = people.find((person) => String(person.email ?? "").toLowerCase() === normalizedEmail);
     if (!currentMember) {
-      updateWorkspace({
-        ...workspace,
-        people: [
-          {
-            id: createMemberId(),
-            name: authUser.name ?? normalizedEmail,
-            email: normalizedEmail,
-            role: "both",
-            unit: "미지정",
-            accessRole: "viewer",
-          },
-          ...people,
-        ],
-      });
       return;
     }
 
@@ -3506,20 +3541,6 @@ export default function App() {
     if (!needsPatch) {
       return;
     }
-
-    updateWorkspace({
-      ...workspace,
-      people: people.map((person) =>
-        String(person.email ?? "").toLowerCase() === normalizedEmail
-          ? {
-              ...person,
-              name: nextMemberName,
-              unit: person.unit ?? "미지정",
-              accessRole: normalizeAccessRole(person.accessRole),
-            }
-          : person,
-      ),
-    });
   }, [authUser, people, deletedMemberEmailSet, remoteWorkspaceReady]);
 
   useEffect(() => {
@@ -3872,10 +3893,7 @@ export default function App() {
       controls.flatMap((control) =>
         getControlExecutionHistory(control)
           .filter(
-            (entry) =>
-              Boolean(entry.executionSubmitted)
-              && isExecutionReadyForCompletion(entry)
-              && String(entry.reviewChecked ?? "미검토").trim() !== "검토 완료",
+            (entry) => isExecutionReadyForCompletion(entry),
           )
           .map((entry) => ({
             ...mergeExecutionHistoryIntoControl(control, getControlExecutionHistory(control), {
@@ -3898,9 +3916,8 @@ export default function App() {
         getControlExecutionHistory(control)
           .filter(
             (entry) =>
-              Boolean(entry.executionSubmitted)
-              && hasExecutionRequiredFieldsForPerformed(entry)
-              && String(entry.reviewChecked ?? "미검토").trim() === "검토 완료",
+              deriveExecutionStage(entry) === "performed-complete"
+              && hasExecutionRequiredFieldsForPerformed(entry),
           )
           .map((entry) => ({
             ...mergeExecutionHistoryIntoControl(control, getControlExecutionHistory(control), {
@@ -3958,6 +3975,9 @@ export default function App() {
     if (tabKey === "control-review") {
       return (reviewPendingCount ?? 0) > 0;
     }
+    if (tabKey === "performed-complete") {
+      return (performedExecutionCount ?? 0) > 0;
+    }
     return true;
   };
   const currentWorkbenchStepIndex = workbenchFlowSteps.findIndex((step) => step.key === workbenchTab);
@@ -4009,7 +4029,6 @@ export default function App() {
     ?? reviewPagedControls[0]
     ?? null;
   const runtimeOrigin = typeof window !== "undefined" ? window.location.origin : "";
-  const runtimeSupabaseHost = getSupabaseProjectHost(SUPABASE_URL);
   const menuItems = [
     { key: "dashboard", label: "대시보드", icon: <DashboardIcon /> },
     { key: "control-list", label: "통제 목록", icon: <ControlIcon /> },
@@ -4020,6 +4039,11 @@ export default function App() {
   ];
 
   function handleViewChange(nextView) {
+    const shouldPreserveRegistrationDraft =
+      !registrationSelectedControlId
+      && !selectedControlId
+      && hasRegistrationDraftValue(registrationForm);
+
     if (nextView === "dashboard") {
       setDashboardView("category");
       setDashboardUnitFilter("전체");
@@ -4032,7 +4056,9 @@ export default function App() {
     if (nextView === "control-list") {
       setRegistrationCategoryFilter("전체");
       setRegistrationListPage(1);
-      setRegistrationSelectedControlId(controls[0]?.id ?? "");
+      if (!shouldPreserveRegistrationDraft) {
+        setRegistrationSelectedControlId(registrationSelectedControlId || selectedControlId || (controls[0]?.id ?? ""));
+      }
     }
     if (nextView === "control-workbench") {
       setWorkbenchTab("register");
@@ -4042,8 +4068,11 @@ export default function App() {
       setControlFrequencyFilter("전체");
       setControlIdFilter("전체");
       setControlListPage(1);
-      setRegistrationSelectedControlId(controls[0]?.id ?? "");
-      setSelectedControlId(controls[0]?.id ?? "");
+      if (!shouldPreserveRegistrationDraft) {
+        const nextControlId = registrationSelectedControlId || selectedControlId || (controls[0]?.id ?? "");
+        setRegistrationSelectedControlId(nextControlId);
+        setSelectedControlId(nextControlId);
+      }
       setSelectedReviewExecutionKey("");
     }
     if (nextView === "report") {
@@ -4055,6 +4084,8 @@ export default function App() {
     if (nextView === "audit") {
       setAuditLogQuery("");
       setAuditLogPage(1);
+      setAuditSectionView("logs");
+      setQueryTestError("");
     }
     setCurrentView(nextView);
     if (typeof window !== "undefined") {
@@ -4077,7 +4108,11 @@ export default function App() {
     if (nextTab === "register") {
       setRegistrationCategoryFilter("전체");
       setRegistrationListPage(1);
-      setRegistrationSelectedControlId(registrationVisibleControls[0]?.id ?? controls[0]?.id ?? "");
+      if (!(!registrationSelectedControlId && !selectedControlId && hasRegistrationDraftValue(registrationForm))) {
+        setRegistrationSelectedControlId(
+          registrationSelectedControlId || selectedControlId || (registrationVisibleControls[0]?.id ?? controls[0]?.id ?? ""),
+        );
+      }
       return;
     }
 
@@ -4273,7 +4308,11 @@ export default function App() {
     }
   }
 
-  function completeLogin(nextUser, { verified = true } = {}) {
+  async function completeLogin(nextUser, { verified = true } = {}) {
+    if (HAS_REMOTE_BACKEND && !remoteWorkspaceReady) {
+      setAuthError("회원정보를 불러오는 중입니다. 잠시 후 다시 로그인해주세요.");
+      return;
+    }
     const email = String(nextUser?.email ?? "").toLowerCase();
     const canValidateLoginDomain = !HAS_REMOTE_BACKEND || remoteWorkspaceReady;
     if (!verified || !email || (canValidateLoginDomain && !isAllowedEmailBySet(email, loginDomainSet))) {
@@ -4286,10 +4325,31 @@ export default function App() {
       setAuthUser(null);
       return;
     }
-    const currentWorkspace = workspaceRef.current;
-    const currentPeople = Array.isArray(currentWorkspace.people) ? currentWorkspace.people : [];
-    const existingMember = currentPeople.find((person) => String(person.email ?? "").toLowerCase() === email);
-    const canAutoCreateMember = !HAS_REMOTE_BACKEND || remoteWorkspaceReady;
+    let currentWorkspace = workspaceRef.current;
+    let currentPeople = Array.isArray(currentWorkspace.people) ? currentWorkspace.people : [];
+    let existingMember = currentPeople.find((person) => String(person.email ?? "").toLowerCase() === email);
+
+    if (!existingMember && HAS_REMOTE_BACKEND) {
+      try {
+        const refreshedWorkspace = await fetchRemoteWorkspaceByBackend();
+        const refreshedPeople = normalizePeopleCollection(Array.isArray(refreshedWorkspace?.people) ? refreshedWorkspace.people : []);
+        const refreshedMember = refreshedPeople.find((person) => String(person.email ?? "").toLowerCase() === email);
+        if (refreshedMember) {
+          currentWorkspace = {
+            ...workspaceRef.current,
+            ...refreshedWorkspace,
+            people: refreshedPeople,
+            auditLogs: mergeAuditLogs(
+              Array.isArray(refreshedWorkspace?.auditLogs) ? refreshedWorkspace.auditLogs : [],
+              Array.isArray(workspaceRef.current?.auditLogs) ? workspaceRef.current.auditLogs : [],
+            ),
+          };
+          currentPeople = refreshedPeople;
+          existingMember = refreshedMember;
+        }
+      } catch {}
+    }
+
     if (deletedMemberEmailSet.has(email) && !existingMember) {
       setAuthError("삭제된 계정은 관리자 승인 전까지 다시 등록할 수 없습니다.");
       window.localStorage.removeItem(AUTH_STORAGE_KEY);
@@ -4297,39 +4357,25 @@ export default function App() {
       window.google?.accounts?.id?.disableAutoSelect?.();
       return;
     }
-    const nextPeople = existingMember
-      ? currentPeople.map((person) =>
-          String(person.email ?? "").toLowerCase() === email
-            ? {
-                ...person,
-                name: pickPreferredMemberName(person.name, nextUser.name, email) || person.name || nextUser.name,
-                email,
-                unit: person.unit ?? "미지정",
-                accessRole: normalizeAccessRole(person.accessRole),
-            }
-          : person,
-        )
-      : canAutoCreateMember
-        ? [
-            {
-              id: createMemberId(),
-              name: nextUser.name,
-              email,
-              role: "both",
-              unit: "미지정",
-              accessRole: "viewer",
-            },
-            ...currentPeople,
-          ]
-        : currentPeople;
+    const nextPeople = currentPeople.map((person) =>
+      String(person.email ?? "").toLowerCase() === email
+        ? {
+            ...person,
+            name: pickPreferredMemberName(person.name, nextUser.name, email) || person.name || nextUser.name,
+            email,
+            unit: person.unit ?? "미지정",
+            accessRole: normalizeAccessRole(person.accessRole),
+          }
+        : person,
+    );
 
     window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextUser));
     setAuthError("");
     setAuthUser(nextUser);
     writeAuditLog(
-      existingMember || !canAutoCreateMember ? "LOGIN_SUCCESS" : "MEMBER_JOINED",
+      "LOGIN_SUCCESS",
       email,
-      existingMember || !canAutoCreateMember ? `${nextUser.name} 로그인` : `${nextUser.name} 최초 로그인 및 회원 등록`,
+      `${nextUser.name} 로그인`,
       {
         ...currentWorkspace,
         people: nextPeople,
@@ -4345,7 +4391,7 @@ export default function App() {
     const payload = decodeJwtPayload(response?.credential ?? "");
     const email = String(payload?.email ?? "").toLowerCase();
 
-    completeLogin({
+    void completeLogin({
       email,
       name: payload?.name ?? email,
       picture: payload?.picture ?? "",
@@ -4355,12 +4401,16 @@ export default function App() {
   }
 
   function handleDevLogin() {
+    if (HAS_REMOTE_BACKEND && !remoteWorkspaceReady) {
+      setAuthError("회원정보를 불러오는 중입니다. 잠시 후 다시 로그인해주세요.");
+      return;
+    }
     const normalizedEmail = String(devLoginEmail ?? "").trim().toLowerCase();
     const currentWorkspace = workspaceRef.current;
     const currentPeople = Array.isArray(currentWorkspace.people) ? currentWorkspace.people : [];
     const matchedMember = currentPeople.find((person) => String(person.email ?? "").trim().toLowerCase() === normalizedEmail);
     const fallbackName = normalizedEmail.split("@")[0] || "local-user";
-    completeLogin({
+    void completeLogin({
       email: normalizedEmail,
       name: matchedMember?.name ?? fallbackName,
       picture: "",
@@ -4570,18 +4620,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (workspaceCorrectionAppliedRef.current) {
-      return;
-    }
-
-    workspaceCorrectionAppliedRef.current = true;
-    const { workspace: correctedWorkspace, changed } = applyWorkspaceDataCorrections(workspaceRef.current);
-    if (changed) {
-      commitWorkspace(correctedWorkspace, { syncRemote: HAS_REMOTE_BACKEND });
-    }
-  }, []);
-
-  useEffect(() => {
     if (!HAS_REMOTE_BACKEND) {
       return;
     }
@@ -4593,44 +4631,16 @@ export default function App() {
         if (!active || !remoteWorkspace || !Array.isArray(remoteWorkspace.controls)) {
           return;
         }
-
-        const normalizedRemoteControls = remoteWorkspace.controls.map(normalizeControl);
-        const { workspace: correctedRemoteWorkspace, changed } = applyWorkspaceDataCorrections({
-          ...remoteWorkspace,
-          controls: normalizedRemoteControls,
-          workflows: Array.isArray(remoteWorkspace.workflows) ? remoteWorkspace.workflows : [],
-          loginDomains: parseDomainList(remoteWorkspace.loginDomains),
-          people: Array.isArray(remoteWorkspace.people) ? remoteWorkspace.people : [],
-          auditLogs: Array.isArray(remoteWorkspace.auditLogs) ? remoteWorkspace.auditLogs : [],
-        });
-        const remoteControls = correctedRemoteWorkspace.controls;
-        if (remoteControls.length === 0) {
+        const nextWorkspace = normalizeRemoteWorkspace(remoteWorkspace, workspaceRef.current);
+        if (nextWorkspace.controls.length === 0) {
           return;
         }
-
-        const currentWorkspace = workspaceRef.current;
-        const remotePeople = Array.isArray(correctedRemoteWorkspace.people) ? correctedRemoteWorkspace.people : [];
-        const remoteAuditLogs = Array.isArray(correctedRemoteWorkspace.auditLogs) ? correctedRemoteWorkspace.auditLogs : [];
-        const remoteLoginDomains = parseDomainList(correctedRemoteWorkspace.loginDomains);
-        const localLoginDomains = parseDomainList(currentWorkspace.loginDomains);
-        const nextWorkspace = {
-          controls: remoteControls,
-          workflows: mergeMissingWorkflows(remoteControls, Array.isArray(correctedRemoteWorkspace.workflows) ? correctedRemoteWorkspace.workflows : []),
-          loginDomains: remoteLoginDomains.length > 0
-            ? remoteLoginDomains
-            : (localLoginDomains.length > 0 ? localLoginDomains : parseDomainList(defaultData.loginDomains)),
-          people: remotePeople,
-          auditLogs: mergeAuditLogs(remoteAuditLogs, Array.isArray(currentWorkspace.auditLogs) ? currentWorkspace.auditLogs : []),
-        };
 
         setIntegrationStatus((current) => ({
           ...current,
           spreadsheet: "연결됨",
         }));
         commitWorkspace(nextWorkspace, { syncRemote: false });
-        if (changed) {
-          syncRemoteWorkspaceByBackend(nextWorkspace).catch(() => {});
-        }
       })
       .catch(() => {
         setIntegrationStatus((current) => ({
@@ -4655,7 +4665,7 @@ export default function App() {
         ? nextWorkspaceOrUpdater(workspaceRef.current)
         : nextWorkspaceOrUpdater;
 
-    commitWorkspace(nextWorkspace, { syncRemote: true });
+    commitWorkspace(nextWorkspace, { syncRemote: false });
   }
 
   function commitWorkspace(nextWorkspace, options = {}) {
@@ -4725,7 +4735,45 @@ export default function App() {
     }
   }
 
-  function syncRemoteAuditLog(logEntry, options = {}) {
+  async function reloadRemoteWorkspace(options = {}) {
+    if (!HAS_REMOTE_BACKEND) {
+      return null;
+    }
+
+    const remoteWorkspace = await fetchRemoteWorkspaceByBackend();
+    const nextWorkspace = normalizeRemoteWorkspace(remoteWorkspace, workspaceRef.current);
+    commitWorkspace(nextWorkspace, { syncRemote: false });
+    if (options.completedExecutionKey !== undefined) {
+      setSelectedCompletedExecutionKey(options.completedExecutionKey ?? "");
+    }
+    if (options.reviewExecutionKey !== undefined) {
+      setSelectedReviewExecutionKey(options.reviewExecutionKey ?? "");
+    }
+    if (options.performedExecutionKey !== undefined) {
+      setSelectedPerformedExecutionKey(options.performedExecutionKey ?? "");
+    }
+    if (options.controlId !== undefined) {
+      setSelectedControlId(options.controlId ?? "");
+      setRegistrationSelectedControlId(options.controlId ?? "");
+    }
+    setIntegrationStatus((current) => ({
+      ...current,
+      spreadsheet: "연결됨",
+    }));
+    return nextWorkspace;
+  }
+
+  async function persistControlBundle(control, nextWorkflows, selection = {}) {
+    if (!HAS_REMOTE_BACKEND) {
+      return true;
+    }
+
+    await savePostgresControlBundle(control, nextWorkflows);
+    await reloadRemoteWorkspace(selection);
+    return true;
+  }
+
+  function appendAuditLogRemotely(logEntry, options = {}) {
     if (!HAS_REMOTE_BACKEND) {
       return Promise.resolve({ ok: true, skipped: true });
     }
@@ -4735,25 +4783,12 @@ export default function App() {
       failureMessage = "감사 로그 원격 저장에 실패했습니다.",
     } = options;
 
-    return createSupabaseAuditLog(logEntry)
-      .then((savedLog) => {
-        const currentWorkspace = workspaceRef.current;
-        const nextWorkspace = {
-          ...currentWorkspace,
-          auditLogs: mergeAuditLogs(
-            [savedLog],
-            (currentWorkspace.auditLogs ?? []).filter((item) => item.id !== logEntry.id),
-          ),
-        };
-        commitWorkspace(nextWorkspace, { syncRemote: false });
+    return appendPostgresAuditLog(logEntry)
+      .then(() => {
         setLastAuditSyncErrorMessage("");
-        return { ok: true, log: savedLog };
+        return { ok: true, log: logEntry };
       })
       .catch((error) => {
-        setIntegrationStatus((current) => ({
-          ...current,
-          spreadsheet: current.spreadsheet === "연결됨" ? current.spreadsheet : "오류",
-        }));
         const errorText = String(error?.message ?? "unknown_error");
         const nextMessage = `${failureMessage}\n[debug] ${errorText}`;
         setLastAuditSyncErrorMessage(nextMessage);
@@ -4764,8 +4799,13 @@ export default function App() {
       });
   }
 
+  function syncRemoteAuditLog(logEntry, options = {}) {
+    return appendAuditLogRemotely(logEntry, options);
+  }
+
   function writeAuditLog(action, target, detail, baseWorkspace = null, actorOverride = null, alertContext = null, options = {}) {
     const currentWorkspace = baseWorkspace ?? workspaceRef.current;
+    const syncRemote = options.syncRemote ?? false;
     const actorName = actorOverride?.actorName ?? authUser?.name ?? "";
     const actorEmail = actorOverride?.actorEmail ?? authUser?.email ?? "";
     const createdAtTs = new Date().toISOString();
@@ -4788,8 +4828,7 @@ export default function App() {
       ),
     };
 
-    commitWorkspace(nextWorkspace, { syncRemote: baseWorkspace !== null });
-    syncRemoteAuditLog(nextLog, options.auditSyncOptions);
+    commitWorkspace(nextWorkspace, { syncRemote });
     sendGoogleChatControlAlert({
       action,
       target,
@@ -4895,7 +4934,7 @@ export default function App() {
 </html>`;
   }
 
-  function handleRemoveEvidenceFile(fileIndex) {
+  async function handleRemoveEvidenceFile(fileIndex) {
     if (!selectedControl) {
       return;
     }
@@ -4929,6 +4968,26 @@ export default function App() {
           : control,
       ),
     };
+
+    if (HAS_REMOTE_BACKEND) {
+      const nextControl = nextWorkspace.controls.find((control) => control.id === selectedControl.id);
+      if (!nextControl) {
+        showCenterAlert("증적 삭제 대상 통제를 찾지 못했습니다.");
+        return;
+      }
+      try {
+        await persistControlBundle(
+          nextControl,
+          workflows.filter((workflow) => workflow.controlId === selectedControl.id),
+          { controlId: selectedControl.id },
+        );
+      } catch {
+        showCenterAlert("증적 삭제 내용을 DB에 반영하지 못했습니다.");
+        return;
+      }
+      writeAuditLog("EXECUTION_SAVED", selectedControl.id, `${selectedControl.title} 증적 파일 삭제`);
+      return;
+    }
 
     writeAuditLog("EXECUTION_SAVED", selectedControl.id, `${selectedControl.title} 증적 파일 삭제`, nextWorkspace);
   }
@@ -5103,6 +5162,7 @@ export default function App() {
         : resolveDefaultSystems(snapshot.process);
 
     setRegistrationSelectedControlId(snapshot.id);
+    setSelectedControlId(snapshot.id);
     setRegistrationForm({
       controlId: snapshot.id ?? "",
       process: snapshot.process ?? "",
@@ -5129,10 +5189,11 @@ export default function App() {
 
   function startNewRegistration() {
     setRegistrationSelectedControlId("");
+    setSelectedControlId("");
     setRegistrationForm(initialRegistrationForm);
   }
 
-  function saveRegisteredControl() {
+  async function saveRegisteredControl() {
     if (!isAdmin) {
       showCenterAlert("admin 권한만 통제 등록/수정이 가능합니다.");
       return;
@@ -5222,11 +5283,27 @@ export default function App() {
                 assignee: nextControl.performDept,
                 reviewer: nextControl.reviewDept,
               }
-            : workflow,
+              : workflow,
         ),
       };
-      writeAuditLog("CONTROL_UPDATED", nextControl.id, `${nextControl.title} 수정`, nextWorkspace);
+      if (HAS_REMOTE_BACKEND) {
+        try {
+          if (editingControl.id !== nextControl.id) {
+            await deletePostgresControl(editingControl.id);
+          }
+          await persistControlBundle(
+            nextControl,
+            nextWorkspace.workflows.filter((workflow) => workflow.controlId === nextControl.id),
+            { controlId: nextControl.id },
+          );
+        } catch {
+          showCenterAlert("통제 수정은 되었지만 원격 DB 반영에 실패했습니다.");
+          return;
+        }
+      }
+      writeAuditLog("CONTROL_UPDATED", nextControl.id, `${nextControl.title} 수정`, nextWorkspace, null, null, { syncRemote: false });
       setRegistrationSelectedControlId(nextControl.id);
+      setSelectedControlId(nextControl.id);
       showCenterAlert("통제를 수정했습니다.");
       return;
     }
@@ -5241,9 +5318,22 @@ export default function App() {
       controls: [nextControl, ...controls],
       workflows: [...seededWorkflows, ...workflows],
     };
-    writeAuditLog("CONTROL_CREATED", nextControl.id, `${nextControl.title} 등록`, nextWorkspace);
+    if (HAS_REMOTE_BACKEND) {
+      try {
+        await persistControlBundle(
+          nextControl,
+          nextWorkspace.workflows.filter((workflow) => workflow.controlId === nextControl.id),
+          { controlId: nextControl.id },
+        );
+      } catch {
+        showCenterAlert("통제 등록은 되었지만 원격 DB 반영에 실패했습니다.");
+        return;
+      }
+    }
+    writeAuditLog("CONTROL_CREATED", nextControl.id, `${nextControl.title} 등록`, nextWorkspace, null, null, { syncRemote: false });
     window.localStorage.removeItem(REGISTRATION_DRAFT_KEY);
     setRegistrationSelectedControlId(nextControl.id);
+    setSelectedControlId(nextControl.id);
     showCenterAlert("통제를 등록했습니다.");
   }
 
@@ -5284,15 +5374,6 @@ export default function App() {
       return;
     }
 
-    if (HAS_REMOTE_BACKEND) {
-      try {
-        await deleteSupabaseControl(targetControl.id);
-      } catch {
-        showCenterAlert("통제 삭제를 DB에 반영하지 못했습니다. 다시 시도해주세요.");
-        return;
-      }
-    }
-
     const nextControls = controls.filter((control) => control.id !== targetControl.id);
     const nextWorkflows = workflows.filter((workflow) => workflow.controlId !== targetControl.id);
     const nextRegistrationControlId = nextControls[0]?.id ?? "";
@@ -5301,6 +5382,16 @@ export default function App() {
       controls: nextControls,
       workflows: nextWorkflows,
     };
+
+    if (HAS_REMOTE_BACKEND) {
+      try {
+        await deletePostgresControl(targetControl.id);
+        await reloadRemoteWorkspace({ controlId: nextControls[0]?.id ?? "" });
+      } catch {
+        showCenterAlert("통제 삭제를 DB에 반영하지 못했습니다. 다시 시도해주세요.");
+        return;
+      }
+    }
 
     writeAuditLog("CONTROL_DELETED", targetControl.id, `${targetControl.title} 삭제`, nextWorkspace);
 
@@ -5354,7 +5445,8 @@ export default function App() {
 
     if (HAS_REMOTE_BACKEND) {
       try {
-        await deleteSupabaseExecution(targetExecutionId);
+        await deletePostgresExecution(targetExecutionId);
+        await reloadRemoteWorkspace();
       } catch {
         showCenterAlert("수행 완료 이력 삭제를 DB에 반영하지 못했습니다. 다시 시도해주세요.");
         return;
@@ -5377,7 +5469,7 @@ export default function App() {
       "EXECUTION_DELETED",
       targetControl.id,
       `${targetControl.title} 수행 완료 이력 삭제 · ${targetExecutionId}`,
-      nextWorkspace,
+      HAS_REMOTE_BACKEND ? null : nextWorkspace,
     );
 
     const nextPerformedControls = nextControls.flatMap((control) =>
@@ -5412,6 +5504,17 @@ export default function App() {
       loadRegistrationControl(control);
     }
   }, [currentView, controls, registrationSelectedControlId]);
+
+  useEffect(() => {
+    if (currentView !== "register" || registrationSelectedControlId || !selectedControlId) {
+      return;
+    }
+
+    const control = controls.find((item) => item.id === selectedControlId);
+    if (control) {
+      setRegistrationSelectedControlId(selectedControlId);
+    }
+  }, [controls, currentView, registrationSelectedControlId, selectedControlId]);
 
   useEffect(() => {
     if (!registrationSelectedControlId) {
@@ -5451,15 +5554,7 @@ export default function App() {
       accessRole: normalizeAccessRole(sourcePerson.accessRole),
     };
     const normalizedEmail = String(sourcePerson.email ?? "").trim().toLowerCase();
-    const existingIndex = people.findIndex((person) => {
-      if (person.id === personId) {
-        return true;
-      }
-      if (!normalizedEmail) {
-        return false;
-      }
-      return String(person.email ?? "").trim().toLowerCase() === normalizedEmail;
-    });
+    const existingIndex = people.findIndex((person) => normalizedEmail && String(person.email ?? "").trim().toLowerCase() === normalizedEmail);
     const nextEntry = {
       id: existingIndex >= 0
         ? people[existingIndex].id
@@ -5502,15 +5597,41 @@ export default function App() {
         ...workspace,
         people: nextPeople,
       },
+      null,
+      null,
+      { syncRemote: false },
     );
-    const synced = await ensureRemoteSync(loggedWorkspace);
-    if (!HAS_REMOTE_BACKEND || synced) {
-      if (!suppressPopup) {
-        setMemberSavePopupMessage("회원 정보가 저장되었습니다.");
+    if (HAS_REMOTE_BACKEND) {
+      try {
+        await upsertPostgresMember({
+          member_id: nextEntry.id,
+          member_name: nextEntry.name,
+          email: nextEntry.email,
+          role: nextEntry.role ?? "both",
+          team: sourcePerson.team ?? "",
+          unit: nextEntry.unit,
+          access_role: nextEntry.accessRole,
+          active_yn: sourcePerson.activeYn ?? sourcePerson.active_yn ?? "Y",
+          member_payload: {
+            id: nextEntry.id,
+            name: nextEntry.name,
+            role: nextEntry.role ?? "both",
+            team: sourcePerson.team ?? "",
+            unit: nextEntry.unit,
+            email: nextEntry.email,
+            accessRole: nextEntry.accessRole,
+          },
+          created_at: sourcePerson.createdAt ?? sourcePerson.created_at ?? new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      } catch {
+        showCenterAlert("회원 정보 저장은 되었지만 원격 DB 반영에 실패했습니다.");
+        return;
       }
-      return;
     }
-    showCenterAlert("회원 정보 저장은 되었지만 원격 동기화에 실패했습니다.");
+    if (!suppressPopup) {
+      setMemberSavePopupMessage("회원 정보가 저장되었습니다.");
+    }
   }
 
   async function handleSaveAllMemberDrafts() {
@@ -5583,15 +5704,7 @@ export default function App() {
       }
 
       const normalizedEmail = String(sourcePerson.email ?? "").trim().toLowerCase();
-      const existingIndex = nextPeople.findIndex((person) => {
-        if (person.id === personId) {
-          return true;
-        }
-        if (!normalizedEmail) {
-          return false;
-        }
-        return String(person.email ?? "").trim().toLowerCase() === normalizedEmail;
-      });
+      const existingIndex = nextPeople.findIndex((person) => normalizedEmail && String(person.email ?? "").trim().toLowerCase() === normalizedEmail);
       const previousPerson = existingIndex >= 0 ? nextPeople[existingIndex] : null;
       const nextEntry = {
         id: existingIndex >= 0
@@ -5659,18 +5772,43 @@ export default function App() {
     };
     commitWorkspace(loggedWorkspace, { syncRemote: false });
 
-    if (HAS_REMOTE_BACKEND && deleteTargets.length > 0) {
+    if (HAS_REMOTE_BACKEND) {
       try {
         for (const targetPerson of deleteTargets) {
-          await deleteSupabaseMember(targetPerson.id);
+          await deletePostgresMember(targetPerson.id);
+        }
+        for (const person of normalizedPeople) {
+          if (!String(person?.id ?? "").startsWith("MBR-") && !String(person?.id ?? "").startsWith("AUTH-")) {
+            continue;
+          }
+          await upsertPostgresMember({
+            member_id: person.id,
+            member_name: person.name,
+            email: String(person.email ?? "").trim().toLowerCase(),
+            role: person.role ?? "both",
+            team: person.team ?? "",
+            unit: person.unit ?? "미지정",
+            access_role: normalizeAccessRole(person.accessRole),
+            active_yn: person.activeYn ?? person.active_yn ?? "Y",
+            member_payload: {
+              id: person.id,
+              name: person.name,
+              role: person.role ?? "both",
+              team: person.team ?? "",
+              unit: person.unit ?? "미지정",
+              email: String(person.email ?? "").trim().toLowerCase(),
+              accessRole: normalizeAccessRole(person.accessRole),
+            },
+            created_at: person.createdAt ?? person.created_at ?? new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
         }
       } catch {
-        showCenterAlert("회원 삭제를 DB에 반영하지 못했습니다. 다시 시도해주세요.");
+        showCenterAlert("회원 정보 저장은 되었지만 원격 DB 반영에 실패했습니다.");
         return;
       }
     }
 
-    const synced = await ensureRemoteSync(loggedWorkspace);
     setMemberDrafts((current) => {
       if (deletedDraftIds.length === 0) {
         return current;
@@ -5681,11 +5819,7 @@ export default function App() {
       });
       return nextDrafts;
     });
-    if (!HAS_REMOTE_BACKEND || synced) {
-      setMemberSavePopupMessage(deleteTargets.length > 0 ? "회원 정보와 삭제 사항이 저장되었습니다." : "회원 정보가 저장되었습니다.");
-      return;
-    }
-    showCenterAlert("회원 정보 저장은 되었지만 원격 동기화에 실패했습니다.");
+    setMemberSavePopupMessage(deleteTargets.length > 0 ? "회원 정보와 삭제 사항이 저장되었습니다." : "회원 정보가 저장되었습니다.");
   }
 
   async function handleMemberDelete(personId) {
@@ -5717,7 +5851,7 @@ export default function App() {
     }
 
     try {
-      await deleteSupabaseMember(targetPerson.id);
+      await deletePostgresMember(targetPerson.id);
     } catch {
       showCenterAlert("회원 삭제를 DB에 반영하지 못했습니다. 다시 시도해주세요.");
       return;
@@ -5743,13 +5877,11 @@ export default function App() {
       targetPerson.email || targetPerson.id,
       `${targetPerson.name} 회원 삭제`,
       nextWorkspace,
+      null,
+      null,
+      { syncRemote: false },
     );
-    const synced = await ensureRemoteSync(loggedWorkspace);
-    if (!HAS_REMOTE_BACKEND || synced) {
-      setMemberSavePopupMessage("회원 정보가 삭제되었습니다.");
-      return;
-    }
-    showCenterAlert("회원 삭제는 되었지만 원격 동기화에 실패했습니다.");
+    setMemberSavePopupMessage("회원 정보가 삭제되었습니다.");
   }
 
   function handleLoginDomainSave() {
@@ -5792,7 +5924,7 @@ export default function App() {
     const performer = normalizeUnitLabel(formData.get("performer").toString());
     const reviewer = normalizeUnitLabel(formData.get("reviewer").toString());
 
-    updateWorkspace({
+    const nextWorkspace = {
       ...workspace,
       controls: controls.map((control) =>
         control.id === roleAssignmentControl.id
@@ -5812,9 +5944,27 @@ export default function App() {
               assignee: performer,
               reviewer,
             }
-          : workflow,
+            : workflow,
       ),
-    });
+    };
+
+    if (HAS_REMOTE_BACKEND) {
+      const nextControl = nextWorkspace.controls.find((control) => control.id === roleAssignmentControl.id);
+      if (!nextControl) {
+        return;
+      }
+      persistControlBundle(
+        nextControl,
+        nextWorkspace.workflows.filter((workflow) => workflow.controlId === roleAssignmentControl.id),
+        { controlId: roleAssignmentControl.id },
+      ).catch(() => {
+        showCenterAlert("담당자 지정 내용을 DB에 반영하지 못했습니다.");
+      });
+      commitWorkspace(nextWorkspace, { syncRemote: false });
+      return;
+    }
+
+    updateWorkspace(nextWorkspace);
   }
 
   async function handleAssignmentSubmit(event) {
@@ -5958,20 +6108,52 @@ export default function App() {
       }),
     };
     const completedExecutionKey = nextExecutionId;
-    writeAuditLog(
-      "EXECUTION_SAVED",
-      selectedControl.id,
-      `${selectedControl.title} 등록 완료${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
-      nextWorkspace,
-      null,
-      null,
-      {
-        auditSyncOptions: {
-          notifyOnFailure: true,
-          failureMessage: "수행 결과는 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+    if (HAS_REMOTE_BACKEND) {
+      const nextControl = nextWorkspace.controls.find((control) => control.id === selectedControl.id);
+      if (!nextControl) {
+        showCenterAlert("저장 대상 통제를 찾지 못했습니다.");
+        return;
+      }
+      try {
+        await persistControlBundle(
+          nextControl,
+          workflows.filter((workflow) => workflow.controlId === selectedControl.id),
+          { controlId: selectedControl.id, completedExecutionKey },
+        );
+      } catch {
+        showCenterAlert("수행 결과를 DB에 반영하지 못했습니다.");
+        return;
+      }
+      writeAuditLog(
+        "EXECUTION_SAVED",
+        selectedControl.id,
+        `${selectedControl.title} 등록 완료${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
+        null,
+        null,
+        null,
+        {
+          auditSyncOptions: {
+            notifyOnFailure: true,
+            failureMessage: "수행 결과는 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+          },
         },
-      },
-    );
+      );
+    } else {
+      writeAuditLog(
+        "EXECUTION_SAVED",
+        selectedControl.id,
+        `${selectedControl.title} 등록 완료${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
+        nextWorkspace,
+        null,
+        null,
+        {
+          auditSyncOptions: {
+            notifyOnFailure: true,
+            failureMessage: "수행 결과는 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+          },
+        },
+      );
+    }
     setAssignmentExecutionNote("");
     setAssignmentExecutionYear("");
     setAssignmentExecutionPeriod("");
@@ -6024,28 +6206,61 @@ export default function App() {
         });
       }),
     };
-    writeAuditLog(
-      "REVIEW_REQUESTED",
-      selectedCompletedControl.id,
-      `${selectedCompletedControl.title} 검토 요청`,
-      nextWorkspace,
-      null,
-      {
-        systemUrl: buildAppNavigationUrl({
-          currentView: "control-workbench",
-          workbenchTab: "control-review",
-          selectedControlId: selectedCompletedControl.id,
-          selectedCompletedExecutionKey: "",
-          selectedReviewExecutionKey: selectedCompletedControl.completedExecutionKey,
-        }),
-      },
-      {
-        auditSyncOptions: {
-          notifyOnFailure: true,
-          failureMessage: "검토 요청은 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+    const reviewRequestAlertContext = {
+      systemUrl: buildAppNavigationUrl({
+        currentView: "control-workbench",
+        workbenchTab: "control-review",
+        selectedControlId: selectedCompletedControl.id,
+        selectedCompletedExecutionKey: "",
+        selectedReviewExecutionKey: selectedCompletedControl.completedExecutionKey,
+      }),
+    };
+    if (HAS_REMOTE_BACKEND) {
+      const nextControl = nextWorkspace.controls.find((control) => control.id === selectedCompletedControl.id);
+      if (!nextControl) {
+        showCenterAlert("검토 요청 대상 통제를 찾지 못했습니다.");
+        return;
+      }
+      persistControlBundle(
+        nextControl,
+        workflows.filter((workflow) => workflow.controlId === selectedCompletedControl.id),
+        { controlId: selectedCompletedControl.id, reviewExecutionKey: selectedCompletedControl.completedExecutionKey },
+      )
+        .then(() => {
+          writeAuditLog(
+            "REVIEW_REQUESTED",
+            selectedCompletedControl.id,
+            `${selectedCompletedControl.title} 검토 요청`,
+            null,
+            null,
+            reviewRequestAlertContext,
+            {
+              auditSyncOptions: {
+                notifyOnFailure: true,
+                failureMessage: "검토 요청은 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+              },
+            },
+          );
+        })
+        .catch(() => {
+          showCenterAlert("검토 요청을 DB에 반영하지 못했습니다.");
+        });
+    } else {
+      writeAuditLog(
+        "REVIEW_REQUESTED",
+        selectedCompletedControl.id,
+        `${selectedCompletedControl.title} 검토 요청`,
+        nextWorkspace,
+        null,
+        reviewRequestAlertContext,
+        {
+          auditSyncOptions: {
+            notifyOnFailure: true,
+            failureMessage: "검토 요청은 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+          },
         },
-      },
-    );
+      );
+    }
     setCurrentView("control-workbench");
     setWorkbenchTab("control-review");
     setReviewUnitFilter("전체");
@@ -6252,6 +6467,7 @@ export default function App() {
       return;
     }
 
+    const nextExecutionKey = createExecutionEntryKey(selectedCompletedControl.id, executionYear, executionPeriod);
     const nextWorkspace = {
       ...workspace,
       controls: controls.map((control) => {
@@ -6263,7 +6479,6 @@ export default function App() {
         const currentEntry = currentHistory.find(
           (entry) => entry.executionId === selectedCompletedControl.completedExecutionKey,
         );
-        const nextExecutionKey = createExecutionEntryKey(selectedCompletedControl.id, executionYear, executionPeriod);
         const savedAt = new Date().toISOString();
         const nextHistory = [
           ...currentHistory.filter((entry) => {
@@ -6296,21 +6511,52 @@ export default function App() {
         });
       }),
     };
-
-    writeAuditLog(
-      "EXECUTION_SAVED",
-      selectedCompletedControl.id,
-      `${selectedCompletedControl.title} 등록 완료 수정${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
-      nextWorkspace,
-      null,
-      null,
-      {
-        auditSyncOptions: {
-          notifyOnFailure: true,
-          failureMessage: "등록 완료 수정은 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+    if (HAS_REMOTE_BACKEND) {
+      const nextControl = nextWorkspace.controls.find((control) => control.id === selectedCompletedControl.id);
+      if (!nextControl) {
+        showCenterAlert("수정 대상 통제를 찾지 못했습니다.");
+        return;
+      }
+      try {
+        await persistControlBundle(
+          nextControl,
+          workflows.filter((workflow) => workflow.controlId === selectedCompletedControl.id),
+          { controlId: selectedCompletedControl.id, completedExecutionKey: nextExecutionKey },
+        );
+      } catch {
+        showCenterAlert("등록 완료 수정을 DB에 반영하지 못했습니다.");
+        return;
+      }
+      writeAuditLog(
+        "EXECUTION_SAVED",
+        selectedCompletedControl.id,
+        `${selectedCompletedControl.title} 등록 완료 수정${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
+        null,
+        null,
+        null,
+        {
+          auditSyncOptions: {
+            notifyOnFailure: true,
+            failureMessage: "등록 완료 수정은 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+          },
         },
-      },
-    );
+      );
+    } else {
+      writeAuditLog(
+        "EXECUTION_SAVED",
+        selectedCompletedControl.id,
+        `${selectedCompletedControl.title} 등록 완료 수정${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
+        nextWorkspace,
+        null,
+        null,
+        {
+          auditSyncOptions: {
+            notifyOnFailure: true,
+            failureMessage: "등록 완료 수정은 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+          },
+        },
+      );
+    }
     setCompletedEditMode(false);
     setCompletedEditYear(executionYear);
     setCompletedEditPeriod(executionPeriod);
@@ -6436,21 +6682,52 @@ export default function App() {
         });
       }),
     };
-
-    writeAuditLog(
-      "EXECUTION_SAVED",
-      selectedPerformedControl.id,
-      `${selectedPerformedControl.title} 수행 완료 수정${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
-      nextWorkspace,
-      null,
-      null,
-      {
-        auditSyncOptions: {
-          notifyOnFailure: true,
-          failureMessage: "수행 완료 수정은 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+    if (HAS_REMOTE_BACKEND) {
+      const nextControl = nextWorkspace.controls.find((control) => control.id === selectedPerformedControl.id);
+      if (!nextControl) {
+        showCenterAlert("수정 대상 통제를 찾지 못했습니다.");
+        return;
+      }
+      try {
+        await persistControlBundle(
+          nextControl,
+          workflows.filter((workflow) => workflow.controlId === selectedPerformedControl.id),
+          { controlId: selectedPerformedControl.id, performedExecutionKey: nextExecutionKey },
+        );
+      } catch {
+        showCenterAlert("수행 완료 수정을 DB에 반영하지 못했습니다.");
+        return;
+      }
+      writeAuditLog(
+        "EXECUTION_SAVED",
+        selectedPerformedControl.id,
+        `${selectedPerformedControl.title} 수행 완료 수정${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
+        null,
+        null,
+        null,
+        {
+          auditSyncOptions: {
+            notifyOnFailure: true,
+            failureMessage: "수행 완료 수정은 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+          },
         },
-      },
-    );
+      );
+    } else {
+      writeAuditLog(
+        "EXECUTION_SAVED",
+        selectedPerformedControl.id,
+        `${selectedPerformedControl.title} 수행 완료 수정${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`,
+        nextWorkspace,
+        null,
+        null,
+        {
+          auditSyncOptions: {
+            notifyOnFailure: true,
+            failureMessage: "수행 완료 수정은 저장되었지만 감사 로그 원격 저장에 실패했습니다.",
+          },
+        },
+      );
+    }
     setPerformedEditMode(false);
     setPerformedEditYear(executionYear);
     setPerformedEditPeriod(executionPeriod);
@@ -6534,23 +6811,56 @@ export default function App() {
       }),
     };
 
-    const loggedWorkspace = writeAuditLog("REVIEW_SAVED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 저장`, nextWorkspace);
-    if (reviewDecision === "양호") {
-      writeAuditLog(
-        "REVIEW_COMPLETED",
-        selectedReviewControl.id,
-        `${selectedReviewControl.title} 검토 완료 · ${reviewer}`,
-        loggedWorkspace,
-        null,
-        {
-          systemUrl: buildAppNavigationUrl({
-            currentView: "control-workbench",
-            workbenchTab: "performed-complete",
-            selectedControlId: selectedReviewControl.id,
-          }),
-        },
-      );
+    const reviewCompletedAlertContext = {
+      systemUrl: buildAppNavigationUrl({
+        currentView: "control-workbench",
+        workbenchTab: "performed-complete",
+        selectedControlId: selectedReviewControl.id,
+      }),
+    };
+    if (HAS_REMOTE_BACKEND) {
+      const nextControl = nextWorkspace.controls.find((control) => control.id === selectedReviewControl.id);
+      if (!nextControl) {
+        showCenterAlert("검토 대상 통제를 찾지 못했습니다.");
+        return;
+      }
+      persistControlBundle(
+        nextControl,
+        workflows.filter((workflow) => workflow.controlId === selectedReviewControl.id),
+        reviewDecision === "양호"
+          ? { controlId: selectedReviewControl.id, performedExecutionKey: selectedReviewControl.reviewExecutionKey }
+          : { controlId: selectedReviewControl.id, completedExecutionKey: selectedReviewControl.reviewExecutionKey },
+      )
+        .then(() => {
+          writeAuditLog("REVIEW_SAVED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 저장`);
+          if (reviewDecision === "양호") {
+            writeAuditLog(
+              "REVIEW_COMPLETED",
+              selectedReviewControl.id,
+              `${selectedReviewControl.title} 검토 완료 · ${reviewer}`,
+              null,
+              null,
+              reviewCompletedAlertContext,
+            );
+          }
+        })
+        .catch(() => {
+          showCenterAlert("검토 결과를 DB에 반영하지 못했습니다.");
+        });
     } else {
+      const loggedWorkspace = writeAuditLog("REVIEW_SAVED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 저장`, nextWorkspace);
+      if (reviewDecision === "양호") {
+        writeAuditLog(
+          "REVIEW_COMPLETED",
+          selectedReviewControl.id,
+          `${selectedReviewControl.title} 검토 완료 · ${reviewer}`,
+          loggedWorkspace,
+          null,
+          reviewCompletedAlertContext,
+        );
+      }
+    }
+    if (reviewDecision !== "양호") {
       setCurrentView("control-workbench");
       setWorkbenchTab("controls-complete");
       setControlListPage(1);
@@ -7594,7 +7904,7 @@ export default function App() {
                             : `registration-example-item registration-control-item control-operation-card${isKeyControl(control.keyControl) ? " key-control-card" : ""}`
                         }
                         onClick={() => {
-                          setRegistrationSelectedControlId(control.id);
+                          loadRegistrationControl(control);
                           writeAuditLog("CONTROL_VIEWED", control.id, `${control.title} 상세 조회`);
                         }}
                       >
@@ -7931,6 +8241,11 @@ export default function App() {
                         ) : null}
                         <div className="execution-form-item execution-form-action">
                           <button className="primary-button" type="submit" disabled={!canSubmitAssignment}>등록 완료</button>
+                          {!canSubmitAssignment ? (
+                            <p className="field-help" style={{ marginTop: "8px" }}>
+                              {assignmentSubmitDisabledReason}
+                            </p>
+                          ) : null}
                         </div>
                       </form>
                       </div>
@@ -8047,6 +8362,10 @@ export default function App() {
                         <div className="execution-meta-item">
                           <span>모집단</span>
                           <span className="detail-body-text">{preserveDisplayLineBreaks(resolveExecutionDetailPopulation(selectedCompletedControl)) || "-"}</span>
+                        </div>
+                        <div className="execution-meta-item review-row-full">
+                          <span>증적 기준</span>
+                          <span className="detail-body-text">{preserveDisplayLineBreaks(selectedCompletedControl.executionEvidenceText || selectedCompletedControl.evidenceText) || "-"}</span>
                         </div>
                         {!completedEditMode ? (
                           <>
@@ -8379,6 +8698,10 @@ export default function App() {
                         <span className="detail-body-text">{preserveDisplayLineBreaks(resolveExecutionDetailPopulation(selectedReviewControl)) || "-"}</span>
                       </div>
                       <div className="execution-meta-item review-row-full">
+                        <span>증적 기준</span>
+                        <span className="detail-body-text">{preserveDisplayLineBreaks(selectedReviewControl.executionEvidenceText || selectedReviewControl.evidenceText) || "-"}</span>
+                      </div>
+                      <div className="execution-meta-item review-row-full">
                         <span>수행 내역</span>
                         <span className="detail-body-text">{preserveDisplayLineBreaks(selectedReviewControl.executionNote) || "-"}</span>
                       </div>
@@ -8524,65 +8847,68 @@ export default function App() {
                       <p className="detail-purpose">{selectedPerformedControl.id} · {selectedPerformedControl.title}</p>
                       <div className="review-detail-body">
                         {!performedEditMode ? (
-                          <div className="table-wrap performed-detail-table-wrap">
-                            <table className="performed-detail-table">
-                              <tbody>
-                                <tr>
-                                  <th>년도</th>
-                                  <td>{selectedPerformedControl.executionYear ? `${selectedPerformedControl.executionYear}년` : "-"}</td>
-                                </tr>
-                                <tr>
-                                  <th>주기</th>
-                                  <td>{selectedPerformedControl.executionPeriod || "-"}</td>
-                                </tr>
-                                <tr>
-                                  <th>수행 유닛</th>
-                                  <td>{resolveExecutionAuthorDisplay(selectedPerformedControl)}</td>
-                                </tr>
-                                <tr>
-                                  <th>검토 유닛</th>
-                                  <td>{resolveReviewDeptDisplay(selectedPerformedControl)}</td>
-                                </tr>
-                                <tr>
-                                  <th>수행 내역</th>
-                                  <td>{preserveDisplayLineBreaks(selectedPerformedControl.executionNote) || "-"}</td>
-                                </tr>
-                                <tr>
-                                  <th>증적 파일</th>
-                                  <td>
-                                    <div className="evidence-file-list">
-                                      {(selectedPerformedControl.evidenceFiles ?? []).length > 0 ? (
-                                        (selectedPerformedControl.evidenceFiles ?? []).map((file, index) => (
-                                          <span className="evidence-file-chip-wrap" key={`${file.name ?? "evidence"}-${index}`}>
-                                            <span className="system-chip evidence-file-chip">
-                                              {String(file?.name ?? "").trim() || `증적 ${index + 1}`}
-                                            </span>
-                                          </span>
-                                        ))
-                                      ) : (
-                                        <span className="empty-text">첨부된 증적 없음</span>
-                                      )}
-                                    </div>
-                                  </td>
-                                </tr>
-                                <tr>
-                                  <th>검토자</th>
-                                  <td>
-                                    {String(selectedPerformedControl.reviewAuthorName ?? "").trim()
-                                      || String(selectedPerformedControl.reviewAuthorEmail ?? "").trim()
-                                      || "-"}
-                                  </td>
-                                </tr>
-                                <tr>
-                                  <th>검토 결과</th>
-                                  <td>{selectedPerformedControl.reviewResult || "양호"}</td>
-                                </tr>
-                                <tr>
-                                  <th>검토 의견</th>
-                                  <td>{preserveDisplayLineBreaks(selectedPerformedControl.note) || "-"}</td>
-                                </tr>
-                              </tbody>
-                            </table>
+                          <div className="detail-meta-grid execution-meta-grid review-detail-grid">
+                            <div className="execution-meta-item review-row-full review-compact-meta-item">
+                              <div className="detail-body-text review-compact-meta-line">
+                                <span className="review-meta-chip review-meta-year">년도: {selectedPerformedControl.executionYear ? `${selectedPerformedControl.executionYear}년` : "-"}</span>
+                                <span className="review-meta-separator">|</span>
+                                <span className="review-meta-chip review-meta-period">주기: {selectedPerformedControl.executionPeriod || "-"}</span>
+                                <span className="review-meta-separator">|</span>
+                                <span className="review-meta-chip review-meta-owner">수행 유닛: {resolveExecutionAuthorDisplay(selectedPerformedControl)}</span>
+                                <span className="review-meta-separator">|</span>
+                                <span className="review-meta-chip review-meta-owner">검토 유닛: {resolveReviewDeptDisplay(selectedPerformedControl)}</span>
+                              </div>
+                            </div>
+                            <div className="execution-meta-item">
+                              <span>테스트 방법</span>
+                              <span className="detail-body-text">
+                                {preserveDisplayLineBreaks(resolveExecutionDetailTestMethod(selectedPerformedControl)) || "-"}
+                              </span>
+                            </div>
+                            <div className="execution-meta-item">
+                              <span>모집단</span>
+                              <span className="detail-body-text">{preserveDisplayLineBreaks(resolveExecutionDetailPopulation(selectedPerformedControl)) || "-"}</span>
+                            </div>
+                            <div className="execution-meta-item review-row-full">
+                              <span>증적 기준</span>
+                              <span className="detail-body-text">{preserveDisplayLineBreaks(selectedPerformedControl.executionEvidenceText || selectedPerformedControl.evidenceText) || "-"}</span>
+                            </div>
+                            <div className="execution-meta-item review-row-full">
+                              <span>수행 내역</span>
+                              <span className="detail-body-text">{preserveDisplayLineBreaks(selectedPerformedControl.executionNote) || "-"}</span>
+                            </div>
+                            <div className="execution-meta-item review-row-full">
+                              <span>증적 파일</span>
+                              <div className="evidence-file-list">
+                                {(selectedPerformedControl.evidenceFiles ?? []).length > 0 ? (
+                                  (selectedPerformedControl.evidenceFiles ?? []).map((file, index) => (
+                                    <span className="evidence-file-chip-wrap" key={`${file.name ?? "evidence"}-${index}`}>
+                                      <span className="system-chip evidence-file-chip">
+                                        {String(file?.name ?? "").trim() || `증적 ${index + 1}`}
+                                      </span>
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span className="empty-text">첨부된 증적 없음</span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="execution-meta-item">
+                              <span>검토자</span>
+                              <span className="detail-body-text">
+                                {String(selectedPerformedControl.reviewAuthorName ?? "").trim()
+                                  || String(selectedPerformedControl.reviewAuthorEmail ?? "").trim()
+                                  || "-"}
+                              </span>
+                            </div>
+                            <div className="execution-meta-item">
+                              <span>검토 결과</span>
+                              <span className="detail-body-text">{selectedPerformedControl.reviewResult || "양호"}</span>
+                            </div>
+                            <div className="execution-meta-item review-row-full">
+                              <span>검토 의견</span>
+                              <span className="detail-body-text">{preserveDisplayLineBreaks(selectedPerformedControl.note) || "-"}</span>
+                            </div>
                           </div>
                         ) : (
                           <div className="review-row-full completed-inline-edit-area">
@@ -8913,7 +9239,6 @@ export default function App() {
                     <thead>
                       <tr>
                         <th>삭제</th>
-                        <th>ID</th>
                         <th>이름</th>
                         <th>이메일</th>
                         <th>유닛</th>
@@ -8932,7 +9257,6 @@ export default function App() {
                               aria-label={`${person.name} 삭제 선택`}
                             />
                           </td>
-                          <td>{person.id}</td>
                           <td>{person.name}</td>
                           <td>{person.email || "-"}</td>
                           <td>
@@ -9026,11 +9350,11 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="report-summary-grid">
-                  <article className="report-summary-card">
-                    <span>전체</span>
-                    <strong>{reportSummary.total}건</strong>
-                  </article>
+                  <div className="report-summary-grid">
+                    <article className="report-summary-card">
+                      <span>전체</span>
+                      <strong>{reportSummary.total}건</strong>
+                    </article>
                   <article className="report-summary-card">
                     <span>완료</span>
                     <strong>{reportSummary.completed}건</strong>
@@ -9049,7 +9373,6 @@ export default function App() {
                   <table className="report-table">
                     <thead>
                       <tr>
-                        <th>ID</th>
                         <th>통제명</th>
                         <th>카테고리</th>
                         <th>수행자</th>
@@ -9065,7 +9388,6 @@ export default function App() {
                       {reportControls.length > 0 ? (
                         reportControls.map((item) => (
                           <tr key={`${item.id}-${item.executionYear}-${item.executionPeriod}`}>
-                            <td>{item.id}</td>
                             <td>{item.title}</td>
                             <td>{item.process}</td>
                             <td>{item.performer}</td>
@@ -9224,6 +9546,7 @@ export default function App() {
               <article className="panel">
                 <div className="section-heading">
                   <div>
+                    <p className="eyebrow">Audit Log</p>
                     <h2>감사 로그</h2>
                   </div>
                 </div>
@@ -9233,81 +9556,280 @@ export default function App() {
                     <strong style={{ whiteSpace: "pre-line" }}>{lastAuditSyncErrorMessage}</strong>
                   </div>
                 ) : null}
-                <div className="report-toolbar audit-toolbar">
-                  <input
-                    className="audit-search-input"
-                    type="text"
-                    value={auditLogQuery}
-                    onChange={(event) => setAuditLogQuery(event.target.value)}
-                    placeholder="사용자, 액션, 대상, 내용 검색"
-                  />
+                <div className="audit-subnav" role="tablist" aria-label="감사 로그 하위 메뉴">
+                  <button
+                    type="button"
+                    className={auditSectionView === "logs" ? "primary-button slim-button" : "secondary-button slim-button"}
+                    onClick={() => setAuditSectionView("logs")}
+                    aria-pressed={auditSectionView === "logs"}
+                  >
+                    감사 로그
+                  </button>
+                  <button
+                    type="button"
+                    className={auditSectionView === "db" ? "primary-button slim-button" : "secondary-button slim-button"}
+                    onClick={() => setAuditSectionView("db")}
+                    aria-pressed={auditSectionView === "db"}
+                  >
+                    DB 연결 정보 / 쿼리 테스트
+                  </button>
                 </div>
-                <div className="table-wrap audit-table-wrap">
-                  <table className="audit-table">
-                    <thead>
-                      <tr>
-                        <th className="audit-col-time">시각</th>
-                        <th className="audit-col-user">사용자</th>
-                        <th className="audit-col-action">액션</th>
-                        <th className="audit-col-ip">IP</th>
-                        <th className="audit-col-target">대상</th>
-                        <th className="audit-col-detail">내용</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {remoteAuditLogLoading ? (
-                        <tr>
-                          <td colSpan="6">감사 로그를 불러오는 중입니다.</td>
-                        </tr>
-                      ) : pagedAuditLogs.length > 0 ? (
-                        pagedAuditLogs.map((log) => (
-                          <tr key={log.id}>
-                            <td className="audit-col-time" data-label="시각">
-                              {String(log.createdAt ?? "-").slice(0, 16) || "-"}
-                            </td>
-                            <td className="audit-col-user" data-label="사용자">
-                              {log.actorName || log.actorEmail || "-"}
-                            </td>
-                            <td className="audit-col-action" data-label="액션">
-                              {log.action ? `${log.action} · ${auditActionLabel(log.action)}` : "-"}
-                            </td>
-                            <td className="audit-col-ip" data-label="IP">
-                              {log.ip || "-"}
-                            </td>
-                            <td className="audit-col-target" data-label="대상">
-                              {log.target || "-"}
-                            </td>
-                            <td className="audit-col-detail" data-label="내용">
-                              {log.detail || "-"}
-                            </td>
+
+                {auditSectionView === "logs" ? (
+                  <>
+                    <div className="report-toolbar audit-toolbar">
+                      <input
+                        className="audit-search-input"
+                        type="text"
+                        value={auditLogQuery}
+                        onChange={(event) => setAuditLogQuery(event.target.value)}
+                        placeholder="사용자, 액션, 대상, 내용 검색"
+                      />
+                    </div>
+                    <div className="table-wrap audit-table-wrap">
+                      <table className="audit-table">
+                        <thead>
+                          <tr>
+                            <th className="audit-col-time">시각</th>
+                            <th className="audit-col-user">사용자</th>
+                            <th className="audit-col-action">액션</th>
+                            <th className="audit-col-ip">IP</th>
+                            <th className="audit-col-target">대상</th>
+                            <th className="audit-col-detail">내용</th>
                           </tr>
-                        ))
+                        </thead>
+                        <tbody>
+                          {remoteAuditLogLoading ? (
+                            <tr>
+                              <td colSpan="6">감사 로그를 불러오는 중입니다.</td>
+                            </tr>
+                          ) : pagedAuditLogs.length > 0 ? (
+                            pagedAuditLogs.map((log) => (
+                              <tr key={log.id}>
+                                <td className="audit-col-time" data-label="시각">
+                                  {String(log.createdAt ?? "-").slice(0, 16) || "-"}
+                                </td>
+                                <td className="audit-col-user" data-label="사용자">
+                                  {log.actorName || log.actorEmail || "-"}
+                                </td>
+                                <td className="audit-col-action" data-label="액션">
+                                  {log.action ? `${log.action} · ${auditActionLabel(log.action)}` : "-"}
+                                </td>
+                                <td className="audit-col-ip" data-label="IP">
+                                  {log.ip || "-"}
+                                </td>
+                                <td className="audit-col-target" data-label="대상">
+                                  {log.target || "-"}
+                                </td>
+                                <td className="audit-col-detail" data-label="내용">
+                                  {log.detail || "-"}
+                                </td>
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td colSpan="6">로그가 없습니다.</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    {totalAuditLogPages > 1 ? (
+                      <div className="pagination registration-pagination">
+                        {buildCondensedPagination(totalAuditLogPages, currentAuditLogPage).map((item, index) =>
+                          typeof item === "number" ? (
+                            <button
+                              key={item}
+                              type="button"
+                              className={item === currentAuditLogPage ? "page-button active" : "page-button"}
+                              onClick={() => setAuditLogPage(item)}
+                            >
+                              {item}
+                            </button>
+                          ) : (
+                            <span key={`${item}-${index}`} className="page-ellipsis" aria-hidden="true">
+                              ...
+                            </span>
+                          ),
+                        )}
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+
+                {auditSectionView === "db" ? (
+                  <div className="audit-db-stack">
+                    <div className="audit-db-summary-grid">
+                      <div className="info-block">
+                        <span>연결 상태</span>
+                        <strong>{postgresDatabaseInfoError ? "오류" : postgresDatabaseInfo ? "연결 조회 완료" : postgresDatabaseInfoLoading ? "조회 중" : "대기"}</strong>
+                      </div>
+                      <div className="info-block">
+                        <span>데이터 소스</span>
+                        <strong>{postgresDatabaseInfo?.source || "postgres"}</strong>
+                      </div>
+                      <div className="info-block">
+                        <span>DB 호스트</span>
+                        <strong>{postgresDatabaseInfo?.host || "미확인"}</strong>
+                      </div>
+                      <div className="info-block">
+                        <span>DB 포트</span>
+                        <strong>{postgresDatabaseInfo?.port ?? "미확인"}</strong>
+                      </div>
+                      <div className="info-block">
+                        <span>데이터베이스</span>
+                        <strong>{postgresDatabaseInfo?.database || "미확인"}</strong>
+                      </div>
+                      <div className="info-block">
+                        <span>사용자</span>
+                        <strong>{postgresDatabaseInfo?.user || "미확인"}</strong>
+                      </div>
+                      <div className="info-block">
+                        <span>비밀번호 설정</span>
+                        <strong>{postgresDatabaseInfo?.passwordSet ? "설정됨" : "미설정"}</strong>
+                      </div>
+                    </div>
+
+                    {postgresDatabaseInfoLoading ? (
+                      <div className="info-block">
+                        <span>DB 정보</span>
+                        <strong>데이터베이스 연결 정보를 불러오는 중입니다.</strong>
+                      </div>
+                    ) : null}
+
+                    {postgresDatabaseInfoError ? (
+                      <div className="info-block audit-diagnostics-block">
+                        <span>DB 정보 조회 오류</span>
+                        <strong style={{ whiteSpace: "pre-line" }}>{postgresDatabaseInfoError}</strong>
+                      </div>
+                    ) : null}
+
+                    <div className="panel audit-query-panel">
+                      <div className="section-heading">
+                        <div>
+                          <p className="eyebrow">Query Test</p>
+                          <h3>읽기 전용 쿼리 테스트</h3>
+                        </div>
+                      </div>
+                      <form className="audit-query-form" onSubmit={handleQueryTestSubmit}>
+                        <label className="filter-label audit-query-label">
+                          <span>SQL</span>
+                          <textarea
+                            className="audit-query-textarea"
+                            value={queryTestSql}
+                            onChange={(event) => {
+                              setQueryTestSql(event.target.value);
+                              setQueryTestError("");
+                            }}
+                            placeholder="select * from public.itgc_control_master limit 5"
+                            rows="8"
+                            spellCheck="false"
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                                event.preventDefault();
+                                handleQueryTestSubmit(null);
+                              }
+                            }}
+                          />
+                        </label>
+                        <p className="detail-body-text" style={{ margin: "0", color: "#6b7280" }}>
+                          SQL을 수정한 뒤 `쿼리 실행`을 누르거나 Ctrl+Enter로 바로 조회할 수 있습니다. 실행 전에는 이전 결과를 숨기고,
+                          마지막으로 실행한 SQL의 DB 결과만 보여줍니다.
+                        </p>
+                        <div className="audit-query-actions">
+                          <button
+                            type="button"
+                            className="secondary-button slim-button"
+                            onClick={() => {
+                              const sampleSql =
+                                "select control_id, control_name, category, frequency, review_dept from public.itgc_control_master limit 5";
+                              setQueryTestSql(sampleSql);
+                            }}
+                          >
+                            예시 불러오기
+                          </button>
+                          <button
+                            type="submit"
+                            className="primary-button slim-button"
+                            disabled={queryTestLoading || DATA_BACKEND !== "postgres"}
+                          >
+                            {queryTestLoading ? "실행 중..." : "쿼리 실행"}
+                          </button>
+                        </div>
+                      </form>
+
+                      {DATA_BACKEND !== "postgres" ? (
+                        <div className="info-block audit-diagnostics-block">
+                          <span>쿼리 테스트 제한</span>
+                          <strong>현재 데이터 백엔드가 PostgreSQL이 아니어서 쿼리 테스트를 사용할 수 없습니다.</strong>
+                        </div>
+                      ) : null}
+
+                      {queryTestError ? (
+                        <div className="info-block audit-diagnostics-block">
+                          <span>쿼리 실행 오류</span>
+                          <strong style={{ whiteSpace: "pre-line" }}>{queryTestError}</strong>
+                        </div>
+                      ) : null}
+
+                      {queryTestIsOutdated ? (
+                        <div className="info-block audit-diagnostics-block">
+                          <span>쿼리 변경됨</span>
+                          <strong>
+                            현재 입력한 SQL은 아직 실행되지 않았습니다. 아래 표는 마지막으로 실행한 DB 결과입니다.
+                          </strong>
+                        </div>
+                      ) : null}
+
+                      {queryTestResult.length > 0 ? (
+                        <div className="audit-query-result">
+                          <div className="audit-query-summary">
+                            <span>결과 행 수</span>
+                            <strong>{queryTestRowCount}</strong>
+                            <span>최대 반환</span>
+                            <strong>{queryTestLimitedTo}</strong>
+                          </div>
+                          <div className="table-wrap audit-table-wrap audit-query-result-wrap">
+                            <table className="audit-table audit-query-table">
+                              <thead>
+                                <tr>
+                                  {queryTestColumns.map((column) => (
+                                    <th key={column}>{column}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {queryTestResult.map((row, rowIndex) => (
+                                  <tr key={`${rowIndex}-${queryTestColumns.join("|")}`}>
+                                    {queryTestColumns.map((column) => {
+                                      const value = row?.[column];
+                                      const displayValue =
+                                        value === null || value === undefined
+                                          ? "-"
+                                          : typeof value === "string"
+                                            ? value
+                                            : typeof value === "number" || typeof value === "boolean"
+                                              ? String(value)
+                                              : JSON.stringify(value);
+                                      return (
+                                        <td key={column} data-label={column}>
+                                          {displayValue}
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
                       ) : (
-                        <tr>
-                          <td colSpan="6">로그가 없습니다.</td>
-                        </tr>
+                        <div className="info-block">
+                          <span>쿼리 결과</span>
+                          <strong>쿼리를 실행하면 결과가 여기에 표시됩니다.</strong>
+                        </div>
                       )}
-                    </tbody>
-                  </table>
-                </div>
-                {totalAuditLogPages > 1 ? (
-                  <div className="pagination registration-pagination">
-                    {buildCondensedPagination(totalAuditLogPages, currentAuditLogPage).map((item, index) =>
-                      typeof item === "number" ? (
-                        <button
-                          key={item}
-                          type="button"
-                          className={item === currentAuditLogPage ? "page-button active" : "page-button"}
-                          onClick={() => setAuditLogPage(item)}
-                        >
-                          {item}
-                        </button>
-                      ) : (
-                        <span key={`${item}-${index}`} className="page-ellipsis" aria-hidden="true">
-                          ...
-                        </span>
-                      ),
-                    )}
+                    </div>
                   </div>
                 ) : null}
               </article>

@@ -5,13 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:postgres": "node scripts/dev_postgres.mjs",
     "build": "vite build",
     "preview": "vite preview",
-    "supabase:seed-sql": "node scripts/generate_supabase_seed_sql.mjs",
-    "supabase:seed-xlsx": "node scripts/generate_supabase_seed_from_xlsx.mjs"
+    "workspace:restore-backup": "node scripts/restore_workspace_backup_to_postgres.mjs"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.100.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
