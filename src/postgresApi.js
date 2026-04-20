@@ -12,9 +12,15 @@ const USE_POSTGRES_BACKEND = DATA_BACKEND === "postgres";
 const AUDIT_LOG_MAX_ITEMS = 3000;
 const LOGIN_DOMAIN_CONFIG_MEMBER_ID = "CFG-LOGIN-DOMAINS";
 const LOGIN_DOMAIN_CONFIG_KEY = "login_domains";
+const SECURITY_SETTINGS_CONFIG_MEMBER_ID = "CFG-SECURITY-SETTINGS";
+const SECURITY_SETTINGS_CONFIG_KEY = "security_settings";
 const AUDIT_LOG_FETCH_LIMIT_MAX = 100;
 const QUERY_TEST_FETCH_LIMIT = 100;
+const DB_INFO_TIMEOUT_MS = Number(import.meta.env.VITE_DB_INFO_TIMEOUT_MS ?? 3000);
 const QUERY_TEST_TIMEOUT_MS = Number(import.meta.env.VITE_QUERY_TEST_TIMEOUT_MS ?? 20000);
+const DEFAULT_SECURITY_SETTINGS = {
+  sessionTimeoutMinutes: 480,
+};
 
 async function fetchPostgresBackend(path, options = {}) {
   const requestUrl = POSTGRES_API_BASE_URL ? new URL(path, POSTGRES_API_BASE_URL) : path;
@@ -45,7 +51,23 @@ async function fetchPostgresBackend(path, options = {}) {
 }
 
 async function fetchPostgresDatabaseInfoRequest() {
-  return fetchPostgresBackend("/api/db-info");
+  const controller = new AbortController();
+  const timeoutMs = Number.isFinite(DB_INFO_TIMEOUT_MS) && DB_INFO_TIMEOUT_MS > 0
+    ? DB_INFO_TIMEOUT_MS
+    : 3000;
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetchPostgresBackend("/api/db-info", {
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`db_info_timeout:${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 async function fetchPostgresQueryTest(query) {
@@ -138,6 +160,15 @@ function normalizeUnitLabel(value) {
   }
 
   return normalized.replace(/유닛/g, "").trim();
+}
+
+function normalizeSecuritySettings(settings = {}) {
+  const timeoutMinutes = Number(settings?.sessionTimeoutMinutes ?? DEFAULT_SECURITY_SETTINGS.sessionTimeoutMinutes);
+  return {
+    sessionTimeoutMinutes: Number.isFinite(timeoutMinutes)
+      ? Math.min(1440, Math.max(15, Math.round(timeoutMinutes)))
+      : DEFAULT_SECURITY_SETTINGS.sessionTimeoutMinutes,
+  };
 }
 
 function normalizeDate(dateLike) {
@@ -548,6 +579,24 @@ function mapLoginDomainConfigRow(loginDomains, nowIso) {
   };
 }
 
+function mapSecuritySettingsConfigRow(securitySettings, nowIso) {
+  const payload = {
+    type: "security-settings-config",
+    securitySettings: normalizeSecuritySettings(securitySettings),
+  };
+  return {
+    member_id: SECURITY_SETTINGS_CONFIG_MEMBER_ID,
+    member_name: "보안 설정",
+    email: null,
+    role: "config",
+    unit: null,
+    access_role: null,
+    active_yn: "Y",
+    member_payload: payload,
+    updated_at: nowIso,
+  };
+}
+
 function mapLoginDomainConfigToConfigRow(loginDomains, nowIso) {
   return {
     config_key: LOGIN_DOMAIN_CONFIG_KEY,
@@ -891,7 +940,9 @@ function buildWorkspaceFromRawRows({
   });
 
   const loginDomainConfig = (configRows ?? []).find((row) => row.config_key === LOGIN_DOMAIN_CONFIG_KEY);
+  const securitySettingsConfig = (configRows ?? []).find((row) => row.config_key === SECURITY_SETTINGS_CONFIG_KEY);
   const loginDomainConfigRow = (memberRows ?? []).find((row) => row.member_id === LOGIN_DOMAIN_CONFIG_MEMBER_ID);
+  const securitySettingsConfigRow = (memberRows ?? []).find((row) => row.member_id === SECURITY_SETTINGS_CONFIG_MEMBER_ID);
   const loginDomains = normalizeDomainList(
     loginDomainConfig?.config_value?.loginDomains
       ?? loginDomainConfig?.config_value?.domains
@@ -899,9 +950,16 @@ function buildWorkspaceFromRawRows({
       ?? loginDomainConfigRow?.member_payload?.domains
       ?? "",
   );
+  const securitySettings = normalizeSecuritySettings(
+    securitySettingsConfig?.config_value?.securitySettings
+      ?? securitySettingsConfig?.config_value
+      ?? securitySettingsConfigRow?.member_payload?.securitySettings
+      ?? securitySettingsConfigRow?.member_payload
+      ?? DEFAULT_SECURITY_SETTINGS,
+  );
 
   const people = (memberRows ?? [])
-    .filter((row) => row.member_id !== LOGIN_DOMAIN_CONFIG_MEMBER_ID)
+    .filter((row) => row.member_id !== LOGIN_DOMAIN_CONFIG_MEMBER_ID && row.member_id !== SECURITY_SETTINGS_CONFIG_MEMBER_ID)
     .map((row) => {
       const payload = typeof row.member_payload === "object" && row.member_payload ? row.member_payload : {};
 
@@ -946,6 +1004,7 @@ function buildWorkspaceFromRawRows({
     people,
     auditLogs,
     loginDomains,
+    securitySettings,
   };
 }
 
@@ -1029,9 +1088,11 @@ export async function syncPostgresWorkspace(workspace) {
   const evidenceRows = controls.flatMap((control) => mapControlToEvidenceRows(control, nowIso));
   const workflowRows = workflows.map((workflow) => mapWorkflowToRow(workflow, nowIso));
   const loginDomains = normalizeDomainList(workspace.loginDomains);
+  const securitySettings = normalizeSecuritySettings(workspace.securitySettings);
   const memberRows = [
     ...((Array.isArray(workspace.people) ? workspace.people : []).filter((member) => String(member?.id ?? "").startsWith("MBR-"))),
     mapLoginDomainConfigRow(loginDomains, nowIso),
+    mapSecuritySettingsConfigRow(securitySettings, nowIso),
   ];
   const auditRows = Array.isArray(workspace.auditLogs) ? workspace.auditLogs.slice(0, AUDIT_LOG_MAX_ITEMS).map((log) => mapAuditToRow(log, nowIso)) : [];
 
@@ -1144,6 +1205,21 @@ export async function upsertPostgresMember(member) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ member }),
+  });
+  return { ok: true, ...payload };
+}
+
+export async function savePostgresSecuritySettings({ loginDomains, securitySettings }) {
+  if (!USE_POSTGRES_BACKEND) {
+    throw new Error("postgres_backend_required");
+  }
+
+  const payload = await fetchPostgresBackend("/api/security-settings", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ loginDomains, securitySettings }),
   });
   return { ok: true, ...payload };
 }

@@ -73,6 +73,7 @@ S3_REGION=ap-northeast-2
 S3_BUCKET=itgcp-evidence-files
 S3_PRESIGNED_URL_TTL_SECONDS=3600
 QUERY_TEST_TIMEOUT_MS=15000
+VITE_DB_INFO_TIMEOUT_MS=3000
 VITE_QUERY_TEST_TIMEOUT_MS=20000
 ```
 
@@ -96,8 +97,8 @@ VITE_QUERY_TEST_TIMEOUT_MS=20000
   - `STORAGE_PROVIDER=local`일 때 증적 파일을 저장할 로컬 디렉터리입니다.
 - `S3_REGION`, `S3_BUCKET`, `S3_PRESIGNED_URL_TTL_SECONDS`
   - `STORAGE_PROVIDER=s3`일 때 사용할 S3 리전, 버킷명, presigned URL 만료 시간입니다.
-- `QUERY_TEST_TIMEOUT_MS`, `VITE_QUERY_TEST_TIMEOUT_MS`
-  - 읽기 전용 쿼리 테스트의 서버/브라우저 타임아웃입니다.
+- `VITE_DB_INFO_TIMEOUT_MS`, `QUERY_TEST_TIMEOUT_MS`, `VITE_QUERY_TEST_TIMEOUT_MS`
+  - DB 정보 조회와 읽기 전용 쿼리 테스트의 서버/브라우저 타임아웃입니다.
 
 ## Google OAuth 설정
 

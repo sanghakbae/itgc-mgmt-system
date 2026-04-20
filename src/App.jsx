@@ -7,6 +7,7 @@ import {
   fetchPostgresWorkspace,
   runPostgresQueryTest,
   savePostgresControlBundle,
+  savePostgresSecuritySettings,
   syncPostgresWorkspace,
   deletePostgresControl,
   deletePostgresExecution,
@@ -20,6 +21,7 @@ const REGISTRATION_DRAFT_KEY = "itgc-registration-draft-v1";
 const AUTO_BACKUP_DATE_STORAGE_KEY = "itgc-auto-backup-date-v1";
 const AUTH_STORAGE_KEY = "itgc-google-auth-v1";
 const LOGIN_DOMAIN_STORAGE_KEY = "itgc-login-domain-v1";
+const SECURITY_SETTINGS_STORAGE_KEY = "itgc-security-settings-v1";
 const DELETED_MEMBER_EMAILS_STORAGE_KEY = "itgc-deleted-member-emails-v1";
 const CURRENT_VIEW_STORAGE_KEY = "itgc-current-view-v1";
 const WORKBENCH_TAB_STORAGE_KEY = "itgc-workbench-tab-v1";
@@ -46,6 +48,11 @@ const ALLOWED_EMAIL_DOMAINS = ALLOWED_DOMAIN_ENV
   .filter(Boolean);
 const DEV_LOCAL_LOGIN_ENABLED = Boolean(import.meta.env.DEV);
 const DEFAULT_DEV_LOGIN_EMAIL = `shbae@${ALLOWED_EMAIL_DOMAINS[0] ?? "muhayu.com"}`;
+const DEFAULT_SECURITY_SETTINGS = {
+  sessionTimeoutMinutes: 480,
+};
+const LOGIN_DOMAIN_CONFIG_MEMBER_ID = "CFG-LOGIN-DOMAINS";
+const SECURITY_SETTINGS_CONFIG_MEMBER_ID = "CFG-SECURITY-SETTINGS";
 
 const DATA_BACKEND = (() => {
   if (DATA_BACKEND_ENV === "postgres") {
@@ -58,7 +65,7 @@ const DATA_BACKEND = (() => {
 })();
 
 const HAS_REMOTE_BACKEND = DATA_BACKEND !== "local";
-const VIEW_KEYS = ["dashboard", "dashboard-delay-detail", "control-list", "control-workbench", "report", "people", "audit", "register", "controls", "control-review", "roles"];
+const VIEW_KEYS = ["dashboard", "dashboard-delay-detail", "control-list", "control-workbench", "report", "people", "audit", "security", "register", "controls", "control-review", "roles"];
 const WORKBENCH_TAB_KEYS = ["register", "controls", "controls-complete", "control-review", "performed-complete"];
 const CONTROL_UNIT_FILTER_ORDER = ["개발", "인프라", "정보보호", "QA", "TA"];
 const DASHBOARD_DELAY_BUCKET_CONFIG = {
@@ -80,6 +87,7 @@ const DASHBOARD_DELAY_BUCKET_CONFIG = {
 const defaultData = {
   controls: [],
   loginDomains: ALLOWED_EMAIL_DOMAINS,
+  securitySettings: DEFAULT_SECURITY_SETTINGS,
   workflows: [
     {
       id: "WF-001",
@@ -1507,6 +1515,7 @@ function createRemoteWorkspaceShell() {
     controls: [],
     workflows: [],
     loginDomains: parseDomainList(defaultData.loginDomains),
+    securitySettings: normalizeSecuritySettings(defaultData.securitySettings),
     people: [],
     auditLogs: [],
   };
@@ -1524,6 +1533,7 @@ function normalizeRemoteWorkspace(remoteWorkspace) {
     loginDomains: remoteLoginDomains.length > 0
       ? remoteLoginDomains
       : parseDomainList(defaultData.loginDomains),
+    securitySettings: normalizeSecuritySettings(remoteWorkspace?.securitySettings),
     people: remotePeople,
     auditLogs: remoteAuditLogs,
   };
@@ -1605,6 +1615,7 @@ function loadWorkspace() {
     return {
       ...structuredClone(defaultData),
       loginDomains: parseDomainList(defaultData.loginDomains),
+      securitySettings: normalizeSecuritySettings(defaultData.securitySettings),
       people: structuredClone(defaultPeople),
       auditLogs: [],
     };
@@ -1619,6 +1630,7 @@ function loadWorkspace() {
         controls: parsed.controls.map(normalizeControl),
         workflows: mergeMissingWorkflows(parsed.controls.map(normalizeControl), parsed.workflows),
         loginDomains: parsedLoginDomains.length > 0 ? parsedLoginDomains : parseDomainList(defaultData.loginDomains),
+        securitySettings: normalizeSecuritySettings(parsed.securitySettings),
         people: normalizePeopleCollection(Array.isArray(parsed.people) ? parsed.people : structuredClone(defaultPeople)),
         auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
       };
@@ -1628,6 +1640,7 @@ function loadWorkspace() {
   return {
     ...structuredClone(defaultData),
     loginDomains: parseDomainList(defaultData.loginDomains),
+    securitySettings: normalizeSecuritySettings(defaultData.securitySettings),
     people: structuredClone(defaultPeople),
     auditLogs: [],
   };
@@ -1652,6 +1665,7 @@ function normalizeImportedWorkspace(source) {
     controls: normalizedControls,
     workflows: mergeMissingWorkflows(normalizedControls, Array.isArray(parsed.workflows) ? parsed.workflows : []),
     loginDomains: parseDomainList(parsed.loginDomains).length > 0 ? parseDomainList(parsed.loginDomains) : parseDomainList(defaultData.loginDomains),
+    securitySettings: normalizeSecuritySettings(parsed.securitySettings),
     people: normalizePeopleCollection(Array.isArray(parsed.people) ? parsed.people : structuredClone(defaultPeople)),
     auditLogs: Array.isArray(parsed.auditLogs) ? parsed.auditLogs : [],
   };
@@ -2418,6 +2432,15 @@ function parseDomainList(raw) {
     .filter(Boolean))];
 }
 
+function normalizeSecuritySettings(settings = {}) {
+  const timeoutMinutes = Number(settings?.sessionTimeoutMinutes ?? DEFAULT_SECURITY_SETTINGS.sessionTimeoutMinutes);
+  return {
+    sessionTimeoutMinutes: Number.isFinite(timeoutMinutes)
+      ? Math.min(1440, Math.max(15, Math.round(timeoutMinutes)))
+      : DEFAULT_SECURITY_SETTINGS.sessionTimeoutMinutes,
+  };
+}
+
 function getSeoulDateKey(date = new Date()) {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Seoul",
@@ -2440,6 +2463,10 @@ function loadDeletedMemberEmails() {
 }
 
 function loadLoginDomains() {
+  if (HAS_REMOTE_BACKEND) {
+    return ALLOWED_EMAIL_DOMAINS;
+  }
+
   try {
     const savedWorkspace = window.localStorage.getItem(STORAGE_KEY);
     if (savedWorkspace) {
@@ -2462,6 +2489,29 @@ function loadLoginDomains() {
   } catch {}
 
   return ALLOWED_EMAIL_DOMAINS;
+}
+
+function loadSecuritySettings() {
+  if (HAS_REMOTE_BACKEND) {
+    return normalizeSecuritySettings(DEFAULT_SECURITY_SETTINGS);
+  }
+
+  try {
+    const saved = window.localStorage.getItem(SECURITY_SETTINGS_STORAGE_KEY);
+    if (saved) {
+      return normalizeSecuritySettings(JSON.parse(saved));
+    }
+  } catch {}
+
+  try {
+    const savedWorkspace = window.localStorage.getItem(STORAGE_KEY);
+    if (savedWorkspace) {
+      const parsedWorkspace = JSON.parse(savedWorkspace);
+      return normalizeSecuritySettings(parsedWorkspace?.securitySettings);
+    }
+  } catch {}
+
+  return normalizeSecuritySettings(DEFAULT_SECURITY_SETTINGS);
 }
 
 function createMemberId() {
@@ -2589,8 +2639,8 @@ function normalizePeopleCollection(people = []) {
     team: String(person?.team ?? "").trim(),
     unit: String(person?.unit ?? "").trim(),
     accessRole: normalizeAccessRole(person?.accessRole),
-    firstLoginAt: String(person?.firstLoginAt ?? person?.createdAt ?? person?.created_at ?? "").trim(),
-    lastLoginAt: String(person?.lastLoginAt ?? person?.updatedAt ?? person?.updated_at ?? "").trim(),
+    firstLoginAt: String(person?.firstLoginAt ?? "").trim(),
+    lastLoginAt: String(person?.lastLoginAt ?? "").trim(),
   }));
 }
 
@@ -2614,14 +2664,15 @@ function mergeAuditLogs(primary = [], secondary = [], maxItems = AUDIT_LOG_MAX_I
 
 function loadAuthSession() {
   try {
-    const saved = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    const saved = window.sessionStorage.getItem(AUTH_STORAGE_KEY);
     if (!saved) {
       return null;
     }
 
     const parsed = JSON.parse(saved);
     if (!parsed?.email) {
-      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+      window.sessionStorage.removeItem(AUTH_STORAGE_KEY);
       return null;
     }
 
@@ -2629,6 +2680,16 @@ function loadAuthSession() {
   } catch {
     return null;
   }
+}
+
+function saveAuthSession(session) {
+  window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  window.sessionStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+}
+
+function clearAuthSession() {
+  window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  window.sessionStorage.removeItem(AUTH_STORAGE_KEY);
 }
 
 function loadPersistedCurrentView() {
@@ -2719,9 +2780,14 @@ export default function App() {
   const [devLoginEmail, setDevLoginEmail] = useState(DEFAULT_DEV_LOGIN_EMAIL);
   const [loginDomains, setLoginDomains] = useState(() => loadLoginDomains());
   const [loginDomainDraft, setLoginDomainDraft] = useState(() => loadLoginDomains().join(", "));
+  const [securitySettingsDraft, setSecuritySettingsDraft] = useState(() => normalizeSecuritySettings(loadSecuritySettings()));
+  const [sessionTimeoutDraftValue, setSessionTimeoutDraftValue] = useState(() => String(normalizeSecuritySettings(loadSecuritySettings()).sessionTimeoutMinutes));
+  const [securitySettingsDraftDirty, setSecuritySettingsDraftDirty] = useState(false);
   const [deletedMemberEmails, setDeletedMemberEmails] = useState(() => loadDeletedMemberEmails());
   const [workspace, setWorkspace] = useState(() => loadWorkspace());
   const workspaceRef = useRef(workspace);
+  const restoredSessionLoginTouchRef = useRef("");
+  const sessionTimeoutSelectRef = useRef(null);
   const [currentView, setCurrentView] = useState(() => initialNavigationState.currentView || loadPersistedCurrentView());
   const [selectedControlId, setSelectedControlId] = useState(() => initialNavigationState.selectedControlId || "");
   const [selectedCompletedExecutionKey, setSelectedCompletedExecutionKey] = useState(() => initialNavigationState.selectedCompletedExecutionKey || "");
@@ -2808,6 +2874,7 @@ export default function App() {
   const [lastAuditSyncErrorMessage, setLastAuditSyncErrorMessage] = useState("");
   const [centerAlertMessage, setCenterAlertMessage] = useState("");
   const [centerConfirmMessage, setCenterConfirmMessage] = useState("");
+  const [securitySettingsSaveStatus, setSecuritySettingsSaveStatus] = useState("");
   const [memberDrafts, setMemberDrafts] = useState({});
   const [auditLogQuery, setAuditLogQuery] = useState("");
   const [auditLogPage, setAuditLogPage] = useState(1);
@@ -2815,6 +2882,7 @@ export default function App() {
   const [postgresDatabaseInfo, setPostgresDatabaseInfo] = useState(null);
   const [postgresDatabaseInfoLoading, setPostgresDatabaseInfoLoading] = useState(false);
   const [postgresDatabaseInfoError, setPostgresDatabaseInfoError] = useState("");
+  const [postgresDatabaseInfoRefreshKey, setPostgresDatabaseInfoRefreshKey] = useState(0);
   const [queryTestSql, setQueryTestSql] = useState(
     "select control_id, control_name, category, frequency, review_dept from public.itgc_control_master limit 5",
   );
@@ -2861,6 +2929,7 @@ export default function App() {
     : "모든 도메인";
 
   const { controls, workflows, people } = workspace;
+  const securitySettings = normalizeSecuritySettings(workspace.securitySettings);
   const isWorkbenchView = currentView === "control-workbench";
   const auditLogs = workspace.auditLogs ?? [];
   const roleAssignmentControl = controls.find((control) => control.id === roleAssignmentControlId) ?? controls[0] ?? null;
@@ -3114,7 +3183,7 @@ export default function App() {
     if (isAllowedEmailBySet(authUser.email, loginDomainSet)) {
       return;
     }
-    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    clearAuthSession();
     setAuthUser(null);
     setAuthError(LOGIN_DOMAIN_ERROR_MESSAGE);
   }, [authUser, loginDomainSet]);
@@ -3181,9 +3250,23 @@ export default function App() {
     if (nextText !== prevText) {
       setLoginDomains(workspaceDomains);
       setLoginDomainDraft(nextText);
-      window.localStorage.setItem(LOGIN_DOMAIN_STORAGE_KEY, workspaceDomains.join(","));
+      if (!HAS_REMOTE_BACKEND) {
+        window.localStorage.setItem(LOGIN_DOMAIN_STORAGE_KEY, workspaceDomains.join(","));
+      }
     }
   }, [workspace.loginDomains, loginDomains]);
+
+  useEffect(() => {
+    if (securitySettingsDraftDirty) {
+      return;
+    }
+    const nextSettings = normalizeSecuritySettings(workspace.securitySettings);
+    setSecuritySettingsDraft(nextSettings);
+    setSessionTimeoutDraftValue(String(nextSettings.sessionTimeoutMinutes));
+    if (!HAS_REMOTE_BACKEND) {
+      window.localStorage.setItem(SECURITY_SETTINGS_STORAGE_KEY, JSON.stringify(nextSettings));
+    }
+  }, [securitySettingsDraftDirty, workspace.securitySettings]);
 
   const listPageSize = (isWorkbenchView || currentView === "control-list") ? 15 : 10;
   const visibleControls = controls.filter((control) => {
@@ -3482,6 +3565,13 @@ export default function App() {
     postgresDatabaseInfoFetchedRef.current = true;
     setPostgresDatabaseInfoLoading(true);
     setPostgresDatabaseInfoError("");
+    const loadingGuardId = window.setTimeout(() => {
+      if (!active) {
+        return;
+      }
+      setPostgresDatabaseInfoLoading(false);
+      setPostgresDatabaseInfoError((current) => current || "DB 상세 정보 조회가 지연되고 있습니다.");
+    }, 3500);
     fetchPostgresDatabaseInfo()
       .then((result) => {
         if (!active) {
@@ -3494,9 +3584,15 @@ export default function App() {
           return;
         }
         setPostgresDatabaseInfo(null);
-        setPostgresDatabaseInfoError(error?.message || "db_info_failed");
+        const message = String(error?.message || "db_info_failed");
+        setPostgresDatabaseInfoError(
+          message.startsWith("db_info_timeout:")
+            ? "DB 연결 정보 조회가 지연되고 있습니다. 잠시 후 다시 조회하세요."
+            : message,
+        );
       })
       .finally(() => {
+        window.clearTimeout(loadingGuardId);
         if (active) {
           setPostgresDatabaseInfoLoading(false);
         }
@@ -3505,16 +3601,23 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [postgresDatabaseInfoRefreshKey]);
 
   useEffect(() => {
-    if (currentView !== "audit" || auditSectionView !== "db" || postgresDatabaseInfo || postgresDatabaseInfoLoading) {
+    if (currentView !== "security" || postgresDatabaseInfo || postgresDatabaseInfoLoading) {
       return;
     }
 
     let active = true;
     setPostgresDatabaseInfoLoading(true);
     setPostgresDatabaseInfoError("");
+    const loadingGuardId = window.setTimeout(() => {
+      if (!active) {
+        return;
+      }
+      setPostgresDatabaseInfoLoading(false);
+      setPostgresDatabaseInfoError((current) => current || "DB 상세 정보 조회가 지연되고 있습니다.");
+    }, 3500);
     fetchPostgresDatabaseInfo()
       .then((result) => {
         if (!active) {
@@ -3528,9 +3631,15 @@ export default function App() {
           return;
         }
         setPostgresDatabaseInfo(null);
-        setPostgresDatabaseInfoError(error?.message || "db_info_failed");
+        const message = String(error?.message || "db_info_failed");
+        setPostgresDatabaseInfoError(
+          message.startsWith("db_info_timeout:")
+            ? "DB 연결 정보 조회가 지연되고 있습니다. 잠시 후 다시 조회하세요."
+            : message,
+        );
       })
       .finally(() => {
+        window.clearTimeout(loadingGuardId);
         if (active) {
           setPostgresDatabaseInfoLoading(false);
         }
@@ -3539,7 +3648,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [auditSectionView, currentView, postgresDatabaseInfo, postgresDatabaseInfoLoading]);
+  }, [currentView, postgresDatabaseInfo, postgresDatabaseInfoLoading]);
 
   useEffect(() => {
     if (!authUser?.email) {
@@ -3570,6 +3679,79 @@ export default function App() {
       return;
     }
   }, [authUser, people, deletedMemberEmailSet, remoteWorkspaceReady]);
+
+  useEffect(() => {
+    if (!authUser?.email) {
+      return;
+    }
+    if (HAS_REMOTE_BACKEND && !remoteWorkspaceReady) {
+      return;
+    }
+
+    const normalizedEmail = String(authUser.email).trim().toLowerCase();
+    const touchKey = `${normalizedEmail}:${authUser.sessionStartedAt ?? ""}`;
+    if (!normalizedEmail || restoredSessionLoginTouchRef.current === touchKey) {
+      return;
+    }
+    restoredSessionLoginTouchRef.current = touchKey;
+
+    const currentWorkspace = workspaceRef.current;
+    const currentPeople = Array.isArray(currentWorkspace.people) ? currentWorkspace.people : [];
+    const existingMember = currentPeople.find((person) => String(person.email ?? "").trim().toLowerCase() === normalizedEmail);
+    if (!existingMember || deletedMemberEmailSet.has(normalizedEmail)) {
+      return;
+    }
+
+    const loginTimestamp = new Date().toISOString();
+    const nextMember = {
+      ...existingMember,
+      name: pickPreferredMemberName(existingMember.name, authUser.name, normalizedEmail) || existingMember.name || authUser.name || normalizedEmail,
+      email: normalizedEmail,
+      accessRole: normalizeAccessRole(existingMember.accessRole),
+      firstLoginAt: existingMember.firstLoginAt ?? existingMember.createdAt ?? existingMember.created_at ?? loginTimestamp,
+      lastLoginAt: loginTimestamp,
+    };
+    const nextPeople = currentPeople.map((person) =>
+      String(person.email ?? "").trim().toLowerCase() === normalizedEmail
+        ? nextMember
+        : person,
+    );
+    commitWorkspace({
+      ...currentWorkspace,
+      people: normalizePeopleCollection(nextPeople),
+    }, { syncRemote: false });
+
+    if (HAS_REMOTE_BACKEND) {
+      void upsertPostgresMember({
+        member_id: nextMember.id,
+        member_name: nextMember.name,
+        email: normalizedEmail,
+        role: nextMember.role ?? "both",
+        team: nextMember.team ?? "",
+        unit: nextMember.unit ?? "미지정",
+        access_role: normalizeAccessRole(nextMember.accessRole),
+        active_yn: nextMember.activeYn ?? nextMember.active_yn ?? "Y",
+        member_payload: {
+          id: nextMember.id,
+          name: nextMember.name,
+          role: nextMember.role ?? "both",
+          team: nextMember.team ?? "",
+          unit: nextMember.unit ?? "미지정",
+          email: normalizedEmail,
+          accessRole: normalizeAccessRole(nextMember.accessRole),
+          firstLoginAt: nextMember.firstLoginAt ?? loginTimestamp,
+          lastLoginAt: loginTimestamp,
+        },
+        created_at: nextMember.createdAt ?? nextMember.created_at ?? nextMember.firstLoginAt ?? loginTimestamp,
+        updated_at: loginTimestamp,
+      }).catch(() => {
+        setIntegrationStatus((current) => ({
+          ...current,
+          spreadsheet: "오류",
+        }));
+      });
+    }
+  }, [authUser?.email, authUser?.name, authUser?.sessionStartedAt, deletedMemberEmailSet, remoteWorkspaceReady]);
 
   useEffect(() => {
     workspaceRef.current = workspace;
@@ -4097,6 +4279,7 @@ export default function App() {
     { key: "report", label: "리포트", icon: <FileStackIcon /> },
     { key: "people", label: "회원 관리", icon: <PeopleIcon /> },
     { key: "audit", label: "감사 로그", icon: <AuditIcon /> },
+    { key: "security", label: "보안 설정", icon: <ShieldCheckIcon /> },
   ];
 
   function handleViewChange(nextView) {
@@ -4378,7 +4561,7 @@ export default function App() {
           ? LOGIN_DOMAIN_ERROR_MESSAGE
           : "Google 계정 인증에 실패했습니다.",
       );
-      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+      clearAuthSession();
       setAuthUser(null);
       return;
     }
@@ -4389,7 +4572,7 @@ export default function App() {
 
     if (deletedMemberEmailSet.has(email) && !existingMember) {
       setAuthError("삭제된 계정은 관리자 승인 전까지 다시 등록할 수 없습니다.");
-      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+      clearAuthSession();
       setAuthUser(null);
       window.google?.accounts?.id?.disableAutoSelect?.();
       return;
@@ -4428,9 +4611,14 @@ export default function App() {
       people: normalizePeopleCollection(nextPeople),
     };
 
-    window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextUser));
+    const nextAuthSession = {
+      ...nextUser,
+      sessionStartedAt: nextUser.sessionStartedAt ?? loginTimestamp,
+      lastActivityAt: loginTimestamp,
+    };
+    saveAuthSession(nextAuthSession);
     setAuthError("");
-    setAuthUser(nextUser);
+    setAuthUser(nextAuthSession);
     writeAuditLog(
       "LOGIN_SUCCESS",
       email,
@@ -4504,11 +4692,67 @@ export default function App() {
 
   function handleLogout() {
     writeAuditLog("LOGOUT", authUser?.email ?? "", `${authUser?.name ?? ""} 로그아웃`);
-    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    clearAuthSession();
     window.google?.accounts?.id?.disableAutoSelect?.();
     setAuthUser(null);
     setAuthError("");
   }
+
+  function expireAuthSession() {
+    writeAuditLog("LOGOUT", authUser?.email ?? "", "세션 타임아웃으로 자동 로그아웃");
+    clearAuthSession();
+    window.google?.accounts?.id?.disableAutoSelect?.();
+    setAuthUser(null);
+    setAuthError("세션 시간이 만료되었습니다. 다시 로그인하세요.");
+  }
+
+  useEffect(() => {
+    if (!authUser?.email) {
+      return undefined;
+    }
+
+    const timeoutMs = normalizeSecuritySettings(workspaceRef.current?.securitySettings).sessionTimeoutMinutes * 60 * 1000;
+    const getLastActivityAt = () => {
+      try {
+        const saved = JSON.parse(window.sessionStorage.getItem(AUTH_STORAGE_KEY) || "{}");
+        return Date.parse(saved?.lastActivityAt || saved?.sessionStartedAt || "") || 0;
+      } catch {
+        return 0;
+      }
+    };
+    let lastActivityWriteAt = 0;
+    const refreshActivity = () => {
+      if (Date.now() - lastActivityWriteAt < 60_000) {
+        return;
+      }
+      lastActivityWriteAt = Date.now();
+      const nowIso = new Date().toISOString();
+      setAuthUser((current) => {
+        if (!current?.email) {
+          return current;
+        }
+        const next = { ...current, lastActivityAt: nowIso };
+        saveAuthSession(next);
+        return next;
+      });
+    };
+    const checkSession = () => {
+      const now = Date.now();
+      const lastActivityAt = getLastActivityAt();
+      if (!lastActivityAt || now - lastActivityAt > timeoutMs) {
+        expireAuthSession();
+      }
+    };
+    const activityEvents = ["click", "keydown", "touchstart"];
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, refreshActivity, { passive: true }));
+    const timerId = window.setInterval(checkSession, 30_000);
+    checkSession();
+
+    return () => {
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, refreshActivity));
+      window.clearInterval(timerId);
+    };
+  }, [authUser?.email, securitySettings.sessionTimeoutMinutes]);
 
   useEffect(() => {
     if (authUser || !GOOGLE_CLIENT_ID || !googleLoginRef.current) {
@@ -4813,6 +5057,7 @@ export default function App() {
     const normalizedWorkspace = {
       ...nextWorkspace,
       people: normalizePeopleCollection(Array.isArray(nextWorkspace?.people) ? nextWorkspace.people : []),
+      securitySettings: normalizeSecuritySettings(nextWorkspace?.securitySettings),
     };
 
     workspaceRef.current = normalizedWorkspace;
@@ -5747,8 +5992,8 @@ export default function App() {
       role: existingIndex >= 0 ? people[existingIndex].role ?? sourcePerson.role ?? "both" : sourcePerson.role ?? "both",
       unit: draft.unit.trim() || "미지정",
       accessRole: normalizeAccessRole(draft.accessRole),
-      firstLoginAt: sourcePerson.firstLoginAt ?? sourcePerson.createdAt ?? sourcePerson.created_at ?? "",
-      lastLoginAt: sourcePerson.lastLoginAt ?? sourcePerson.updatedAt ?? sourcePerson.updated_at ?? "",
+      firstLoginAt: sourcePerson.firstLoginAt ?? "",
+      lastLoginAt: sourcePerson.lastLoginAt ?? "",
     };
 
     if (nextEntry.accessRole === "admin" && !isAllowedEmailBySet(nextEntry.email, loginDomainSet)) {
@@ -5902,8 +6147,8 @@ export default function App() {
         role: existingIndex >= 0 ? nextPeople[existingIndex].role ?? sourcePerson.role ?? "both" : sourcePerson.role ?? "both",
         unit: String(draft.unit ?? "").trim() || "미지정",
         accessRole: normalizeAccessRole(draft.accessRole),
-        firstLoginAt: sourcePerson.firstLoginAt ?? sourcePerson.createdAt ?? sourcePerson.created_at ?? "",
-        lastLoginAt: sourcePerson.lastLoginAt ?? sourcePerson.updatedAt ?? sourcePerson.updated_at ?? "",
+        firstLoginAt: sourcePerson.firstLoginAt ?? "",
+        lastLoginAt: sourcePerson.lastLoginAt ?? "",
       };
 
       if (nextEntry.accessRole === "admin" && !isAllowedEmailBySet(nextEntry.email, loginDomainSet)) {
@@ -6094,11 +6339,107 @@ export default function App() {
       ...workspace,
       loginDomains: nextDomains,
     };
-    window.localStorage.setItem(LOGIN_DOMAIN_STORAGE_KEY, nextDomains.join(","));
+    if (!HAS_REMOTE_BACKEND) {
+      window.localStorage.setItem(LOGIN_DOMAIN_STORAGE_KEY, nextDomains.join(","));
+    }
     setLoginDomains(nextDomains);
     setLoginDomainDraft(nextDomains.join(", "));
     writeAuditLog("MEMBER_UPDATED", "login-domain", `로그인 허용 도메인 변경: ${nextDomains.join(", ")}`, nextWorkspace);
     showCenterAlert("로그인 허용 도메인이 저장되었습니다.");
+  }
+
+  async function handleSecuritySettingsSave() {
+    if (!canManageMembers) {
+      return;
+    }
+
+    setSecuritySettingsDraftDirty(true);
+    setSecuritySettingsSaveStatus("");
+    const nextDomains = parseDomainList(loginDomainDraft);
+    if (nextDomains.length === 0) {
+      setSecuritySettingsSaveStatus("");
+      showCenterAlert("최소 1개 로그인 허용 도메인을 입력하세요.");
+      return;
+    }
+
+    const normalizedAuthEmail = String(authUser?.email ?? "").trim().toLowerCase();
+    if (normalizedAuthEmail && !isAllowedEmailBySet(normalizedAuthEmail, new Set(nextDomains))) {
+      setSecuritySettingsSaveStatus("");
+      showCenterAlert("현재 로그인 계정 도메인이 제외되어 저장할 수 없습니다.");
+      return;
+    }
+
+    const nextSecuritySettings = normalizeSecuritySettings({
+      ...securitySettingsDraft,
+      sessionTimeoutMinutes: Number(sessionTimeoutSelectRef.current?.value ?? sessionTimeoutDraftValue),
+    });
+    const nextWorkspace = {
+      ...workspace,
+      loginDomains: nextDomains,
+      securitySettings: nextSecuritySettings,
+    };
+    if (!HAS_REMOTE_BACKEND) {
+      window.localStorage.setItem(LOGIN_DOMAIN_STORAGE_KEY, nextDomains.join(","));
+      window.localStorage.setItem(SECURITY_SETTINGS_STORAGE_KEY, JSON.stringify(nextSecuritySettings));
+    }
+    setLoginDomains(nextDomains);
+    setLoginDomainDraft(nextDomains.join(", "));
+    setSecuritySettingsDraft(nextSecuritySettings);
+    setSessionTimeoutDraftValue(String(nextSecuritySettings.sessionTimeoutMinutes));
+    const loggedWorkspace = writeAuditLog(
+      "SECURITY_UPDATED",
+      "security-settings",
+      `보안 설정 변경: 허용 도메인 ${nextDomains.join(", ")} · 세션 타임아웃 ${nextSecuritySettings.sessionTimeoutMinutes}분`,
+      nextWorkspace,
+      null,
+      null,
+      { syncRemote: false },
+    );
+    commitWorkspace({
+      ...loggedWorkspace,
+      loginDomains: nextDomains,
+      securitySettings: nextSecuritySettings,
+    }, { syncRemote: false });
+    setSecuritySettingsSaveStatus(`저장 완료 · 세션 ${nextSecuritySettings.sessionTimeoutMinutes}분`);
+    showCenterAlert("보안 설정이 저장되었습니다.");
+
+    if (HAS_REMOTE_BACKEND) {
+      savePostgresSecuritySettings({
+        loginDomains: nextDomains,
+        securitySettings: nextSecuritySettings,
+      })
+        .then((savedSecuritySettings) => {
+          const confirmedDomains = parseDomainList(savedSecuritySettings?.loginDomains).length > 0
+            ? parseDomainList(savedSecuritySettings.loginDomains)
+            : nextDomains;
+          const confirmedSecuritySettings = normalizeSecuritySettings(
+            savedSecuritySettings?.securitySettings ?? nextSecuritySettings,
+          );
+          const confirmedWorkspace = {
+            ...workspaceRef.current,
+            loginDomains: confirmedDomains,
+            securitySettings: confirmedSecuritySettings,
+          };
+          commitWorkspace(confirmedWorkspace, { syncRemote: false });
+          setLoginDomains(confirmedDomains);
+          setLoginDomainDraft(confirmedDomains.join(", "));
+          setSecuritySettingsDraft(confirmedSecuritySettings);
+          setSessionTimeoutDraftValue(String(confirmedSecuritySettings.sessionTimeoutMinutes));
+          setSecuritySettingsSaveStatus(`저장 완료 · 세션 ${confirmedSecuritySettings.sessionTimeoutMinutes}분`);
+          setIntegrationStatus((current) => ({
+            ...current,
+            spreadsheet: "연결됨",
+          }));
+        })
+        .catch(() => {
+          setSecuritySettingsSaveStatus("저장 실패");
+          setIntegrationStatus((current) => ({
+            ...current,
+            spreadsheet: "오류",
+          }));
+          showCenterAlert("보안 설정을 DB에 저장하지 못했습니다. 다시 시도하세요.");
+        });
+    }
   }
 
   function handleRoleAssignmentSubmit(event) {
@@ -7303,6 +7644,16 @@ export default function App() {
             </button>
           ))}
         </nav>
+        <div className="sidebar-footer">
+          <div className="integration-panel sidebar-db-status">
+            <div className="integration-item">
+              <strong>DB 연결</strong>
+              <span className={`status-badge ${integrationClass(integrationStatus.spreadsheet)}`}>
+                {integrationStatus.spreadsheet}
+              </span>
+            </div>
+          </div>
+        </div>
       </aside>
 
       <nav className="mobile-bottom-nav" aria-label="모바일 메뉴">
@@ -7337,7 +7688,7 @@ export default function App() {
           </button>
         </div>
         <main className={[
-          isWorkbenchView || currentView === "register" || currentView === "control-list" || currentView === "controls" || currentView === "control-review" || currentView === "report" || currentView === "people" || currentView === "audit"
+          isWorkbenchView || currentView === "register" || currentView === "control-list" || currentView === "controls" || currentView === "control-review" || currentView === "report" || currentView === "people" || currentView === "audit" || currentView === "security"
             ? "layout workbench-layout"
             : "layout",
           isWorkbenchView || currentView === "register" || currentView === "control-list" || currentView === "controls" || currentView === "control-review"
@@ -9320,32 +9671,17 @@ export default function App() {
                   </div>
                   {!canManageMembers ? <span className="detail-body-text member-admin-only-note">admin만 수정할 수 있습니다.</span> : null}
                 </div>
-                <div className="report-toolbar login-domain-toolbar">
-                  <div className="login-domain-inline">
-                    <label className="filter-label" style={{ minWidth: "420px" }}>
-                      <span>로그인 허용 도메인 (콤마 구분)</span>
-                      <input
-                        type="text"
-                        value={loginDomainDraft}
-                        onChange={(event) => setLoginDomainDraft(event.target.value)}
-                        placeholder="예: muhayu.com,example.com"
-                        disabled={!canManageMembers}
-                      />
-                    </label>
-                    <div className="member-management-actions">
-                      <button className="secondary-button slim-button no-wrap login-domain-save-button" type="button" onClick={handleLoginDomainSave} disabled={!canManageMembers}>
-                        허용 도메인
-                      </button>
-                      <button className="secondary-button slim-button no-wrap" type="button" onClick={handleSaveAllMemberDrafts} disabled={!canManageMembers}>
-                        회원 정보 저장
-                      </button>
-                      <button className="secondary-button slim-button no-wrap" type="button" onClick={handleExportWorkspaceBackup}>
-                        백업 내보내기
-                      </button>
-                      <button className="secondary-button slim-button no-wrap" type="button" onClick={handleImportWorkspaceBackupClick}>
-                        백업 불러오기
-                      </button>
-                    </div>
+                <div className="report-toolbar">
+                  <div className="member-management-actions">
+                    <button className="secondary-button slim-button no-wrap" type="button" onClick={handleSaveAllMemberDrafts} disabled={!canManageMembers}>
+                      회원 정보 저장
+                    </button>
+                    <button className="secondary-button slim-button no-wrap" type="button" onClick={handleExportWorkspaceBackup}>
+                      백업 내보내기
+                    </button>
+                    <button className="secondary-button slim-button no-wrap" type="button" onClick={handleImportWorkspaceBackupClick}>
+                      백업 불러오기
+                    </button>
                     <input
                       ref={workspaceBackupInputRef}
                       type="file"
@@ -9635,7 +9971,7 @@ export default function App() {
                     <strong style={{ whiteSpace: "pre-line" }}>{lastAuditSyncErrorMessage}</strong>
                   </div>
                 ) : null}
-                <div className="audit-subnav" role="tablist" aria-label="감사 로그 하위 메뉴">
+                {false ? <div className="audit-subnav" role="tablist" aria-label="감사 로그 하위 메뉴">
                   <button
                     type="button"
                     className={auditSectionView === "logs" ? "primary-button slim-button" : "secondary-button slim-button"}
@@ -9652,9 +9988,9 @@ export default function App() {
                   >
                     DB 연결 정보 / 쿼리 테스트
                   </button>
-                </div>
+                </div> : null}
 
-                {auditSectionView === "logs" ? (
+                {true ? (
                   <>
                     <div className="report-toolbar audit-toolbar">
                       <input
@@ -9736,7 +10072,7 @@ export default function App() {
                   </>
                 ) : null}
 
-                {auditSectionView === "db" ? (
+                {false ? (
                   <div className="audit-db-stack">
                     <div className="audit-db-summary-grid">
                       <div className="info-block">
@@ -9780,6 +10116,19 @@ export default function App() {
                       <div className="info-block audit-diagnostics-block">
                         <span>DB 정보 조회 오류</span>
                         <strong style={{ whiteSpace: "pre-line" }}>{postgresDatabaseInfoError}</strong>
+                        <button
+                          type="button"
+                          className="secondary-button slim-button"
+                          onClick={() => {
+                            postgresDatabaseInfoFetchedRef.current = false;
+                            setPostgresDatabaseInfo(null);
+                            setPostgresDatabaseInfoError("");
+                            setPostgresDatabaseInfoLoading(false);
+                            setPostgresDatabaseInfoRefreshKey((current) => current + 1);
+                          }}
+                        >
+                          다시 조회
+                        </button>
                       </div>
                     ) : null}
 
@@ -9918,6 +10267,239 @@ export default function App() {
                     </div>
                   </div>
                 ) : null}
+              </article>
+            </section>
+          ) : null}
+
+          {currentView === "security" ? (
+            <section className="compact-stack member-management-stack">
+              <article className="panel member-management-panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Security Settings</p>
+                    <h2>보안 설정</h2>
+                  </div>
+                  {!canManageMembers ? <span className="detail-body-text member-admin-only-note">admin만 수정할 수 있습니다.</span> : null}
+                </div>
+                <div className="report-toolbar login-domain-toolbar security-settings-toolbar">
+                  <div className="login-domain-inline security-settings-inline">
+                    <label className="filter-label security-domain-field">
+                      <span>로그인 허용 도메인 (콤마 구분)</span>
+                      <input
+                        type="text"
+                        value={loginDomainDraft}
+                        onChange={(event) => setLoginDomainDraft(event.target.value)}
+                        placeholder="예: muhayu.com,example.com"
+                        disabled={!canManageMembers}
+                      />
+                    </label>
+                    <label className="filter-label security-timeout-field">
+                      <span>세션 타임아웃</span>
+                      <input
+                        ref={sessionTimeoutSelectRef}
+                        type="number"
+                        min="15"
+                        max="1440"
+                        step="1"
+                        inputMode="numeric"
+                        value={sessionTimeoutDraftValue}
+                        onChange={(event) => {
+                          const nextValue = event.target.value;
+                          setSecuritySettingsDraftDirty(true);
+                          setSecuritySettingsSaveStatus("");
+                          setSessionTimeoutDraftValue(nextValue);
+                          setSecuritySettingsDraft((current) => ({
+                            ...current,
+                            sessionTimeoutMinutes: Number(nextValue),
+                          }));
+                        }}
+                        placeholder="분 단위 입력"
+                        disabled={!canManageMembers}
+                      />
+                    </label>
+                    <div className="member-management-actions security-settings-actions">
+                      <button className="primary-button slim-button no-wrap" type="button" onClick={handleSecuritySettingsSave} disabled={!canManageMembers}>
+                        {securitySettingsSaveStatus === "저장 중..." ? "저장 중..." : "보안 설정 저장"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                {securitySettingsSaveStatus ? (
+                  <div className="info-block audit-diagnostics-block">
+                    <span>저장 상태</span>
+                    <strong>{securitySettingsSaveStatus}</strong>
+                  </div>
+                ) : null}
+              </article>
+
+              <article className="panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Database</p>
+                    <h2>DB 연결 정보</h2>
+                  </div>
+                </div>
+                <div className="audit-db-stack">
+                  <div className="audit-db-summary-grid">
+                    <div className="info-block">
+                      <span>연결 상태</span>
+                      <strong>{integrationStatus.spreadsheet === "연결됨" ? "연결됨" : integrationStatus.spreadsheet}</strong>
+                    </div>
+                    <div className="info-block">
+                      <span>데이터 소스</span>
+                      <strong>{postgresDatabaseInfo?.source || "postgres"}</strong>
+                    </div>
+                    <div className="info-block">
+                      <span>DB 호스트</span>
+                      <strong>{postgresDatabaseInfo?.host || "미확인"}</strong>
+                    </div>
+                    <div className="info-block">
+                      <span>DB 포트</span>
+                      <strong>{postgresDatabaseInfo?.port ?? "미확인"}</strong>
+                    </div>
+                    <div className="info-block">
+                      <span>데이터베이스</span>
+                      <strong>{postgresDatabaseInfo?.database || "미확인"}</strong>
+                    </div>
+                    <div className="info-block">
+                      <span>사용자</span>
+                      <strong>{postgresDatabaseInfo?.user || "미확인"}</strong>
+                    </div>
+                    <div className="info-block">
+                      <span>비밀번호 설정</span>
+                      <strong>{postgresDatabaseInfo?.passwordSet ? "설정됨" : "미설정"}</strong>
+                    </div>
+                  </div>
+                  {postgresDatabaseInfoError ? (
+                    <div className="info-block audit-diagnostics-block">
+                      <span>DB 정보 조회 오류</span>
+                      <strong style={{ whiteSpace: "pre-line" }}>{postgresDatabaseInfoError}</strong>
+                      <button
+                        type="button"
+                        className="secondary-button slim-button"
+                        onClick={() => {
+                          postgresDatabaseInfoFetchedRef.current = false;
+                          setPostgresDatabaseInfo(null);
+                          setPostgresDatabaseInfoError("");
+                          setPostgresDatabaseInfoLoading(false);
+                          setPostgresDatabaseInfoRefreshKey((current) => current + 1);
+                        }}
+                      >
+                        다시 조회
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </article>
+
+              <article className="panel audit-query-panel">
+                <div className="section-heading">
+                  <div>
+                    <p className="eyebrow">Query Test</p>
+                    <h2>읽기 전용 쿼리 테스트</h2>
+                  </div>
+                </div>
+                <form className="audit-query-form" onSubmit={handleQueryTestSubmit}>
+                  <label className="filter-label audit-query-label">
+                    <span>SQL</span>
+                    <textarea
+                      className="audit-query-textarea"
+                      value={queryTestSql}
+                      onChange={(event) => {
+                        setQueryTestSql(event.target.value);
+                        setQueryTestError("");
+                      }}
+                      placeholder="select * from public.itgc_control_master limit 5"
+                      rows="8"
+                      spellCheck="false"
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                          event.preventDefault();
+                          handleQueryTestSubmit(null);
+                        }
+                      }}
+                    />
+                  </label>
+                  <div className="audit-query-actions">
+                    <button
+                      type="button"
+                      className="secondary-button slim-button"
+                      onClick={() => {
+                        const sampleSql = "select control_id, control_name, category, frequency, review_dept from public.itgc_control_master limit 5";
+                        setQueryTestSql(sampleSql);
+                      }}
+                    >
+                      예시 불러오기
+                    </button>
+                    <button
+                      type="submit"
+                      className="primary-button slim-button"
+                      disabled={queryTestLoading || DATA_BACKEND !== "postgres"}
+                    >
+                      {queryTestLoading ? "실행 중..." : "쿼리 실행"}
+                    </button>
+                  </div>
+                </form>
+                {queryTestError ? (
+                  <div className="info-block audit-diagnostics-block">
+                    <span>쿼리 실행 오류</span>
+                    <strong style={{ whiteSpace: "pre-line" }}>{queryTestError}</strong>
+                  </div>
+                ) : null}
+                {queryTestElapsedMs !== null ? (
+                  <div className="info-block audit-diagnostics-block">
+                    <span>쿼리 소요 시간</span>
+                    <strong>{(queryTestElapsedMs / 1000).toFixed(2)}초</strong>
+                  </div>
+                ) : null}
+                {queryTestResult.length > 0 ? (
+                  <div className="audit-query-result">
+                    <div className="audit-query-summary">
+                      <span>결과 행 수</span>
+                      <strong>{queryTestRowCount}</strong>
+                      <span>최대 반환</span>
+                      <strong>{queryTestLimitedTo}</strong>
+                    </div>
+                    <div className="table-wrap audit-table-wrap audit-query-result-wrap">
+                      <table className="audit-table audit-query-table">
+                        <thead>
+                          <tr>
+                            {queryTestColumns.map((column) => (
+                              <th key={column}>{column}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {queryTestResult.map((row, rowIndex) => (
+                            <tr key={`${rowIndex}-${queryTestColumns.join("|")}`}>
+                              {queryTestColumns.map((column) => {
+                                const value = row?.[column];
+                                const displayValue =
+                                  value === null || value === undefined
+                                    ? "-"
+                                    : typeof value === "string"
+                                      ? value
+                                      : typeof value === "number" || typeof value === "boolean"
+                                        ? String(value)
+                                        : JSON.stringify(value);
+                                return (
+                                  <td key={column} data-label={column}>
+                                    {displayValue}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="info-block">
+                    <span>쿼리 결과</span>
+                    <strong>쿼리를 실행하면 결과가 여기에 표시됩니다.</strong>
+                  </div>
+                )}
               </article>
             </section>
           ) : null}

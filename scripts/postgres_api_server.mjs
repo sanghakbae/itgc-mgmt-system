@@ -23,6 +23,7 @@ const S3_BUCKET = process.env.S3_BUCKET || "itgcp-evidence-files";
 const S3_PRESIGNED_URL_TTL_SECONDS = Number(process.env.S3_PRESIGNED_URL_TTL_SECONDS || 3600);
 const QUERY_TEST_TIMEOUT_MS = Number(process.env.QUERY_TEST_TIMEOUT_MS || 15000);
 const LOCAL_EVIDENCE_DIR = path.resolve(process.env.LOCAL_EVIDENCE_DIR || "uploads/evidence");
+const PROTECTED_MEMBER_IDS = new Set(["CFG-LOGIN-DOMAINS", "CFG-SECURITY-SETTINGS"]);
 const s3Client = S3_REGION && S3_BUCKET
   ? new S3Client({ region: S3_REGION })
   : null;
@@ -345,11 +346,14 @@ function rowValue(row, column) {
 
 function buildReplaceSql(tables) {
   const lines = [];
+  const replaceTables = TABLE_ORDER.filter((table) => table.name !== "itgc_member_master");
   lines.push("BEGIN;");
-  lines.push(`TRUNCATE ${TABLE_ORDER.map((table) => `public.${table.name}`).join(", ")} RESTART IDENTITY CASCADE;`);
+  lines.push(`TRUNCATE ${replaceTables.map((table) => `public.${table.name}`).join(", ")} RESTART IDENTITY CASCADE;`);
+  lines.push(`DELETE FROM public.itgc_member_master WHERE member_id NOT IN (${[...PROTECTED_MEMBER_IDS].map(quoteLiteral).join(", ")});`);
 
   for (const table of TABLE_ORDER) {
-    const rows = Array.isArray(tables?.[table.name]) ? tables[table.name] : [];
+    const rows = (Array.isArray(tables?.[table.name]) ? tables[table.name] : [])
+      .filter((row) => table.name !== "itgc_member_master" || !PROTECTED_MEMBER_IDS.has(String(row?.member_id ?? "").trim()));
     lines.push(`COPY public.${table.name} (${table.columns.join(", ")}) FROM STDIN WITH (FORMAT csv, HEADER true, NULL '');`);
     lines.push(table.columns.join(","));
     for (const row of rows) {
@@ -542,6 +546,83 @@ async function getOptionalTableRows(tableName, orderByClause = "") {
     return [];
   }
   return getTableRows(tableName, orderByClause);
+}
+
+async function preserveConfigMemberRows(tables) {
+  const existingConfigRows = await runPsqlJson(`
+    select coalesce(
+      json_agg(to_jsonb(t)),
+      '[]'::json
+    )
+    from (
+      select *
+      from public.itgc_member_master t
+      where t.member_id in ('CFG-LOGIN-DOMAINS', 'CFG-SECURITY-SETTINGS')
+      order by t.member_id asc
+    ) t;
+  `).catch(() => []);
+
+  if (!Array.isArray(existingConfigRows) || existingConfigRows.length === 0) {
+    return tables;
+  }
+
+  const existingConfigIds = new Set(existingConfigRows.map((row) => String(row?.member_id ?? "").trim()).filter(Boolean));
+  const memberRows = Array.isArray(tables?.itgc_member_master) ? tables.itgc_member_master : [];
+  return {
+    ...tables,
+    itgc_member_master: [
+      ...memberRows.filter((row) => !existingConfigIds.has(String(row?.member_id ?? "").trim())),
+      ...existingConfigRows,
+    ],
+  };
+}
+
+async function preserveMemberLoginFields(tables) {
+  const existingRows = await runPsqlJson(`
+    select coalesce(
+      json_agg(to_jsonb(t)),
+      '[]'::json
+    )
+    from (
+      select member_id, member_payload
+      from public.itgc_member_master t
+      where t.member_id not in ('CFG-LOGIN-DOMAINS', 'CFG-SECURITY-SETTINGS')
+    ) t;
+  `).catch(() => []);
+
+  if (!Array.isArray(existingRows) || existingRows.length === 0) {
+    return tables;
+  }
+
+  const existingById = new Map(
+    existingRows
+      .map((row) => [String(row?.member_id ?? "").trim(), row?.member_payload])
+      .filter(([memberId]) => Boolean(memberId)),
+  );
+  const memberRows = Array.isArray(tables?.itgc_member_master) ? tables.itgc_member_master : [];
+  return {
+    ...tables,
+    itgc_member_master: memberRows.map((row) => {
+      const memberId = String(row?.member_id ?? "").trim();
+      const existingPayload = existingById.get(memberId);
+      if (!existingPayload || typeof existingPayload !== "object") {
+        return row;
+      }
+      const nextPayload = row?.member_payload && typeof row.member_payload === "object"
+        ? { ...row.member_payload }
+        : {};
+      if (!nextPayload.firstLoginAt && existingPayload.firstLoginAt) {
+        nextPayload.firstLoginAt = existingPayload.firstLoginAt;
+      }
+      if (!nextPayload.lastLoginAt && existingPayload.lastLoginAt) {
+        nextPayload.lastLoginAt = existingPayload.lastLoginAt;
+      }
+      return {
+        ...row,
+        member_payload: nextPayload,
+      };
+    }),
+  };
 }
 
 async function getAuditLogs(page, pageSize, query) {
@@ -807,7 +888,7 @@ export async function handlePostgresApiRequest(req, res) {
       }
       const rawBody = Buffer.concat(chunks).toString("utf8");
       const parsedBody = rawBody.trim() ? JSON.parse(rawBody) : {};
-      const tables = parsedBody?.tables ?? {};
+      const tables = await preserveMemberLoginFields(await preserveConfigMemberRows(parsedBody?.tables ?? {}));
       const sql = buildReplaceSql(tables);
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "itgc-sync-"));
       const tempSqlPath = path.join(tempDir, "sync.sql");
@@ -1061,6 +1142,120 @@ export async function handlePostgresApiRequest(req, res) {
       );
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
+    if (url.pathname === "/api/security-settings" && req.method === "POST") {
+      const chunks = [];
+      for await (const chunk of req) {
+        chunks.push(chunk);
+      }
+      const rawBody = Buffer.concat(chunks).toString("utf8");
+      const parsedBody = rawBody.trim() ? JSON.parse(rawBody) : {};
+      const loginDomains = Array.isArray(parsedBody?.loginDomains)
+        ? parsedBody.loginDomains.map((domain) => String(domain ?? "").trim().toLowerCase()).filter(Boolean)
+        : [];
+      const timeoutMinutes = Number(parsedBody?.securitySettings?.sessionTimeoutMinutes ?? 480);
+      const normalizedTimeoutMinutes = Number.isFinite(timeoutMinutes)
+        ? Math.min(1440, Math.max(15, Math.round(timeoutMinutes)))
+        : 480;
+      if (loginDomains.length === 0) {
+        throw new Error("invalid_login_domains");
+      }
+      const nowIso = new Date().toISOString();
+      const loginPayload = {
+        type: "login-domain-config",
+        loginDomains,
+      };
+      const securityPayload = {
+        type: "security-settings-config",
+        securitySettings: {
+          sessionTimeoutMinutes: normalizedTimeoutMinutes,
+        },
+      };
+      const sql = `
+        insert into public.itgc_member_master (
+          member_id,
+          member_name,
+          email,
+          role,
+          team,
+          unit,
+          access_role,
+          active_yn,
+          member_payload,
+          created_at,
+          updated_at
+        ) values
+        (
+          'CFG-LOGIN-DOMAINS',
+          '로그인 허용 도메인 설정',
+          '',
+          'config',
+          '',
+          '',
+          'viewer',
+          'Y',
+          ${quoteLiteral(JSON.stringify(loginPayload))}::jsonb,
+          ${quoteLiteral(nowIso)}::timestamptz,
+          ${quoteLiteral(nowIso)}::timestamptz
+        ),
+        (
+          'CFG-SECURITY-SETTINGS',
+          '보안 설정',
+          '',
+          'config',
+          '',
+          '',
+          'viewer',
+          'Y',
+          ${quoteLiteral(JSON.stringify(securityPayload))}::jsonb,
+          ${quoteLiteral(nowIso)}::timestamptz,
+          ${quoteLiteral(nowIso)}::timestamptz
+        )
+        on conflict (member_id) do update set
+          member_name = excluded.member_name,
+          email = excluded.email,
+          role = excluded.role,
+          team = excluded.team,
+          unit = excluded.unit,
+          access_role = excluded.access_role,
+          active_yn = excluded.active_yn,
+          member_payload = excluded.member_payload,
+          updated_at = excluded.updated_at;
+      `;
+      await execFileAsync(
+        "psql",
+        [
+          "-h",
+          HOST,
+          "-p",
+          String(PORT),
+          "-U",
+          USER,
+          "-d",
+          DATABASE,
+          "-v",
+          "ON_ERROR_STOP=1",
+          "-c",
+          sql,
+        ],
+        {
+          env: {
+            ...process.env,
+            PGPASSWORD: PASSWORD,
+          },
+          maxBuffer: 10 * 1024 * 1024,
+        },
+      );
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({
+        ok: true,
+        loginDomains,
+        securitySettings: {
+          sessionTimeoutMinutes: normalizedTimeoutMinutes,
+        },
+      }));
       return;
     }
 
