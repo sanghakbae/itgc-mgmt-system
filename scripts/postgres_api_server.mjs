@@ -1,10 +1,13 @@
 import { createServer } from "node:http";
 import fs from "node:fs";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const execFileAsync = promisify(execFile);
 const HOST = process.env.POSTGRES_HOST || "dev-superset-postgresql.c64ycexnhzbb.ap-northeast-2.rds.amazonaws.com";
@@ -14,6 +17,14 @@ const USER = process.env.POSTGRES_USER || "shbae";
 const PASSWORD = process.env.POSTGRES_PASSWORD || process.env.PGPASSWORD || "";
 const LISTEN_PORT = Number(process.env.POSTGRES_API_PORT || 8787);
 const LISTEN_HOST = process.env.POSTGRES_API_HOST || "0.0.0.0";
+const STORAGE_PROVIDER = String(process.env.STORAGE_PROVIDER || "local").trim().toLowerCase() || "local";
+const S3_REGION = process.env.S3_REGION || "ap-northeast-2";
+const S3_BUCKET = process.env.S3_BUCKET || "itgcp-evidence-files";
+const S3_PRESIGNED_URL_TTL_SECONDS = Number(process.env.S3_PRESIGNED_URL_TTL_SECONDS || 3600);
+const LOCAL_EVIDENCE_DIR = path.resolve(process.env.LOCAL_EVIDENCE_DIR || "uploads/evidence");
+const s3Client = S3_REGION && S3_BUCKET
+  ? new S3Client({ region: S3_REGION })
+  : null;
 
 const TABLE_ORDER = [
   {
@@ -173,6 +184,155 @@ function csvEscape(value) {
     return `"${text.replace(/"/g, '""')}"`;
   }
   return text;
+}
+
+function safeFileName(name) {
+  return String(name ?? "file")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function safePathSegment(value) {
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-zA-Z0-9._/-]/g, "_")
+    .replace(/\/+/g, "/")
+    .replace(/^\/+|\/+$/g, "");
+  return normalized || "unknown";
+}
+
+function ensureS3Configured() {
+  if (!s3Client || !S3_BUCKET) {
+    throw new Error("s3_not_configured");
+  }
+}
+
+function ensureLocalStorageConfigured() {
+  fs.mkdirSync(LOCAL_EVIDENCE_DIR, { recursive: true });
+}
+
+function buildEvidenceStoragePath({ controlId, executionId, executionYear, executionPeriod, fileName }) {
+  const controlSegment = safePathSegment(controlId || "unknown-control");
+  const executionSegment = safePathSegment(
+    executionId
+      || [executionYear, executionPeriod].filter(Boolean).join("-")
+      || "unassigned",
+  );
+  const fileSegment = safeFileName(fileName || "evidence");
+  return `evidence/${controlSegment}/${executionSegment}/${Date.now()}-${randomUUID()}-${fileSegment}`;
+}
+
+async function readRequestBody(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function createPresignedEvidenceUrl(storagePath, fileName = "", disposition = "inline") {
+  ensureS3Configured();
+  const command = new GetObjectCommand({
+    Bucket: S3_BUCKET,
+    Key: storagePath,
+    ResponseContentDisposition: `${disposition}; filename="${safeFileName(fileName || path.basename(storagePath))}"`,
+  });
+  return getSignedUrl(s3Client, command, {
+    expiresIn: Number.isFinite(S3_PRESIGNED_URL_TTL_SECONDS) && S3_PRESIGNED_URL_TTL_SECONDS > 0
+      ? S3_PRESIGNED_URL_TTL_SECONDS
+      : 3600,
+  });
+}
+
+async function uploadEvidenceToS3({ body, controlId, executionId, executionYear, executionPeriod, fileName, contentType }) {
+  ensureS3Configured();
+  const storagePath = buildEvidenceStoragePath({
+    controlId,
+    executionId,
+    executionYear,
+    executionPeriod,
+    fileName,
+  });
+
+  await s3Client.send(new PutObjectCommand({
+    Bucket: S3_BUCKET,
+    Key: storagePath,
+    Body: body,
+    ContentType: contentType || "application/octet-stream",
+  }));
+
+  const url = await createPresignedEvidenceUrl(storagePath, fileName, "inline");
+  return {
+    storageBucket: S3_BUCKET,
+    storagePath,
+    url,
+    provider: "s3",
+  };
+}
+
+async function uploadEvidenceToLocal({ body, controlId, executionId, executionYear, executionPeriod, fileName, contentType }) {
+  ensureLocalStorageConfigured();
+  const storagePath = buildEvidenceStoragePath({
+    controlId,
+    executionId,
+    executionYear,
+    executionPeriod,
+    fileName,
+  });
+  const fullPath = path.join(LOCAL_EVIDENCE_DIR, storagePath);
+  fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+  fs.writeFileSync(fullPath, body);
+  return {
+    storageBucket: "local",
+    storagePath,
+    url: `/api/evidence/file?storagePath=${encodeURIComponent(storagePath)}&fileName=${encodeURIComponent(fileName || path.basename(storagePath))}`,
+    provider: "local",
+    mimeType: contentType || "application/octet-stream",
+  };
+}
+
+async function uploadEvidenceByProvider(params) {
+  if (STORAGE_PROVIDER === "s3") {
+    return uploadEvidenceToS3(params);
+  }
+  return uploadEvidenceToLocal(params);
+}
+
+async function enrichEvidenceRowsWithSignedUrls(rows) {
+  return Promise.all((rows ?? []).map(async (row) => {
+    const storagePath = String(row?.storage_path ?? "").trim();
+    const fileName = String(row?.file_name ?? "").trim();
+    if (!storagePath) {
+      return row;
+    }
+
+    try {
+      const signedUrl = row?.provider === "s3"
+        ? await createPresignedEvidenceUrl(storagePath, fileName, "inline")
+        : `/api/evidence/file?storagePath=${encodeURIComponent(storagePath)}&fileName=${encodeURIComponent(fileName || path.basename(storagePath))}`;
+      return {
+        ...row,
+        storage_url: signedUrl,
+      };
+    } catch {
+      return row;
+    }
+  }));
+}
+
+function resolveLocalEvidencePath(storagePath) {
+  const normalized = String(storagePath ?? "").trim();
+  if (!normalized) {
+    throw new Error("invalid_storage_path");
+  }
+  const candidate = path.resolve(LOCAL_EVIDENCE_DIR, normalized);
+  const relativePath = path.relative(LOCAL_EVIDENCE_DIR, candidate);
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    throw new Error("invalid_storage_path");
+  }
+  return candidate;
 }
 
 function rowValue(row, column) {
@@ -463,7 +623,12 @@ export async function handlePostgresApiRequest(req, res) {
   try {
     if (url.pathname === "/api/integration-status") {
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ spreadsheet: true, drive: false }));
+      res.end(JSON.stringify({
+        spreadsheet: true,
+        drive: STORAGE_PROVIDER === "s3" ? Boolean(s3Client && S3_BUCKET) : true,
+        storage: true,
+        storageProvider: STORAGE_PROVIDER,
+      }));
       return;
     }
 
@@ -480,8 +645,112 @@ export async function handlePostgresApiRequest(req, res) {
       return;
     }
 
+    if (url.pathname === "/api/evidence/upload" && req.method === "POST") {
+      const controlId = String(url.searchParams.get("controlId") || req.headers["x-control-id"] || "").trim();
+      const executionId = String(url.searchParams.get("executionId") || req.headers["x-execution-id"] || "").trim();
+      const executionYear = String(url.searchParams.get("executionYear") || req.headers["x-execution-year"] || "").trim();
+      const executionPeriod = String(url.searchParams.get("executionPeriod") || req.headers["x-execution-period"] || "").trim();
+      const uploadedBy = String(url.searchParams.get("uploadedBy") || req.headers["x-uploaded-by"] || "").trim();
+      const requestedName = String(req.headers["x-file-name"] || url.searchParams.get("fileName") || "evidence").trim();
+      const fileName = decodeURIComponent(requestedName);
+      const contentType = String(req.headers["content-type"] || "application/octet-stream").trim();
+      const body = await readRequestBody(req);
+
+      if (!controlId) {
+        throw new Error("invalid_control_id");
+      }
+      if (!body.length) {
+        throw new Error("empty_file_body");
+      }
+
+      const uploaded = await uploadEvidenceByProvider({
+        body,
+        controlId,
+        executionId,
+        executionYear,
+        executionPeriod,
+        fileName,
+        contentType,
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({
+        evidenceId: `EVD-${randomUUID()}`,
+        name: fileName,
+        mimeType: uploaded.mimeType ?? contentType,
+        size: body.length,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy,
+        url: uploaded.url,
+        storageBucket: uploaded.storageBucket,
+        storagePath: uploaded.storagePath,
+        provider: uploaded.provider,
+      }));
+      return;
+    }
+
+    if (url.pathname === "/api/evidence/file" && req.method === "GET") {
+      const storagePath = String(url.searchParams.get("storagePath") || "").trim();
+      const fileName = String(url.searchParams.get("fileName") || path.basename(storagePath)).trim();
+      const fullPath = resolveLocalEvidencePath(storagePath);
+      if (!fs.existsSync(fullPath)) {
+        throw new Error("file_not_found");
+      }
+
+      const stat = fs.statSync(fullPath);
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": stat.size,
+        "Content-Disposition": `inline; filename="${safeFileName(fileName)}"`,
+        "Cache-Control": "private, max-age=60",
+      });
+      fs.createReadStream(fullPath).pipe(res);
+      return;
+    }
+
+    if (url.pathname === "/api/evidence/presigned-url" && req.method === "GET") {
+      const storagePath = String(url.searchParams.get("storagePath") || "").trim();
+      const fileName = String(url.searchParams.get("fileName") || path.basename(storagePath)).trim();
+      if (!storagePath) {
+        throw new Error("invalid_storage_path");
+      }
+
+      const signedUrl = STORAGE_PROVIDER === "s3"
+        ? await createPresignedEvidenceUrl(
+          storagePath,
+          fileName,
+          String(url.searchParams.get("download") || "").trim() === "1" ? "attachment" : "inline",
+        )
+        : `/api/evidence/file?storagePath=${encodeURIComponent(storagePath)}&fileName=${encodeURIComponent(fileName)}`;
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ url: signedUrl }));
+      return;
+    }
+
+    if (url.pathname === "/api/evidence/delete" && req.method === "POST") {
+      const rawBody = (await readRequestBody(req)).toString("utf8");
+      const parsedBody = rawBody.trim() ? JSON.parse(rawBody) : {};
+      const storagePath = String(parsedBody?.storagePath ?? "").trim();
+      if (!storagePath) {
+        throw new Error("invalid_storage_path");
+      }
+      if (STORAGE_PROVIDER === "s3") {
+        ensureS3Configured();
+        await s3Client.send(new DeleteObjectCommand({
+          Bucket: S3_BUCKET,
+          Key: storagePath,
+        }));
+      } else {
+        const fullPath = resolveLocalEvidencePath(storagePath);
+        fs.rmSync(fullPath, { force: true });
+      }
+      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+
     if (url.pathname === "/api/workspace") {
-      const [controlRows, executionRows, evidenceRows, workflowRows, memberRows, auditRows, configRows] = await Promise.all([
+      const [controlRows, executionRows, rawEvidenceRows, workflowRows, memberRows, auditRows, configRows] = await Promise.all([
         getTableRows("itgc_control_master", "order by t.control_id asc"),
         getTableRows("itgc_control_execution", "order by t.last_updated_at desc nulls last, t.updated_at desc nulls last, t.execution_id asc"),
         getTableRows("itgc_evidence_files", "order by t.uploaded_at desc nulls last, t.updated_at desc nulls last, t.evidence_id asc"),
@@ -490,6 +759,7 @@ export async function handlePostgresApiRequest(req, res) {
         getTableRows("itgc_audit_log", "order by t.created_at_ts desc nulls last, t.log_id desc limit 3000"),
         getOptionalTableRows("itgc_app_config", "order by t.config_key asc"),
       ]);
+      const evidenceRows = await enrichEvidenceRowsWithSignedUrls(rawEvidenceRows);
 
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify({

@@ -27,7 +27,6 @@ const AUDIT_LOG_MAX_ITEMS = 3000;
 const AUDIT_LOG_PAGE_SIZE = 30;
 const LOGIN_DOMAIN_ERROR_MESSAGE = "허용된 도메인만 로그인할 수 있습니다.";
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
-const GOOGLE_DRIVE_FOLDER_ID = (import.meta.env.VITE_GOOGLE_DRIVE_FOLDER_ID ?? "").trim();
 const ALLOWED_DOMAIN_ENV = (import.meta.env.VITE_ALLOWED_DOMAIN ?? "").trim() || "muhayu.com";
 const POSTGRES_API_BASE_URL = (import.meta.env.VITE_POSTGRES_API_BASE_URL ?? "").trim();
 const GOOGLE_CHAT_WEBHOOK_URL = (import.meta.env.VITE_GOOGLE_CHAT_WEBHOOK_URL ?? "").trim();
@@ -40,8 +39,6 @@ const DATA_BACKEND_ENV = (import.meta.env.VITE_DATA_BACKEND ?? "").trim().toLowe
 const IS_LOCAL_RUNTIME =
   Boolean(import.meta.env.DEV)
   || (typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname));
-let googleDriveAccessTokenCache = "";
-let googleDriveAccessTokenExpiresAt = 0;
 const googleChatAlertDedupCache = new Map();
 const ALLOWED_EMAIL_DOMAINS = ALLOWED_DOMAIN_ENV
   .split(",")
@@ -140,6 +137,42 @@ const defaultData = {
 const implementationStatusOrder = ["todo", "in_progress", "done"];
 const defaultPeople = [];
 const systemOptions = ["영림원", "판다", "BI", "관리자콘솔(HR)", "관리자콘솔(CK)"];
+
+function sortDynamicTableColumns(columns = []) {
+  const priorityMap = new Map([
+    ["id", 0],
+    ["name", 1],
+    ["title", 2],
+    ["action", 3],
+    ["status", 4],
+    ["target", 5],
+    ["detail", 6],
+    ["description", 7],
+    ["email", 8],
+    ["user", 9],
+    ["actor_name", 10],
+    ["actor_email", 11],
+    ["role", 12],
+    ["unit", 13],
+    ["team", 14],
+    ["created_at", 15],
+    ["updated_at", 16],
+    ["review_date", 17],
+    ["ip", 18],
+  ]);
+
+  return [...columns].sort((left, right) => {
+    const leftKey = String(left ?? "").trim().toLowerCase();
+    const rightKey = String(right ?? "").trim().toLowerCase();
+    const leftRank = priorityMap.get(leftKey) ?? 999;
+    const rightRank = priorityMap.get(rightKey) ?? 999;
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+    return leftKey.localeCompare(rightKey, "ko");
+  });
+}
+
 const controlCatalog = {
   "PWC-01": {
     process: "IT정책관리",
@@ -655,24 +688,6 @@ function getEvidenceReportImageFallbackUrl(file) {
   return getEvidencePreviewUrl(file) || getEvidenceEmbedUrl(file);
 }
 
-function isDriveEvidence(file) {
-  const rawUrl = String(file?.url ?? "").trim();
-  const driveFileId = String(file?.driveFileId ?? "").trim();
-  return Boolean(
-    driveFileId
-    || rawUrl.includes("drive.google.com")
-    || rawUrl.includes("docs.google.com"),
-  );
-}
-
-function getDriveFolderUrl(folderId) {
-  const normalized = String(folderId ?? "").trim();
-  if (!normalized) {
-    return "";
-  }
-  return `https://drive.google.com/drive/folders/${normalized}`;
-}
-
 function buildEvidenceTraceLabel(file) {
   const provider = String(file?.provider ?? "").trim() || "unknown";
   const driveFileId = String(file?.driveFileId ?? "").trim();
@@ -693,12 +708,11 @@ function buildEvidenceUploadAuditSuffix(files) {
   const summary = uploadedFiles
     .map((file) => {
       const fileName = String(file?.name ?? "evidence").trim();
-      const driveFileId = String(file?.driveFileId ?? "").trim();
-      return driveFileId ? `${fileName}(${driveFileId})` : fileName;
+      const storagePath = String(file?.storagePath ?? "").trim();
+      return storagePath ? `${fileName}(${storagePath})` : fileName;
     })
     .join(", ");
-  const folderId = String(GOOGLE_DRIVE_FOLDER_ID ?? "").trim();
-  return ` · 업로드 파일: ${summary}${folderId ? ` · Drive Folder ID: ${folderId}` : ""}`;
+  return ` · 업로드 파일: ${summary}`;
 }
 
 function normalizeCompactText(value) {
@@ -815,6 +829,20 @@ function formatFrequencyLabel(frequency) {
     수시: "이벤트 발생 시",
   };
   return frequencyLabelMap[String(frequency ?? "").trim()] ?? String(frequency ?? "").trim();
+}
+
+function formatExecutionCardSubtext(control) {
+  const year = String(control?.executionYear ?? "").trim();
+  const period = String(control?.executionPeriod ?? "").trim();
+  const frequency = formatFrequencyLabel(control?.frequency);
+
+  if (year && period) {
+    return `${year}년 · ${period}${frequency ? ` · ${frequency}` : ""}`;
+  }
+  if (period) {
+    return `${period}${frequency ? ` · ${frequency}` : ""}`;
+  }
+  return frequency || "-";
 }
 
 function executionPeriodSortValue(period) {
@@ -980,14 +1008,13 @@ function createExecutionEntryKey(controlId, executionYear, executionPeriod) {
   return `${String(controlId ?? "").trim()}::${String(executionYear ?? "").trim()}::${String(executionPeriod ?? "").trim()}`;
 }
 
+function createExecutionEntryId() {
+  return `EXE-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function normalizeExecutionId(value, controlId, executionYear, executionPeriod) {
   const rawId = String(value ?? "").trim();
   const canonicalId = createExecutionEntryKey(controlId, executionYear, executionPeriod);
-  if (String(controlId ?? "").trim() && String(executionYear ?? "").trim() && String(executionPeriod ?? "").trim()) {
-    if (!rawId || rawId.startsWith("EXE-")) {
-      return canonicalId;
-    }
-  }
   return rawId || canonicalId;
 }
 
@@ -1135,7 +1162,8 @@ function deriveExecutionStage(entry) {
 }
 
 function isExecutionReadyForCompletion(entry) {
-  return deriveExecutionStage(entry) === "submitted" && hasExecutionRequiredFields(entry);
+  const stage = deriveExecutionStage(entry);
+  return (stage === "submitted" || stage === "rejected") && hasExecutionRequiredFields(entry);
 }
 
 function isExecutionInReviewQueue(entry) {
@@ -1376,138 +1404,32 @@ async function uploadEvidenceFiles(controlId, files) {
     };
   }
 
-  if (!GOOGLE_CLIENT_ID || !GOOGLE_DRIVE_FOLDER_ID) {
-    throw new Error("google_drive_not_configured");
-  }
-  async function ensureGoogleOAuthReady() {
-    if (window.google?.accounts?.oauth2) {
-      return;
-    }
-    await new Promise((resolve, reject) => {
-      if (window.google?.accounts?.oauth2) {
-        resolve();
-        return;
-      }
-
-      const handleLoaded = () => {
-        if (window.google?.accounts?.oauth2) {
-          resolve();
-          return;
-        }
-        reject(new Error("google_oauth_not_ready"));
-      };
-      const handleError = () => reject(new Error("google_oauth_script_load_failed"));
-
-      const existingScript = document.querySelector('script[data-google-identity="true"]');
-      if (existingScript) {
-        existingScript.addEventListener("load", handleLoaded, { once: true });
-        existingScript.addEventListener("error", handleError, { once: true });
-        return;
-      }
-
-      const script = document.createElement("script");
-      script.src = "https://accounts.google.com/gsi/client";
-      script.async = true;
-      script.defer = true;
-      script.dataset.googleIdentity = "true";
-      script.onload = handleLoaded;
-      script.onerror = handleError;
-      document.head.appendChild(script);
-    });
-  }
-  async function getGoogleDriveAccessToken() {
-    await ensureGoogleOAuthReady();
-    if (!window.google?.accounts?.oauth2) {
-      throw new Error("google_oauth_not_ready");
-    }
-
-    const requestAccessToken = (prompt = "") => new Promise((resolve, reject) => {
-      const tokenClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: GOOGLE_CLIENT_ID,
-        scope: "https://www.googleapis.com/auth/drive.file",
-        callback: (tokenResponse) => {
-          if (!tokenResponse?.access_token || tokenResponse?.error) {
-            const code = String(tokenResponse?.error || "google_token_failed");
-            const description = String(tokenResponse?.error_description || "").trim();
-            reject(new Error(`google_token_failed|code=${code}|description=${description}`));
-            return;
-          }
-          resolve(tokenResponse);
-        },
-      });
-      tokenClient.requestAccessToken({ prompt });
-    });
-
-    const now = Date.now();
-    if (googleDriveAccessTokenCache && googleDriveAccessTokenExpiresAt > now + 30_000) {
-      return googleDriveAccessTokenCache;
-    }
-    try {
-      const tokenResponse = await requestAccessToken("");
-      const accessToken = String(tokenResponse?.access_token ?? "");
-      const expiresInSec = Number(tokenResponse?.expires_in ?? 0);
-      googleDriveAccessTokenCache = accessToken;
-      googleDriveAccessTokenExpiresAt = now + (Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec * 1000 : 50 * 60 * 1000);
-      return accessToken;
-    } catch (error) {
-      const normalized = String(error?.message ?? "").toLowerCase();
-      if (!normalized.includes("access_denied") && !normalized.includes("interaction_required") && !normalized.includes("consent_required")) {
-        throw error;
-      }
-      const tokenResponse = await requestAccessToken("consent");
-      const accessToken = String(tokenResponse?.access_token ?? "");
-      const expiresInSec = Number(tokenResponse?.expires_in ?? 0);
-      googleDriveAccessTokenCache = accessToken;
-      googleDriveAccessTokenExpiresAt = Date.now() + (Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec * 1000 : 50 * 60 * 1000);
-      return accessToken;
-    }
-  }
-  async function uploadFileToGoogleDrive(file, namePrefix) {
-    const accessToken = await getGoogleDriveAccessToken();
-    const boundary = `itgc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const metadata = {
-      name: `${namePrefix}_${Date.now()}_${file.name}`,
-      parents: [GOOGLE_DRIVE_FOLDER_ID],
-    };
-    const body = new Blob([
-      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n`,
-      `--${boundary}\r\nContent-Type: ${file.type || "application/octet-stream"}\r\n\r\n`,
-      file,
-      `\r\n--${boundary}--`,
-    ]);
-    const response = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,webContentLink", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": `multipart/related; boundary=${boundary}`,
-      },
-      body,
-    });
-    if (!response.ok) {
-      if (response.status === 401) {
-        googleDriveAccessTokenCache = "";
-        googleDriveAccessTokenExpiresAt = 0;
-      }
-      const errorBody = await response.json().catch(() => null);
-      const reason = String(errorBody?.error?.errors?.[0]?.reason || errorBody?.error?.status || "unknown_reason");
-      const message = String(errorBody?.error?.message || `status_${response.status}`);
-      throw new Error(`google_drive_upload_failed|status=${response.status}|reason=${reason}|message=${message}`);
-    }
-    return response.json();
-  }
-
   const uploadedFiles = [];
   for (const file of files) {
-    const result = await uploadFileToGoogleDrive(file, controlId);
+    const response = await fetch(`/api/evidence/upload?controlId=${encodeURIComponent(controlId)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": file.type || "application/octet-stream",
+        "X-File-Name": encodeURIComponent(file.name),
+      },
+      body: file,
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message = String(result?.error || result?.message || `status_${response.status}`);
+      throw new Error(`s3_upload_failed|${message}`);
+    }
     uploadedFiles.push({
-      evidenceId: `EVD-${controlId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      evidenceId: result.evidenceId ?? `EVD-${controlId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: result.name ?? file.name,
       mimeType: result.mimeType ?? (file.type || "application/octet-stream"),
-      size: file.size,
-      uploadedAt: new Date().toISOString(),
-      url: result.webViewLink ?? result.webContentLink ?? "",
-      driveFileId: result.id ?? "",
-      provider: "google-drive",
+      size: result.size ?? file.size,
+      uploadedAt: result.uploadedAt ?? new Date().toISOString(),
+      uploadedBy: result.uploadedBy ?? "",
+      url: result.url ?? "",
+      storageBucket: result.storageBucket ?? "",
+      storagePath: result.storagePath ?? "",
+      provider: result.provider ?? "s3",
     });
   }
 
@@ -1520,8 +1442,35 @@ async function uploadEvidenceFiles(controlId, files) {
   };
 }
 
+async function deleteEvidenceFileFromStorage(file) {
+  const storagePath = String(file?.storagePath ?? "").trim();
+  if (!storagePath || DATA_BACKEND === "local") {
+    return;
+  }
+  const response = await fetch("/api/evidence/delete", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ storagePath }),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(String(payload?.error || payload?.message || `status_${response.status}`));
+  }
+}
+
+async function deleteEvidenceFilesFromStorage(files) {
+  for (const file of files ?? []) {
+    if (!file?.storagePath) {
+      continue;
+    }
+    await deleteEvidenceFileFromStorage(file);
+  }
+}
+
 async function uploadWorkspaceBackupToDrive(workspace) {
-  if (DATA_BACKEND === "local" || !GOOGLE_CLIENT_ID || !GOOGLE_DRIVE_FOLDER_ID) {
+  if (DATA_BACKEND === "local") {
     return { uploaded: false };
   }
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1553,21 +1502,30 @@ async function syncRemoteWorkspaceByBackend(workspace) {
   return syncPostgresWorkspace(workspace);
 }
 
-function normalizeRemoteWorkspace(remoteWorkspace, fallbackWorkspace) {
+function createRemoteWorkspaceShell() {
+  return {
+    controls: [],
+    workflows: [],
+    loginDomains: parseDomainList(defaultData.loginDomains),
+    people: [],
+    auditLogs: [],
+  };
+}
+
+function normalizeRemoteWorkspace(remoteWorkspace) {
   const remoteControls = Array.isArray(remoteWorkspace?.controls) ? remoteWorkspace.controls.map(normalizeControl) : [];
   const remotePeople = Array.isArray(remoteWorkspace?.people) ? remoteWorkspace.people : [];
   const remoteAuditLogs = Array.isArray(remoteWorkspace?.auditLogs) ? remoteWorkspace.auditLogs : [];
   const remoteLoginDomains = parseDomainList(remoteWorkspace?.loginDomains);
-  const fallbackLoginDomains = parseDomainList(fallbackWorkspace?.loginDomains);
 
   return {
     controls: remoteControls,
-    workflows: mergeMissingWorkflows(remoteControls, Array.isArray(remoteWorkspace?.workflows) ? remoteWorkspace.workflows : []),
+    workflows: Array.isArray(remoteWorkspace?.workflows) ? remoteWorkspace.workflows : [],
     loginDomains: remoteLoginDomains.length > 0
       ? remoteLoginDomains
-      : (fallbackLoginDomains.length > 0 ? fallbackLoginDomains : parseDomainList(defaultData.loginDomains)),
+      : parseDomainList(defaultData.loginDomains),
     people: remotePeople,
-    auditLogs: mergeAuditLogs(remoteAuditLogs, Array.isArray(fallbackWorkspace?.auditLogs) ? fallbackWorkspace.auditLogs : []),
+    auditLogs: remoteAuditLogs,
   };
 }
 
@@ -1639,12 +1597,7 @@ function mergeMissingWorkflows(controls, workflows) {
 
 function loadWorkspace() {
   if (HAS_REMOTE_BACKEND) {
-    return {
-      ...structuredClone(defaultData),
-      loginDomains: parseDomainList(defaultData.loginDomains),
-      people: structuredClone(defaultPeople),
-      auditLogs: [],
-    };
+    return createRemoteWorkspaceShell();
   }
 
   const saved = window.localStorage.getItem(STORAGE_KEY);
@@ -2289,6 +2242,21 @@ function formatSeoulDateTime(value) {
   }).format(new Date(value)).replace(" ", " ");
 }
 
+function formatMemberLoginDateTime(value) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    return "-";
+  }
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(normalized)) {
+    return normalized.slice(0, 16);
+  }
+  const timestamp = Date.parse(normalized);
+  if (Number.isNaN(timestamp)) {
+    return normalized;
+  }
+  return formatSeoulDateTime(new Date(timestamp)).slice(0, 16);
+}
+
 function progressForControl(controlId, workflows) {
   const related = workflows.filter((workflow) => workflow.controlId === controlId);
   const done = related.filter((workflow) => workflow.status === "done").length;
@@ -2621,6 +2589,8 @@ function normalizePeopleCollection(people = []) {
     team: String(person?.team ?? "").trim(),
     unit: String(person?.unit ?? "").trim(),
     accessRole: normalizeAccessRole(person?.accessRole),
+    firstLoginAt: String(person?.firstLoginAt ?? person?.createdAt ?? person?.created_at ?? "").trim(),
+    lastLoginAt: String(person?.lastLoginAt ?? person?.updatedAt ?? person?.updated_at ?? "").trim(),
   }));
 }
 
@@ -2778,12 +2748,10 @@ export default function App() {
   const [registrationListPage, setRegistrationListPage] = useState(1);
   const [registrationSelectedControlId, setRegistrationSelectedControlId] = useState("");
   const [roleAssignmentControlId, setRoleAssignmentControlId] = useState("");
-  const [evidenceInputCount, setEvidenceInputCount] = useState(1);
   const [assignmentExecutionNote, setAssignmentExecutionNote] = useState("");
   const [assignmentExecutionYear, setAssignmentExecutionYear] = useState("");
   const [assignmentExecutionPeriod, setAssignmentExecutionPeriod] = useState("");
   const [assignmentReviewChecked, setAssignmentReviewChecked] = useState("미검토");
-  const [assignmentPendingEvidenceCount, setAssignmentPendingEvidenceCount] = useState(0);
   const [assignmentDroppedFiles, setAssignmentDroppedFiles] = useState([]);
   const [assignmentReviewNote, setAssignmentReviewNote] = useState("");
   const [completedEditMode, setCompletedEditMode] = useState(false);
@@ -2806,13 +2774,13 @@ export default function App() {
   const [performedEditReviewResult, setPerformedEditReviewResult] = useState("양호");
   const [performedEditReviewNote, setPerformedEditReviewNote] = useState("");
   const [performedEditEvidenceFiles, setPerformedEditEvidenceFiles] = useState([]);
-  const [performedEvidenceInputCount, setPerformedEvidenceInputCount] = useState(1);
-  const [performedPendingEvidenceCount, setPerformedPendingEvidenceCount] = useState(0);
   const [performedDroppedFiles, setPerformedDroppedFiles] = useState([]);
-  const [completedEvidenceInputCount, setCompletedEvidenceInputCount] = useState(1);
-  const [completedPendingEvidenceCount, setCompletedPendingEvidenceCount] = useState(0);
   const [completedDroppedFiles, setCompletedDroppedFiles] = useState([]);
+  const [reviewNoteDraft, setReviewNoteDraft] = useState("");
   const [reviewDecisionDraft, setReviewDecisionDraft] = useState("양호");
+  const [optimisticReviewExecutionKeys, setOptimisticReviewExecutionKeys] = useState([]);
+  const [optimisticCompletedExecutionKeys, setOptimisticCompletedExecutionKeys] = useState([]);
+  const [optimisticPerformedExecutionKeys, setOptimisticPerformedExecutionKeys] = useState([]);
   const [dashboardView, setDashboardView] = useState("category");
   const [dashboardUnitFilter, setDashboardUnitFilter] = useState("전체");
   const [dashboardDelayFilter, setDashboardDelayFilter] = useState("전체");
@@ -2955,6 +2923,18 @@ export default function App() {
       ),
     [memberDirectory],
   );
+  const memberUnitByEmail = useMemo(
+    () =>
+      new Map(
+        memberDirectory
+          .map((person) => [
+            String(person.email ?? "").trim().toLowerCase(),
+            normalizeUnitLabel(person.unit ?? ""),
+          ])
+          .filter(([email, unit]) => email && unit),
+      ),
+    [memberDirectory],
+  );
   const findMemberByName = (name, role = "both") => {
     const normalizedName = normalizeCompactText(name).replace(/\s+/g, "").toLowerCase();
     if (!normalizedName) {
@@ -3028,6 +3008,7 @@ export default function App() {
     (person) => String(person.email ?? "").trim().toLowerCase() === normalizedAuthEmail,
   ) ?? null;
   const currentMemberUnit = normalizeUnitLabel(currentMemberRecord?.unit ?? "");
+  const currentMemberUnitDisplay = currentMemberUnit || "미지정";
   const currentAccessRole = normalizeAccessRole(
     currentMemberRecord?.accessRole ?? "viewer",
   );
@@ -3284,10 +3265,11 @@ export default function App() {
   const selectedAssignmentEvidenceCount = Array.isArray(selectedAssignmentEntry?.evidenceFiles)
     ? selectedAssignmentEntry.evidenceFiles.length
     : 0;
-  const pendingAssignmentUploadCount = assignmentPendingEvidenceCount + assignmentDroppedFiles.length;
+  const pendingAssignmentUploadCount = assignmentDroppedFiles.length;
   const totalAssignmentEvidenceCount =
     selectedAssignmentEvidenceCount + pendingAssignmentUploadCount;
-  const pendingCompletedUploadCount = completedPendingEvidenceCount + completedDroppedFiles.length;
+  const pendingCompletedUploadCount = completedDroppedFiles.length;
+  const totalCompletedEvidenceCount = completedEditEvidenceFiles.length + pendingCompletedUploadCount;
   const assignmentSubmitDisabledReason = !selectedControl
     ? "통제를 먼저 선택하세요."
     : !hasPerformPermissionForControl(selectedControl)
@@ -3412,7 +3394,7 @@ export default function App() {
     if (!firstRow || typeof firstRow !== "object") {
       return [];
     }
-    return Object.keys(firstRow);
+    return sortDynamicTableColumns(Object.keys(firstRow));
   }, [queryTestResult]);
   const queryTestIsOutdated = Boolean(queryTestExecutedSql) && queryTestSql.trim() !== queryTestExecutedSql.trim();
 
@@ -3866,12 +3848,27 @@ export default function App() {
       workflowRate: workflows.length === 0 ? "0%" : `${Math.round((doneCount / workflows.length) * 100)}%`,
     };
   }, [controls, workflows]);
+  const optimisticReviewExecutionKeySet = useMemo(
+    () => new Set(optimisticReviewExecutionKeys),
+    [optimisticReviewExecutionKeys],
+  );
+  const optimisticCompletedExecutionKeySet = useMemo(
+    () => new Set(optimisticCompletedExecutionKeys),
+    [optimisticCompletedExecutionKeys],
+  );
+  const optimisticPerformedExecutionKeySet = useMemo(
+    () => new Set(optimisticPerformedExecutionKeys),
+    [optimisticPerformedExecutionKeys],
+  );
   const reviewQueueControls = useMemo(
     () =>
       controls.flatMap((control) =>
         getControlExecutionHistory(control)
           .filter(
-            (entry) => isExecutionInReviewQueue(entry),
+            (entry) =>
+              !optimisticCompletedExecutionKeySet.has(entry.executionId)
+              && !optimisticPerformedExecutionKeySet.has(entry.executionId)
+              && (isExecutionInReviewQueue(entry) || optimisticReviewExecutionKeySet.has(entry.executionId)),
           )
           .map((entry) => ({
             ...mergeExecutionHistoryIntoControl(control, getControlExecutionHistory(control), {
@@ -3885,7 +3882,7 @@ export default function App() {
             reviewExecutionKey: entry.executionId,
           })),
       ).sort(compareControlsByRecentExecution),
-    [controls],
+    [controls, optimisticCompletedExecutionKeySet, optimisticPerformedExecutionKeySet, optimisticReviewExecutionKeySet],
   );
   const reviewPendingCount = isRemoteWorkspaceLoading ? null : reviewQueueControls.length;
   const completedExecutionControls = useMemo(
@@ -3893,7 +3890,17 @@ export default function App() {
       controls.flatMap((control) =>
         getControlExecutionHistory(control)
           .filter(
-            (entry) => isExecutionReadyForCompletion(entry),
+            (entry) =>
+              !optimisticReviewExecutionKeySet.has(entry.executionId)
+              && !optimisticPerformedExecutionKeySet.has(entry.executionId)
+              && (
+                isExecutionReadyForCompletion(entry)
+                || (
+                  optimisticCompletedExecutionKeySet.has(entry.executionId)
+                  && deriveExecutionStage(entry) !== "performed-complete"
+                  && hasExecutionRequiredFields(entry)
+                )
+              ),
           )
           .map((entry) => ({
             ...mergeExecutionHistoryIntoControl(control, getControlExecutionHistory(control), {
@@ -3907,7 +3914,7 @@ export default function App() {
             completedExecutionKey: entry.executionId,
           })),
       ).sort(compareControlsByRecentExecution),
-    [controls],
+    [controls, optimisticCompletedExecutionKeySet, optimisticPerformedExecutionKeySet, optimisticReviewExecutionKeySet],
   );
   const completedExecutionCount = isRemoteWorkspaceLoading ? null : completedExecutionControls.length;
   const performedExecutionControls = useMemo(
@@ -3916,7 +3923,10 @@ export default function App() {
         getControlExecutionHistory(control)
           .filter(
             (entry) =>
-              deriveExecutionStage(entry) === "performed-complete"
+              (
+                deriveExecutionStage(entry) === "performed-complete"
+                || optimisticPerformedExecutionKeySet.has(entry.executionId)
+              )
               && hasExecutionRequiredFieldsForPerformed(entry),
           )
           .map((entry) => ({
@@ -3931,7 +3941,7 @@ export default function App() {
             performedExecutionKey: entry.executionId,
           })),
       ).sort(compareControlsByRecentReview),
-    [controls],
+    [controls, optimisticPerformedExecutionKeySet],
   );
   const performedExecutionCount = isRemoteWorkspaceLoading ? null : performedExecutionControls.length;
   useEffect(() => {
@@ -3996,7 +4006,7 @@ export default function App() {
     && completedEditYear.trim().length > 0
     && completedEditPeriod.trim().length > 0
     && completedEditNote.trim().length > 0
-    && pendingCompletedUploadCount > 0;
+    && totalCompletedEvidenceCount > 0;
   const totalPerformedPages = Math.max(1, Math.ceil(performedExecutionControls.length / listPageSize));
   const currentPerformedPage = Math.min(controlListPage, totalPerformedPages);
   const performedPagedControls = performedExecutionControls.slice(
@@ -4006,7 +4016,7 @@ export default function App() {
   const selectedPerformedControl = selectedPerformedExecutionKey
     ? (performedExecutionControls.find((control) => control.performedExecutionKey === selectedPerformedExecutionKey) ?? null)
     : (performedPagedControls[0] ?? null);
-  const pendingPerformedUploadCount = performedPendingEvidenceCount + performedDroppedFiles.length;
+  const pendingPerformedUploadCount = performedDroppedFiles.length;
   const canSubmitPerformedEdit =
     isAdmin
     && performedEditYear.trim().length > 0
@@ -4028,6 +4038,11 @@ export default function App() {
     reviewVisibleControls.find((control) => control.reviewExecutionKey === selectedReviewExecutionKey)
     ?? reviewPagedControls[0]
     ?? null;
+  const canSubmitReviewDecision =
+    canReviewControl
+    && Boolean(selectedReviewControl)
+    && normalizeReviewDecisionLabel(reviewDecisionDraft).trim().length > 0
+    && reviewNoteDraft.trim().length > 0;
   const runtimeOrigin = typeof window !== "undefined" ? window.location.origin : "";
   const menuItems = [
     { key: "dashboard", label: "대시보드", icon: <DashboardIcon /> },
@@ -4136,8 +4151,8 @@ export default function App() {
     if (nextTab === "control-review") {
       setReviewUnitFilter("전체");
       setControlListPage(1);
-      setSelectedReviewExecutionKey(reviewVisibleControls[0]?.reviewExecutionKey ?? reviewQueueControls[0]?.reviewExecutionKey ?? "");
-      setSelectedControlId(reviewVisibleControls[0]?.id ?? reviewQueueControls[0]?.id ?? "");
+      setSelectedReviewExecutionKey((current) => current || reviewVisibleControls[0]?.reviewExecutionKey || reviewQueueControls[0]?.reviewExecutionKey || "");
+      setSelectedControlId((current) => current || reviewVisibleControls[0]?.id || reviewQueueControls[0]?.id || "");
       return;
     }
 
@@ -4309,10 +4324,6 @@ export default function App() {
   }
 
   async function completeLogin(nextUser, { verified = true } = {}) {
-    if (HAS_REMOTE_BACKEND && !remoteWorkspaceReady) {
-      setAuthError("회원정보를 불러오는 중입니다. 잠시 후 다시 로그인해주세요.");
-      return;
-    }
     const email = String(nextUser?.email ?? "").toLowerCase();
     const canValidateLoginDomain = !HAS_REMOTE_BACKEND || remoteWorkspaceReady;
     if (!verified || !email || (canValidateLoginDomain && !isAllowedEmailBySet(email, loginDomainSet))) {
@@ -4328,27 +4339,7 @@ export default function App() {
     let currentWorkspace = workspaceRef.current;
     let currentPeople = Array.isArray(currentWorkspace.people) ? currentWorkspace.people : [];
     let existingMember = currentPeople.find((person) => String(person.email ?? "").toLowerCase() === email);
-
-    if (!existingMember && HAS_REMOTE_BACKEND) {
-      try {
-        const refreshedWorkspace = await fetchRemoteWorkspaceByBackend();
-        const refreshedPeople = normalizePeopleCollection(Array.isArray(refreshedWorkspace?.people) ? refreshedWorkspace.people : []);
-        const refreshedMember = refreshedPeople.find((person) => String(person.email ?? "").toLowerCase() === email);
-        if (refreshedMember) {
-          currentWorkspace = {
-            ...workspaceRef.current,
-            ...refreshedWorkspace,
-            people: refreshedPeople,
-            auditLogs: mergeAuditLogs(
-              Array.isArray(refreshedWorkspace?.auditLogs) ? refreshedWorkspace.auditLogs : [],
-              Array.isArray(workspaceRef.current?.auditLogs) ? workspaceRef.current.auditLogs : [],
-            ),
-          };
-          currentPeople = refreshedPeople;
-          existingMember = refreshedMember;
-        }
-      } catch {}
-    }
+    const loginTimestamp = new Date().toISOString();
 
     if (deletedMemberEmailSet.has(email) && !existingMember) {
       setAuthError("삭제된 계정은 관리자 승인 전까지 다시 등록할 수 없습니다.");
@@ -4357,17 +4348,39 @@ export default function App() {
       window.google?.accounts?.id?.disableAutoSelect?.();
       return;
     }
-    const nextPeople = currentPeople.map((person) =>
-      String(person.email ?? "").toLowerCase() === email
+    const nextMember =
+      existingMember
         ? {
-            ...person,
-            name: pickPreferredMemberName(person.name, nextUser.name, email) || person.name || nextUser.name,
+            ...existingMember,
+            name: pickPreferredMemberName(existingMember.name, nextUser.name, email) || existingMember.name || nextUser.name,
             email,
-            unit: person.unit ?? "미지정",
-            accessRole: normalizeAccessRole(person.accessRole),
+            unit: existingMember.unit ?? "미지정",
+            accessRole: normalizeAccessRole(existingMember.accessRole),
+            firstLoginAt: existingMember.firstLoginAt ?? existingMember.createdAt ?? existingMember.created_at ?? loginTimestamp,
+            lastLoginAt: loginTimestamp,
           }
-        : person,
-    );
+        : {
+            id: createMemberId(),
+            name: pickPreferredMemberName("", nextUser.name, email) || nextUser.name || email,
+            email,
+            role: "both",
+            team: "",
+            unit: "미지정",
+            accessRole: "viewer",
+            firstLoginAt: loginTimestamp,
+            lastLoginAt: loginTimestamp,
+          };
+    const nextPeople = existingMember
+      ? currentPeople.map((person) =>
+          String(person.email ?? "").toLowerCase() === email
+            ? nextMember
+            : person,
+        )
+      : [nextMember, ...currentPeople];
+    const nextWorkspace = {
+      ...currentWorkspace,
+      people: normalizePeopleCollection(nextPeople),
+    };
 
     window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextUser));
     setAuthError("");
@@ -4376,15 +4389,43 @@ export default function App() {
       "LOGIN_SUCCESS",
       email,
       `${nextUser.name} 로그인`,
-      {
-        ...currentWorkspace,
-        people: nextPeople,
-      },
+      nextWorkspace,
       {
         actorName: nextUser.name,
         actorEmail: nextUser.email,
       },
     );
+
+    if (HAS_REMOTE_BACKEND) {
+      void upsertPostgresMember({
+        member_id: nextMember.id,
+        member_name: nextMember.name,
+        email,
+        role: nextMember.role ?? "both",
+        team: nextMember.team ?? "",
+        unit: nextMember.unit ?? "미지정",
+        access_role: normalizeAccessRole(nextMember.accessRole),
+        active_yn: nextMember.activeYn ?? nextMember.active_yn ?? "Y",
+        member_payload: {
+          id: nextMember.id,
+          name: nextMember.name,
+          role: nextMember.role ?? "both",
+          team: nextMember.team ?? "",
+          unit: nextMember.unit ?? "미지정",
+          email,
+          accessRole: normalizeAccessRole(nextMember.accessRole),
+          firstLoginAt: nextMember.firstLoginAt ?? loginTimestamp,
+          lastLoginAt: loginTimestamp,
+        },
+        created_at: nextMember.createdAt ?? nextMember.created_at ?? nextMember.firstLoginAt ?? loginTimestamp,
+        updated_at: loginTimestamp,
+      }).catch(() => {
+        setIntegrationStatus((current) => ({
+          ...current,
+          spreadsheet: "오류",
+        }));
+      });
+    }
   }
 
   function handleLoginSuccess(response) {
@@ -4401,10 +4442,6 @@ export default function App() {
   }
 
   function handleDevLogin() {
-    if (HAS_REMOTE_BACKEND && !remoteWorkspaceReady) {
-      setAuthError("회원정보를 불러오는 중입니다. 잠시 후 다시 로그인해주세요.");
-      return;
-    }
     const normalizedEmail = String(devLoginEmail ?? "").trim().toLowerCase();
     const currentWorkspace = workspaceRef.current;
     const currentPeople = Array.isArray(currentWorkspace.people) ? currentWorkspace.people : [];
@@ -4488,12 +4525,13 @@ export default function App() {
     };
   }, [authUser, effectiveLoginDomains]);
 
-  function syncAssignmentPendingEvidenceCount() {
-    const evidenceInputs = Array.from(
-      assignmentFormRef.current?.querySelectorAll('input[name="evidenceFiles"]') ?? [],
-    );
-    const nextCount = evidenceInputs.reduce((count, input) => count + (input.files?.length ?? 0), 0);
-    setAssignmentPendingEvidenceCount(nextCount);
+  function handleAssignmentEvidenceFileSelect(event) {
+    const nextFiles = Array.from(event.target.files ?? []).filter((file) => file.size > 0);
+    if (nextFiles.length === 0) {
+      return;
+    }
+    setAssignmentDroppedFiles((current) => [...current, ...nextFiles]);
+    event.target.value = "";
   }
 
   function handleAssignmentEvidenceDrop(event) {
@@ -4510,8 +4548,6 @@ export default function App() {
   }
 
   useEffect(() => {
-    setEvidenceInputCount(1);
-    setAssignmentPendingEvidenceCount(0);
     setAssignmentDroppedFiles([]);
     const nextEntry = getPreferredExecutionEntry(selectedControl);
     const preset = pendingAssignmentPresetRef.current;
@@ -4543,17 +4579,11 @@ export default function App() {
   }, [selectedControl, assignmentExecutionYear, assignmentExecutionPeriod]);
 
   useEffect(() => {
-    syncAssignmentPendingEvidenceCount();
-  }, [evidenceInputCount]);
-
-  useEffect(() => {
     setCompletedEditMode(false);
     setCompletedEditYear(selectedCompletedControl?.executionYear ?? "");
     setCompletedEditPeriod(selectedCompletedControl?.executionPeriod ?? "");
     setCompletedEditNote(selectedCompletedControl?.executionNote ?? "");
     setCompletedEditEvidenceFiles(Array.isArray(selectedCompletedControl?.evidenceFiles) ? selectedCompletedControl.evidenceFiles : []);
-    setCompletedEvidenceInputCount(1);
-    setCompletedPendingEvidenceCount(0);
     setCompletedDroppedFiles([]);
   }, [selectedCompletedControl?.completedExecutionKey]);
 
@@ -4564,7 +4594,7 @@ export default function App() {
     if (HAS_REMOTE_BACKEND && !remoteWorkspaceReady) {
       return;
     }
-    if (DATA_BACKEND === "local" || !GOOGLE_CLIENT_ID || !GOOGLE_DRIVE_FOLDER_ID) {
+    if (DATA_BACKEND === "local") {
       return;
     }
     const todayKey = getSeoulDateKey();
@@ -4600,6 +4630,68 @@ export default function App() {
   }, [selectedReviewControl?.reviewExecutionKey, selectedReviewControl?.reviewResult]);
 
   useEffect(() => {
+    if (memberUnitByEmail.size === 0 || controls.length === 0) {
+      return;
+    }
+
+    let hasChanges = false;
+    const nextControls = controls.map((control) => {
+      const fallbackExecutionUnit = normalizeUnitLabel(control.performDept ?? control.performer ?? control.ownerDept ?? "");
+      const fallbackReviewUnit = normalizeUnitLabel(control.reviewDept ?? control.reviewer ?? "");
+      const currentHistory = getControlExecutionHistory(control);
+      let controlChanged = false;
+
+      const nextHistory = currentHistory.map((entry) => {
+        const executionEmail = String(entry?.executionAuthorEmail ?? "").trim().toLowerCase();
+        const reviewEmail = String(entry?.reviewAuthorEmail ?? "").trim().toLowerCase();
+        const memberExecutionUnit = executionEmail ? memberUnitByEmail.get(executionEmail) ?? "" : "";
+        const memberReviewUnit = reviewEmail ? memberUnitByEmail.get(reviewEmail) ?? "" : "";
+        const currentExecutionUnit = normalizeUnitLabel(entry?.executionAuthorUnit ?? "");
+        const currentReviewUnit = normalizeUnitLabel(entry?.reviewAuthorUnit ?? "");
+
+        const shouldRepairExecutionUnit =
+          memberExecutionUnit
+          && executionEmail
+          && (!currentExecutionUnit || currentExecutionUnit === fallbackExecutionUnit);
+        const shouldRepairReviewUnit =
+          memberReviewUnit
+          && reviewEmail
+          && (!currentReviewUnit || currentReviewUnit === fallbackReviewUnit);
+
+        if (!shouldRepairExecutionUnit && !shouldRepairReviewUnit) {
+          return entry;
+        }
+
+        controlChanged = true;
+        return {
+          ...entry,
+          executionAuthorUnit: shouldRepairExecutionUnit ? memberExecutionUnit : entry.executionAuthorUnit,
+          reviewAuthorUnit: shouldRepairReviewUnit ? memberReviewUnit : entry.reviewAuthorUnit,
+        };
+      });
+
+      if (!controlChanged) {
+        return control;
+      }
+
+      hasChanges = true;
+      return mergeExecutionHistoryIntoControl(control, nextHistory);
+    });
+
+    if (!hasChanges) {
+      return;
+    }
+
+    commitWorkspace(
+      {
+        ...workspaceRef.current,
+        controls: nextControls,
+      },
+      { syncRemote: HAS_REMOTE_BACKEND },
+    );
+  }, [controls, memberUnitByEmail]);
+
+  useEffect(() => {
     if (!HAS_REMOTE_BACKEND) {
       return;
     }
@@ -4631,10 +4723,7 @@ export default function App() {
         if (!active || !remoteWorkspace || !Array.isArray(remoteWorkspace.controls)) {
           return;
         }
-        const nextWorkspace = normalizeRemoteWorkspace(remoteWorkspace, workspaceRef.current);
-        if (nextWorkspace.controls.length === 0) {
-          return;
-        }
+        const nextWorkspace = normalizeRemoteWorkspace(remoteWorkspace);
 
         setIntegrationStatus((current) => ({
           ...current,
@@ -4643,10 +4732,15 @@ export default function App() {
         commitWorkspace(nextWorkspace, { syncRemote: false });
       })
       .catch(() => {
+        if (!active) {
+          return;
+        }
+        commitWorkspace(createRemoteWorkspaceShell(), { syncRemote: false });
         setIntegrationStatus((current) => ({
           ...current,
           spreadsheet: "오류",
         }));
+        showCenterAlert("데이터베이스에 연결할 수 없습니다. 데이터는 DB에서만 불러오며, 연결이 복구될 때까지 화면에는 로컬 데이터가 표시되지 않습니다.");
       })
       .finally(() => {
         if (active) {
@@ -4699,6 +4793,47 @@ export default function App() {
     setCenterAlertMessage(String(message ?? ""));
   }
 
+  useEffect(() => {
+    if (!centerAlertMessage) {
+      return undefined;
+    }
+
+    const timerId = window.setTimeout(() => {
+      setCenterAlertMessage("");
+    }, 1800);
+
+    return () => window.clearTimeout(timerId);
+  }, [centerAlertMessage]);
+
+  useEffect(() => {
+    if (!executionSavePopupMessage) {
+      return undefined;
+    }
+
+    const timerId = window.setTimeout(() => {
+      setExecutionSavePopupMessage("");
+    }, 2200);
+
+    return () => window.clearTimeout(timerId);
+  }, [executionSavePopupMessage]);
+
+  useEffect(() => {
+    if (!memberSavePopupMessage) {
+      return undefined;
+    }
+
+    const timerId = window.setTimeout(() => {
+      setMemberSavePopupMessage("");
+    }, 2200);
+
+    return () => window.clearTimeout(timerId);
+  }, [memberSavePopupMessage]);
+
+  useEffect(() => {
+    setReviewDecisionDraft(normalizeReviewDecisionLabel(selectedReviewControl?.reviewResult || "양호"));
+    setReviewNoteDraft(String(selectedReviewControl?.note ?? "").trim());
+  }, [selectedReviewControl?.reviewExecutionKey, selectedReviewControl?.reviewResult, selectedReviewControl?.note]);
+
   function showCenterConfirm(message) {
     return new Promise((resolve) => {
       confirmResolverRef.current = resolve;
@@ -4741,7 +4876,7 @@ export default function App() {
     }
 
     const remoteWorkspace = await fetchRemoteWorkspaceByBackend();
-    const nextWorkspace = normalizeRemoteWorkspace(remoteWorkspace, workspaceRef.current);
+    const nextWorkspace = normalizeRemoteWorkspace(remoteWorkspace);
     commitWorkspace(nextWorkspace, { syncRemote: false });
     if (options.completedExecutionKey !== undefined) {
       setSelectedCompletedExecutionKey(options.completedExecutionKey ?? "");
@@ -4763,13 +4898,26 @@ export default function App() {
     return nextWorkspace;
   }
 
-  async function persistControlBundle(control, nextWorkflows, selection = {}) {
+  async function persistControlBundle(control, nextWorkflows, selection = {}, options = {}) {
     if (!HAS_REMOTE_BACKEND) {
       return true;
     }
 
+    const { skipReload = false } = options;
     await savePostgresControlBundle(control, nextWorkflows);
-    await reloadRemoteWorkspace(selection);
+    if (skipReload) {
+      setIntegrationStatus((current) => ({
+        ...current,
+        spreadsheet: "연결됨",
+      }));
+      return true;
+    }
+    reloadRemoteWorkspace(selection).catch(() => {
+      setIntegrationStatus((current) => ({
+        ...current,
+        spreadsheet: "오류",
+      }));
+    });
     return true;
   }
 
@@ -4854,28 +5002,12 @@ export default function App() {
     };
     const rows = reportControls.map((item) => `
       <tr>
-        <td>${escapeHtml(item.id)}</td>
         <td>${escapeHtml(item.title)}</td>
-        <td>${escapeHtml(item.process)}</td>
-        <td>${escapeHtml(item.performer)}</td>
-        <td>${escapeHtml(item.reviewer)}</td>
         <td>${escapeHtml(item.status)}</td>
         <td>${escapeHtml(item.reviewChecked)}</td>
-        <td class="execution-note execution-note-body">${toMultilineHtml(item.executionNote)}</td>
-        <td class="execution-note execution-review-note">${toMultilineHtml(item.reviewNote)}</td>
-        <td class="execution-evidence-cell">
-          <div class="execution-image-list">
-            ${item.evidenceFiles
-              .filter((file) => isImageEvidence(file) && Boolean(getEvidenceReportImageUrl(file)))
-              .map((file) => {
-                const primaryUrl = escapeHtml(getEvidenceReportImageUrl(file));
-                const fallbackUrl = escapeHtml(getEvidenceReportImageFallbackUrl(file));
-                return `<img src="${primaryUrl}" alt="${escapeHtml(file.name || "증적 이미지")}" class="execution-image" onerror="if(this.dataset.fallback && this.src!==this.dataset.fallback){this.src=this.dataset.fallback;return;}this.onerror=null;" data-fallback="${fallbackUrl}" />`;
-              })
-              .join("")}
-          </div>
-          ${item.evidenceFiles.filter((file) => isImageEvidence(file) && Boolean(getEvidenceReportImageUrl(file))).length === 0 ? '<div class="execution-empty">-</div>' : ""}
-        </td>
+        <td>${Array.isArray(item.evidenceFiles) && item.evidenceFiles.length > 0 ? `첨부 ${item.evidenceFiles.length}건` : "-"}</td>
+        <td>${escapeHtml(item.performer)}</td>
+        <td>${escapeHtml(item.reviewer)}</td>
       </tr>
     `).join("");
 
@@ -4904,13 +5036,6 @@ export default function App() {
       line-height: 1.2;
     }
     th { background: #f3f4f6; }
-    .execution-note { background: transparent; box-shadow: none; text-align: left; vertical-align: top; white-space: pre-line; line-height: 1.45; word-break: break-word; overflow-wrap: anywhere; }
-    .execution-note-body { min-width: 300px; }
-    .execution-review-note { min-width: 72px; max-width: 72px; width: 72px; text-align: center; }
-    .execution-evidence-cell { min-width: 220px; text-align: left; vertical-align: top; }
-    .execution-image-list { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 0; width: 100%; }
-    .execution-empty { width: 100%; text-align: left; color: #6b7280; }
-    .execution-image { display: block; width: 100%; min-height: 160px; max-height: 260px; object-fit: contain; border: 1px solid #d1d5db; background: #fff; }
   </style>
 </head>
 <body>
@@ -4925,10 +5050,10 @@ export default function App() {
   <table>
     <thead>
       <tr>
-        <th>ID</th><th>통제명</th><th>카테고리</th><th>수행자</th><th>검토자</th><th>상태</th><th>승인</th><th>수행 내역</th><th>검토 의견</th><th>증적</th>
+        <th>통제명</th><th>상태</th><th>승인</th><th>증적 여부</th><th>수행자</th><th>검토자</th>
       </tr>
     </thead>
-    <tbody>${rows || '<tr><td colspan="10">대상 통제가 없습니다.</td></tr>'}</tbody>
+    <tbody>${rows || '<tr><td colspan="6">대상 통제가 없습니다.</td></tr>'}</tbody>
   </table>
 </body>
 </html>`;
@@ -4945,6 +5070,16 @@ export default function App() {
     });
     if (!targetEntry) {
       return;
+    }
+
+    const targetFile = Array.isArray(targetEntry.evidenceFiles) ? targetEntry.evidenceFiles[fileIndex] : null;
+    if (targetFile?.storagePath) {
+      try {
+        await deleteEvidenceFileFromStorage(targetFile);
+      } catch (error) {
+        showCenterAlert(`증적 파일을 S3에서 삭제하지 못했습니다.\n[debug] ${String(error?.message ?? "unknown_error")}`);
+        return;
+      }
     }
 
     const nextEvidenceFiles = (targetEntry.evidenceFiles ?? []).filter((_, index) => index !== fileIndex);
@@ -5566,6 +5701,8 @@ export default function App() {
       role: existingIndex >= 0 ? people[existingIndex].role ?? sourcePerson.role ?? "both" : sourcePerson.role ?? "both",
       unit: draft.unit.trim() || "미지정",
       accessRole: normalizeAccessRole(draft.accessRole),
+      firstLoginAt: sourcePerson.firstLoginAt ?? sourcePerson.createdAt ?? sourcePerson.created_at ?? "",
+      lastLoginAt: sourcePerson.lastLoginAt ?? sourcePerson.updatedAt ?? sourcePerson.updated_at ?? "",
     };
 
     if (nextEntry.accessRole === "admin" && !isAllowedEmailBySet(nextEntry.email, loginDomainSet)) {
@@ -5620,6 +5757,8 @@ export default function App() {
             unit: nextEntry.unit,
             email: nextEntry.email,
             accessRole: nextEntry.accessRole,
+            firstLoginAt: nextEntry.firstLoginAt,
+            lastLoginAt: nextEntry.lastLoginAt,
           },
           created_at: sourcePerson.createdAt ?? sourcePerson.created_at ?? new Date().toISOString(),
           updated_at: new Date().toISOString(),
@@ -5717,6 +5856,8 @@ export default function App() {
         role: existingIndex >= 0 ? nextPeople[existingIndex].role ?? sourcePerson.role ?? "both" : sourcePerson.role ?? "both",
         unit: String(draft.unit ?? "").trim() || "미지정",
         accessRole: normalizeAccessRole(draft.accessRole),
+        firstLoginAt: sourcePerson.firstLoginAt ?? sourcePerson.createdAt ?? sourcePerson.created_at ?? "",
+        lastLoginAt: sourcePerson.lastLoginAt ?? sourcePerson.updatedAt ?? sourcePerson.updated_at ?? "",
       };
 
       if (nextEntry.accessRole === "admin" && !isAllowedEmailBySet(nextEntry.email, loginDomainSet)) {
@@ -5798,6 +5939,8 @@ export default function App() {
               unit: person.unit ?? "미지정",
               email: String(person.email ?? "").trim().toLowerCase(),
               accessRole: normalizeAccessRole(person.accessRole),
+              firstLoginAt: person.firstLoginAt ?? "",
+              lastLoginAt: person.lastLoginAt ?? "",
             },
             created_at: person.createdAt ?? person.created_at ?? new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -5977,16 +6120,13 @@ export default function App() {
 
     const formData = new FormData(event.currentTarget);
     const submitMode = "complete";
-    const formFiles = formData
-      .getAll("evidenceFiles")
-      .filter((value) => value instanceof File && value.size > 0);
-    const files = [...formFiles, ...assignmentDroppedFiles];
+    const files = [...assignmentDroppedFiles];
     const executionNote = formData.get("executionNote").toString().trim();
     const executionYear = formData.get("executionYear").toString().trim();
     const executionPeriod = formData.get("executionPeriod").toString().trim();
     const executionAuthorName = String(authUser?.name ?? "").trim();
     const executionAuthorEmail = normalizedAuthEmail;
-    const executionAuthorUnit = String(selectedControl.performDept ?? selectedControl.performer ?? selectedControl.ownerDept ?? "").trim();
+    const executionAuthorUnit = currentMemberUnitDisplay;
     const status = executionNote ? "점검 중" : "점검 예정";
     const currentExecutionEntry = getPreferredExecutionEntry(selectedControl, null, {
       executionYear,
@@ -6032,17 +6172,9 @@ export default function App() {
       } catch (error) {
         const code = String(error?.message ?? "");
         const normalized = code.toLowerCase();
-        let message = "증적 파일을 Google Drive에 저장하지 못했습니다. 다시 시도해주세요.";
-        if (normalized.includes("access_denied")) {
-          message = "Google OAuth 권한이 거부되어 업로드할 수 없습니다. 테스트 사용자 등록/앱 게시 상태를 확인하세요.";
-        } else if (normalized.includes("insufficientfilepermissions") || normalized.includes("file not found")) {
-          message = "Google Drive 폴더 접근 권한이 없습니다. 폴더 권한과 폴더 ID를 확인하세요.";
-        } else if (normalized.includes("google_drive_not_configured")) {
-          message = "Google Drive 설정이 누락되었습니다. `VITE_GOOGLE_CLIENT_ID`와 `VITE_GOOGLE_DRIVE_FOLDER_ID`를 확인하세요.";
-        } else if (normalized.includes("google_oauth_not_ready") || normalized.includes("google_oauth_script_load_failed")) {
-          message = "Google OAuth 스크립트를 불러오지 못했습니다. 페이지를 새로고침한 뒤 다시 시도하세요.";
-        } else if (normalized.includes("popup_closed_by_user")) {
-          message = "Google 권한 팝업이 닫혀 업로드가 취소되었습니다.";
+        let message = "증적 파일을 S3에 저장하지 못했습니다. 다시 시도해주세요.";
+        if (normalized.includes("s3_not_configured")) {
+          message = "S3 설정이 누락되었습니다. 서버의 S3 버킷/리전 설정을 확인하세요.";
         }
         const debugMessage = `${message}\n[debug] ${code || "unknown_error"}`;
         setIntegrationStatus((current) => ({
@@ -6050,7 +6182,7 @@ export default function App() {
           drive: "오류",
         }));
         showCenterAlert(debugMessage);
-        console.error("Google Drive upload failed:", error);
+        console.error("S3 upload failed:", error);
         return;
       }
     }
@@ -6060,7 +6192,7 @@ export default function App() {
       return;
     }
 
-    const nextExecutionId = createExecutionEntryKey(selectedControl.id, executionYear, executionPeriod);
+    const nextExecutionId = String(currentExecutionEntry?.executionId ?? "").trim() || createExecutionEntryId();
     const savedAt = new Date().toISOString();
 
     const nextWorkspace = {
@@ -6089,7 +6221,7 @@ export default function App() {
           reviewResult: "",
           reviewAuthorName: "",
           reviewAuthorEmail: "",
-          reviewAuthorUnit: String(control.reviewDept ?? control.reviewer ?? "").trim(),
+          reviewAuthorUnit: "",
           reviewDate: "",
           status,
           evidenceFiles: nextEvidenceFiles,
@@ -6158,24 +6290,19 @@ export default function App() {
     setAssignmentExecutionYear("");
     setAssignmentExecutionPeriod("");
     setAssignmentReviewChecked("미검토");
-    setEvidenceInputCount(1);
-    setAssignmentPendingEvidenceCount(0);
     setAssignmentDroppedFiles([]);
     setWorkbenchTab("controls-complete");
     setControlListPage(1);
     setSelectedCompletedExecutionKey(completedExecutionKey);
     setSelectedControlId(selectedControl.id);
-    setExecutionSavePopupMessage(
-      `수행 결과 등록이 완료되었습니다.${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}${
-        GOOGLE_DRIVE_FOLDER_ID ? `\nDrive Folder URL: ${getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)}` : ""
-      }`,
-    );
+    setExecutionSavePopupMessage(`수행 결과 등록이 완료되었습니다.${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`);
   }
 
   function handleRequestReviewFromCompleted() {
     if (!selectedCompletedControl) {
       return;
     }
+    const requestedExecutionKey = selectedCompletedControl.completedExecutionKey;
 
     const nextWorkspace = {
       ...workspace,
@@ -6194,6 +6321,7 @@ export default function App() {
                 note: "",
                 reviewAuthorName: "",
                 reviewAuthorEmail: "",
+                reviewAuthorUnit: "",
                 reviewDate: "",
                 status: deriveAssignmentStatus(entry.executionNote ?? "", "미검토"),
               }
@@ -6206,13 +6334,16 @@ export default function App() {
         });
       }),
     };
+    setOptimisticReviewExecutionKeys((current) =>
+      current.includes(requestedExecutionKey) ? current : [...current, requestedExecutionKey],
+    );
     const reviewRequestAlertContext = {
       systemUrl: buildAppNavigationUrl({
         currentView: "control-workbench",
         workbenchTab: "control-review",
         selectedControlId: selectedCompletedControl.id,
         selectedCompletedExecutionKey: "",
-        selectedReviewExecutionKey: selectedCompletedControl.completedExecutionKey,
+        selectedReviewExecutionKey: requestedExecutionKey,
       }),
     };
     if (HAS_REMOTE_BACKEND) {
@@ -6221,10 +6352,11 @@ export default function App() {
         showCenterAlert("검토 요청 대상 통제를 찾지 못했습니다.");
         return;
       }
+      commitWorkspace(nextWorkspace, { syncRemote: false });
       persistControlBundle(
         nextControl,
         workflows.filter((workflow) => workflow.controlId === selectedCompletedControl.id),
-        { controlId: selectedCompletedControl.id, reviewExecutionKey: selectedCompletedControl.completedExecutionKey },
+        { controlId: selectedCompletedControl.id, reviewExecutionKey: requestedExecutionKey },
       )
         .then(() => {
           writeAuditLog(
@@ -6243,6 +6375,7 @@ export default function App() {
           );
         })
         .catch(() => {
+          setOptimisticReviewExecutionKeys((current) => current.filter((key) => key !== requestedExecutionKey));
           showCenterAlert("검토 요청을 DB에 반영하지 못했습니다.");
         });
     } else {
@@ -6265,7 +6398,7 @@ export default function App() {
     setWorkbenchTab("control-review");
     setReviewUnitFilter("전체");
     setControlListPage(1);
-    setSelectedReviewExecutionKey(selectedCompletedControl.completedExecutionKey);
+    setSelectedReviewExecutionKey(requestedExecutionKey);
     setSelectedControlId(selectedCompletedControl.id);
   }
 
@@ -6277,8 +6410,6 @@ export default function App() {
     setCompletedEditPeriod(selectedCompletedControl.executionPeriod ?? "");
     setCompletedEditNote(selectedCompletedControl.executionNote ?? "");
     setCompletedEditEvidenceFiles(Array.isArray(selectedCompletedControl.evidenceFiles) ? selectedCompletedControl.evidenceFiles : []);
-    setCompletedEvidenceInputCount(1);
-    setCompletedPendingEvidenceCount(0);
     setCompletedDroppedFiles([]);
     setCompletedEditMode(true);
   }
@@ -6289,17 +6420,16 @@ export default function App() {
     setCompletedEditPeriod(selectedCompletedControl?.executionPeriod ?? "");
     setCompletedEditNote(selectedCompletedControl?.executionNote ?? "");
     setCompletedEditEvidenceFiles(Array.isArray(selectedCompletedControl?.evidenceFiles) ? selectedCompletedControl.evidenceFiles : []);
-    setCompletedEvidenceInputCount(1);
-    setCompletedPendingEvidenceCount(0);
     setCompletedDroppedFiles([]);
   }
 
-  function syncCompletedPendingEvidenceCount() {
-    const evidenceInputs = Array.from(
-      completedEditFormRef.current?.querySelectorAll('input[name="completedEvidenceFiles"]') ?? [],
-    );
-    const nextCount = evidenceInputs.reduce((count, input) => count + (input.files?.length ?? 0), 0);
-    setCompletedPendingEvidenceCount(nextCount);
+  function handleCompletedEvidenceFileSelect(event) {
+    const nextFiles = Array.from(event.target.files ?? []).filter((file) => file.size > 0);
+    if (nextFiles.length === 0) {
+      return;
+    }
+    setCompletedDroppedFiles((current) => [...current, ...nextFiles]);
+    event.target.value = "";
   }
 
   function handleCompletedEvidenceDrop(event) {
@@ -6347,8 +6477,6 @@ export default function App() {
     setPerformedEditReviewResult(selectedPerformedControl.reviewResult ?? "양호");
     setPerformedEditReviewNote(selectedPerformedControl.note ?? "");
     setPerformedEditEvidenceFiles(Array.isArray(selectedPerformedControl.evidenceFiles) ? selectedPerformedControl.evidenceFiles : []);
-    setPerformedEvidenceInputCount(1);
-    setPerformedPendingEvidenceCount(0);
     setPerformedDroppedFiles([]);
     setPerformedEditMode(true);
   }
@@ -6379,17 +6507,16 @@ export default function App() {
     setPerformedEditReviewResult(selectedPerformedControl?.reviewResult ?? "양호");
     setPerformedEditReviewNote(selectedPerformedControl?.note ?? "");
     setPerformedEditEvidenceFiles(Array.isArray(selectedPerformedControl?.evidenceFiles) ? selectedPerformedControl.evidenceFiles : []);
-    setPerformedEvidenceInputCount(1);
-    setPerformedPendingEvidenceCount(0);
     setPerformedDroppedFiles([]);
   }
 
-  function syncPerformedPendingEvidenceCount() {
-    const evidenceInputs = Array.from(
-      performedEditFormRef.current?.querySelectorAll('input[name="performedEvidenceFiles"]') ?? [],
-    );
-    const nextCount = evidenceInputs.reduce((count, input) => count + (input.files?.length ?? 0), 0);
-    setPerformedPendingEvidenceCount(nextCount);
+  function handlePerformedEvidenceFileSelect(event) {
+    const nextFiles = Array.from(event.target.files ?? []).filter((file) => file.size > 0);
+    if (nextFiles.length === 0) {
+      return;
+    }
+    setPerformedDroppedFiles((current) => [...current, ...nextFiles]);
+    event.target.value = "";
   }
 
   function handlePerformedEvidenceDrop(event) {
@@ -6416,13 +6543,11 @@ export default function App() {
     }
 
     const formData = new FormData(event.currentTarget);
-    const formFiles = formData
-      .getAll("completedEvidenceFiles")
-      .filter((value) => value instanceof File && value.size > 0);
-    const files = [...formFiles, ...completedDroppedFiles];
-    const executionYear = completedEditYear.trim();
-    const executionPeriod = completedEditPeriod.trim();
-    const executionNote = completedEditNote.trim();
+    const files = [...completedDroppedFiles];
+    const previouslySavedEvidenceFiles = Array.isArray(selectedCompletedControl?.evidenceFiles) ? selectedCompletedControl.evidenceFiles : [];
+    const executionYear = String(formData.get("completedExecutionYear") ?? completedEditYear).trim();
+    const executionPeriod = String(formData.get("completedExecutionPeriod") ?? completedEditPeriod).trim();
+    const executionNote = String(formData.get("completedExecutionNote") ?? completedEditNote).trim();
     let nextEvidenceFiles = [...completedEditEvidenceFiles];
     let uploaded = false;
 
@@ -6441,8 +6566,8 @@ export default function App() {
       return;
     }
 
-    if (files.length === 0) {
-      showCenterAlert("증적 파일을 1개 이상 새로 첨부해야 수정 저장할 수 있습니다.");
+    if (nextEvidenceFiles.length + files.length <= 0) {
+      showCenterAlert("증적 파일이 1개 이상 있어야 수정 저장할 수 있습니다.");
       return;
     }
 
@@ -6457,7 +6582,7 @@ export default function App() {
         }));
       } catch (error) {
         const code = String(error?.message ?? "");
-        showCenterAlert(`증적 파일을 Google Drive에 저장하지 못했습니다.\n[debug] ${code || "unknown_error"}`);
+        showCenterAlert(`증적 파일을 S3에 저장하지 못했습니다.\n[debug] ${code || "unknown_error"}`);
         return;
       }
     }
@@ -6467,7 +6592,7 @@ export default function App() {
       return;
     }
 
-    const nextExecutionKey = createExecutionEntryKey(selectedCompletedControl.id, executionYear, executionPeriod);
+    const nextExecutionKey = String(selectedCompletedControl.completedExecutionKey ?? "").trim() || createExecutionEntryId();
     const nextWorkspace = {
       ...workspace,
       controls: controls.map((control) => {
@@ -6496,7 +6621,7 @@ export default function App() {
             evidenceTextSnapshot: String(control.evidenceText ?? "").trim(),
             executionSubmitted: true,
             reviewRequested: false,
-            executionAuthorUnit: String(control.performDept ?? control.performer ?? control.ownerDept ?? "").trim(),
+            executionAuthorUnit: String(currentEntry?.executionAuthorUnit ?? "").trim() || currentMemberUnitDisplay,
             evidenceFiles: nextEvidenceFiles,
             evidenceStatus: nextEvidenceFiles.length > 0 && uploaded ? "준비 완료" : nextEvidenceFiles.length > 0 ? "수집 중" : "미수집",
             status: deriveAssignmentStatus(executionNote, currentEntry?.reviewChecked ?? "미검토"),
@@ -6511,20 +6636,29 @@ export default function App() {
         });
       }),
     };
+    setCompletedEditMode(false);
+    setCompletedEditYear(executionYear);
+    setCompletedEditPeriod(executionPeriod);
+    setCompletedEditNote(executionNote);
+    setCompletedEditEvidenceFiles(nextEvidenceFiles);
+    setCompletedDroppedFiles([]);
+    setSelectedCompletedExecutionKey(nextExecutionKey);
     if (HAS_REMOTE_BACKEND) {
       const nextControl = nextWorkspace.controls.find((control) => control.id === selectedCompletedControl.id);
       if (!nextControl) {
         showCenterAlert("수정 대상 통제를 찾지 못했습니다.");
         return;
       }
+      commitWorkspace(nextWorkspace, { syncRemote: false });
       try {
         await persistControlBundle(
           nextControl,
           workflows.filter((workflow) => workflow.controlId === selectedCompletedControl.id),
           { controlId: selectedCompletedControl.id, completedExecutionKey: nextExecutionKey },
         );
-      } catch {
-        showCenterAlert("등록 완료 수정을 DB에 반영하지 못했습니다.");
+      } catch (error) {
+        const errorText = String(error?.message ?? "").replace(/^postgres_backend_failed:/, "").trim();
+        showCenterAlert(`등록 완료 수정은 화면에 반영되었지만 DB 반영에 실패했습니다.${errorText ? `\n[debug] ${errorText}` : ""}`);
         return;
       }
       writeAuditLog(
@@ -6541,6 +6675,15 @@ export default function App() {
           },
         },
       );
+      const removedEvidenceFiles = previouslySavedEvidenceFiles.filter((file) => {
+        const storagePath = String(file?.storagePath ?? "").trim();
+        return storagePath && !nextEvidenceFiles.some((nextFile) => String(nextFile?.storagePath ?? "").trim() === storagePath);
+      });
+      if (removedEvidenceFiles.length > 0) {
+        deleteEvidenceFilesFromStorage(removedEvidenceFiles).catch((error) => {
+          showCenterAlert(`일부 증적 파일을 S3에서 삭제하지 못했습니다.\n[debug] ${String(error?.message ?? "unknown_error")}`);
+        });
+      }
     } else {
       writeAuditLog(
         "EXECUTION_SAVED",
@@ -6557,20 +6700,7 @@ export default function App() {
         },
       );
     }
-    setCompletedEditMode(false);
-    setCompletedEditYear(executionYear);
-    setCompletedEditPeriod(executionPeriod);
-    setCompletedEditNote(executionNote);
-    setCompletedEditEvidenceFiles(nextEvidenceFiles);
-    setCompletedEvidenceInputCount(1);
-    setCompletedPendingEvidenceCount(0);
-    setCompletedDroppedFiles([]);
-    setSelectedCompletedExecutionKey(nextExecutionKey);
-    setExecutionSavePopupMessage(
-      `등록 완료 내용이 수정되었습니다.${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}${
-        GOOGLE_DRIVE_FOLDER_ID ? `\nDrive Folder URL: ${getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)}` : ""
-      }`,
-    );
+    setExecutionSavePopupMessage(`등록 완료 내용이 수정되었습니다.${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`);
   }
 
   async function handlePerformedEditSubmit(event) {
@@ -6581,12 +6711,10 @@ export default function App() {
     }
 
     const formData = new FormData(event.currentTarget);
-    const formFiles = formData
-      .getAll("performedEvidenceFiles")
-      .filter((value) => value instanceof File && value.size > 0);
-    const files = [...formFiles, ...performedDroppedFiles];
-    const executionYear = performedEditYear.trim();
-    const executionPeriod = performedEditPeriod.trim();
+    const files = [...performedDroppedFiles];
+    const previouslySavedEvidenceFiles = Array.isArray(selectedPerformedControl?.evidenceFiles) ? selectedPerformedControl.evidenceFiles : [];
+    const executionYear = String(formData.get("performedExecutionYear") ?? performedEditYear).trim();
+    const executionPeriod = String(formData.get("performedExecutionPeriod") ?? performedEditPeriod).trim();
     const executionStatus = performedEditStatus.trim();
     const reviewChecked = performedEditReviewChecked.trim();
     const executionNote = performedEditNote.trim();
@@ -6619,12 +6747,12 @@ export default function App() {
         }));
       } catch (error) {
         const code = String(error?.message ?? "");
-        showCenterAlert(`증적 파일을 Google Drive에 저장하지 못했습니다.\n[debug] ${code || "unknown_error"}`);
+        showCenterAlert(`증적 파일을 S3에 저장하지 못했습니다.\n[debug] ${code || "unknown_error"}`);
         return;
       }
     }
 
-    const nextExecutionKey = createExecutionEntryKey(selectedPerformedControl.id, executionYear, executionPeriod);
+    const nextExecutionKey = String(selectedPerformedControl.performedExecutionKey ?? "").trim() || createExecutionEntryId();
     const savedAt = new Date().toISOString();
     const nextWorkspace = {
       ...workspace,
@@ -6712,6 +6840,15 @@ export default function App() {
           },
         },
       );
+      const removedEvidenceFiles = previouslySavedEvidenceFiles.filter((file) => {
+        const storagePath = String(file?.storagePath ?? "").trim();
+        return storagePath && !nextEvidenceFiles.some((nextFile) => String(nextFile?.storagePath ?? "").trim() === storagePath);
+      });
+      if (removedEvidenceFiles.length > 0) {
+        deleteEvidenceFilesFromStorage(removedEvidenceFiles).catch((error) => {
+          showCenterAlert(`일부 증적 파일을 S3에서 삭제하지 못했습니다.\n[debug] ${String(error?.message ?? "unknown_error")}`);
+        });
+      }
     } else {
       writeAuditLog(
         "EXECUTION_SAVED",
@@ -6737,15 +6874,9 @@ export default function App() {
     setPerformedEditReviewResult(reviewResult);
     setPerformedEditReviewNote(reviewNote);
     setPerformedEditEvidenceFiles(nextEvidenceFiles);
-    setPerformedEvidenceInputCount(1);
-    setPerformedPendingEvidenceCount(0);
     setPerformedDroppedFiles([]);
     setSelectedPerformedExecutionKey(nextExecutionKey);
-    setExecutionSavePopupMessage(
-      `수행 완료 내용이 수정되었습니다.${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}${
-        GOOGLE_DRIVE_FOLDER_ID ? `\nDrive Folder URL: ${getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)}` : ""
-      }`,
-    );
+    setExecutionSavePopupMessage(`수행 완료 내용이 수정되었습니다.${buildEvidenceUploadAuditSuffix(nextEvidenceFiles)}`);
   }
 
   function handleReviewSubmit(event) {
@@ -6755,6 +6886,10 @@ export default function App() {
       return;
     }
     if (!selectedReviewControl) return;
+    if (!canSubmitReviewDecision) {
+      showCenterAlert("검토 의견과 검토 결과를 모두 입력하세요.");
+      return;
+    }
 
     const formData = new FormData(event.currentTarget);
     const reviewDecision = normalizeReviewDecisionLabel(formData.get("reviewDecision").toString());
@@ -6762,9 +6897,11 @@ export default function App() {
     const reviewChecked = reviewDecision === "양호" ? "검토 완료" : "반려";
     const reviewAuthorName = String(authUser?.name ?? "").trim();
     const reviewAuthorEmail = normalizedAuthEmail;
-    const reviewAuthorUnit = String(selectedReviewControl.reviewDept ?? selectedReviewControl.reviewer ?? "").trim();
+    const reviewAuthorUnit = currentMemberUnitDisplay;
     const reviewDate = new Date().toISOString();
     const reviewer = reviewAuthorName || reviewAuthorEmail;
+    const reviewExecutionKey = selectedReviewControl.reviewExecutionKey;
+    const reviewControlId = selectedReviewControl.id;
 
     if (!reviewAuthorEmail) {
       showCenterAlert("로그인 계정 정보를 확인할 수 없어 검토를 저장할 수 없습니다.");
@@ -6815,28 +6952,60 @@ export default function App() {
       systemUrl: buildAppNavigationUrl({
         currentView: "control-workbench",
         workbenchTab: "performed-complete",
-        selectedControlId: selectedReviewControl.id,
+        selectedControlId: reviewControlId,
       }),
     };
+    if (reviewDecision !== "양호") {
+      setOptimisticReviewExecutionKeys((current) => current.filter((key) => key !== reviewExecutionKey));
+      setOptimisticPerformedExecutionKeys((current) => current.filter((key) => key !== reviewExecutionKey));
+      setOptimisticCompletedExecutionKeys((current) =>
+        current.includes(reviewExecutionKey) ? current : [...current, reviewExecutionKey],
+      );
+      setCurrentView("control-workbench");
+      setWorkbenchTab("controls-complete");
+      setControlListPage(1);
+      setSelectedCompletedExecutionKey(reviewExecutionKey);
+      setSelectedControlId(reviewControlId);
+    } else {
+      setOptimisticCompletedExecutionKeys((current) => current.filter((key) => key !== reviewExecutionKey));
+      setOptimisticReviewExecutionKeys((current) => current.filter((key) => key !== reviewExecutionKey));
+      setOptimisticPerformedExecutionKeys((current) =>
+        current.includes(reviewExecutionKey) ? current : [...current, reviewExecutionKey],
+      );
+      setCurrentView("control-workbench");
+      setWorkbenchTab("performed-complete");
+      setControlListPage(1);
+      setSelectedPerformedExecutionKey(reviewExecutionKey);
+      setSelectedControlId(reviewControlId);
+    }
     if (HAS_REMOTE_BACKEND) {
-      const nextControl = nextWorkspace.controls.find((control) => control.id === selectedReviewControl.id);
+      const nextControl = nextWorkspace.controls.find((control) => control.id === reviewControlId);
       if (!nextControl) {
         showCenterAlert("검토 대상 통제를 찾지 못했습니다.");
         return;
       }
+      commitWorkspace(nextWorkspace, { syncRemote: false });
       persistControlBundle(
         nextControl,
-        workflows.filter((workflow) => workflow.controlId === selectedReviewControl.id),
+        workflows.filter((workflow) => workflow.controlId === reviewControlId),
         reviewDecision === "양호"
-          ? { controlId: selectedReviewControl.id, performedExecutionKey: selectedReviewControl.reviewExecutionKey }
-          : { controlId: selectedReviewControl.id, completedExecutionKey: selectedReviewControl.reviewExecutionKey },
+          ? { controlId: reviewControlId, performedExecutionKey: reviewExecutionKey }
+          : { controlId: reviewControlId, completedExecutionKey: reviewExecutionKey },
       )
         .then(() => {
-          writeAuditLog("REVIEW_SAVED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 저장`);
+          setOptimisticReviewExecutionKeys((current) =>
+            current.filter((key) => key !== reviewExecutionKey),
+          );
+          if (reviewDecision === "양호") {
+            setOptimisticPerformedExecutionKeys((current) => current.filter((key) => key !== reviewExecutionKey));
+          } else {
+            setOptimisticCompletedExecutionKeys((current) => current.filter((key) => key !== reviewExecutionKey));
+          }
+          writeAuditLog("REVIEW_SAVED", reviewControlId, `${selectedReviewControl.title} 검토 저장`);
           if (reviewDecision === "양호") {
             writeAuditLog(
               "REVIEW_COMPLETED",
-              selectedReviewControl.id,
+              reviewControlId,
               `${selectedReviewControl.title} 검토 완료 · ${reviewer}`,
               null,
               null,
@@ -6844,10 +7013,27 @@ export default function App() {
             );
           }
         })
-        .catch(() => {
-          showCenterAlert("검토 결과를 DB에 반영하지 못했습니다.");
+        .catch((error) => {
+          setOptimisticReviewExecutionKeys((current) =>
+            current.filter((key) => key !== reviewExecutionKey),
+          );
+          if (reviewDecision !== "양호") {
+            setOptimisticCompletedExecutionKeys((current) => current.filter((key) => key !== reviewExecutionKey));
+          } else {
+            setOptimisticPerformedExecutionKeys((current) => current.filter((key) => key !== reviewExecutionKey));
+          }
+          const errorText = String(error?.message ?? "").replace(/^postgres_backend_failed:/, "").trim();
+          showCenterAlert(`검토 결과를 DB에 반영하지 못했습니다.${errorText ? `\n[debug] ${errorText}` : ""}`);
         });
     } else {
+      setOptimisticReviewExecutionKeys((current) =>
+        current.filter((key) => key !== reviewExecutionKey),
+      );
+      if (reviewDecision === "양호") {
+        setOptimisticPerformedExecutionKeys((current) => current.filter((key) => key !== reviewExecutionKey));
+      } else {
+        setOptimisticCompletedExecutionKeys((current) => current.filter((key) => key !== reviewExecutionKey));
+      }
       const loggedWorkspace = writeAuditLog("REVIEW_SAVED", selectedReviewControl.id, `${selectedReviewControl.title} 검토 저장`, nextWorkspace);
       if (reviewDecision === "양호") {
         writeAuditLog(
@@ -6859,13 +7045,6 @@ export default function App() {
           reviewCompletedAlertContext,
         );
       }
-    }
-    if (reviewDecision !== "양호") {
-      setCurrentView("control-workbench");
-      setWorkbenchTab("controls-complete");
-      setControlListPage(1);
-      setSelectedCompletedExecutionKey(selectedReviewControl.reviewExecutionKey);
-      setSelectedControlId(selectedReviewControl.id);
     }
     showCenterAlert("검토 결과가 저장되었습니다.");
   }
@@ -7028,20 +7207,6 @@ export default function App() {
           ) : null}
           {authError ? <p className="login-error">{authError}</p> : null}
           <p className="login-footnote">인가된 도메인 계정만 접근할 수 있습니다.</p>
-        </section>
-      </div>
-    );
-  }
-
-  if (isRemoteWorkspaceLoading) {
-    return (
-      <div className="login-shell">
-        <section className="login-card">
-          <div className="login-badge">itgc management system</div>
-          <div className="login-copy-block">
-            <h1>IT 통제(ITGC) 관리 시스템</h1>
-            <p className="login-copy">화면을 준비하는 중입니다.</p>
-          </div>
         </section>
       </div>
     );
@@ -7586,11 +7751,11 @@ export default function App() {
                   <div>
                     <h2>통제 목록</h2>
                   </div>
-                  <button className="secondary-button slim-button" type="button" onClick={startNewRegistration}>
+                  <button className="secondary-button slim-button registration-add-button" type="button" onClick={startNewRegistration}>
                     신규 추가
                   </button>
                 </div>
-                <div className="control-browser-list">
+                <div className="control-browser-list control-list-stack">
                   <div className="control-list">
                     {registrationPagedControls.map((control) => (
                       <button
@@ -7619,9 +7784,9 @@ export default function App() {
                       </button>
                     ))}
                   </div>
-                  {registrationTotalPages > 1 ? (
-                    <div className="pagination registration-pagination">
-                      {Array.from({ length: registrationTotalPages }, (_, index) => index + 1).map((page) => (
+                  <div className="pagination registration-pagination">
+                    {registrationTotalPages > 1
+                      ? Array.from({ length: registrationTotalPages }, (_, index) => index + 1).map((page) => (
                         <button
                           key={page}
                           type="button"
@@ -7630,9 +7795,9 @@ export default function App() {
                         >
                           {page}
                         </button>
-                      ))}
-                    </div>
-                  ) : null}
+                      ))
+                      : <span className="pagination-spacer" aria-hidden="true" />}
+                  </div>
                 </div>
               </article>
 
@@ -7892,7 +8057,7 @@ export default function App() {
                     </select>
                   </label>
                 </div>
-                <div className="control-browser-list">
+                <div className="control-browser-list control-list-stack">
                     <div className="control-list">
                     {registrationPagedControls.map((control) => (
                       <button
@@ -7924,9 +8089,9 @@ export default function App() {
                       </button>
                     ))}
                     </div>
-                    {registrationTotalPages > 1 ? (
-                      <div className="pagination registration-pagination">
-                        {Array.from({ length: registrationTotalPages }, (_, index) => index + 1).map((page) => (
+                    <div className="pagination registration-pagination">
+                      {registrationTotalPages > 1
+                        ? Array.from({ length: registrationTotalPages }, (_, index) => index + 1).map((page) => (
                           <button
                             key={page}
                             type="button"
@@ -7935,9 +8100,9 @@ export default function App() {
                           >
                             {page}
                           </button>
-                        ))}
-                      </div>
-                    ) : null}
+                        ))
+                        : <span className="pagination-spacer" aria-hidden="true" />}
+                    </div>
                 </div>
               </article>
 
@@ -7996,7 +8161,7 @@ export default function App() {
                         setControlListPage(1);
                       }}
                     >
-                      작성중 {controlExecutionDraftCount}건
+                      작성중{controlExecutionDraftCount > 0 ? ` ${controlExecutionDraftCount}건` : ""}
                     </button>
                     <label className="filter-label">
                       <select value={controlUnitFilter} onChange={(event) => { setControlUnitFilter(event.target.value); setControlListPage(1); }}>
@@ -8007,55 +8172,57 @@ export default function App() {
                     </label>
                   </div>
                 </div>
-                <div className="control-list">
-                  {limitedControls.map((control) => {
-                    const latestExecutionEntry = getPreferredExecutionEntry(control);
-                    const evidenceBadgeSource = latestExecutionEntry ?? control;
+                <div className="control-browser-list control-list-stack">
+                  <div className="control-list">
+                    {limitedControls.map((control) => {
+                      const latestExecutionEntry = getPreferredExecutionEntry(control);
+                      const evidenceBadgeSource = latestExecutionEntry ?? control;
 
-                    return (
-                      <button
-                        type="button"
-                        key={control.id}
-                        className={
-                          control.id === selectedControl?.id
-                            ? "registration-example-item registration-control-item control-operation-card active"
-                            : "registration-example-item registration-control-item control-operation-card"
-                        }
-                          onClick={() => {
-                            setSelectedControlId(control.id);
-                            writeAuditLog("EXECUTION_VIEWED", control.id, `${control.title} 운영 화면 조회`);
-                          }}
-                    >
-                        <div className="registration-example-head">
-                          <strong>{control.id}</strong>
-                          <div className="badge-row">
-                            <span className="status-badge unit-assignee-badge">
-                              수행: {resolveExecutionAuthorDisplay(control)}
-                            </span>
-                            <span className="status-badge unit-review-badge">
-                              검토: {resolveReviewDeptDisplay(control)}
-                            </span>
+                      return (
+                        <button
+                          type="button"
+                          key={control.id}
+                          className={
+                            control.id === selectedControl?.id
+                              ? "registration-example-item registration-control-item control-operation-card active"
+                              : "registration-example-item registration-control-item control-operation-card"
+                          }
+                            onClick={() => {
+                              setSelectedControlId(control.id);
+                              writeAuditLog("EXECUTION_VIEWED", control.id, `${control.title} 운영 화면 조회`);
+                            }}
+                      >
+                          <div className="registration-example-head">
+                            <strong>{control.id}</strong>
+                            <div className="badge-row">
+                              <span className="status-badge unit-assignee-badge">
+                                수행: {resolveExecutionAuthorDisplay(control)}
+                              </span>
+                              <span className="status-badge unit-review-badge">
+                                검토: {resolveReviewDeptDisplay(control)}
+                              </span>
+                            </div>
                           </div>
-                        </div>
-                        <AutoFitTitle>{control.title}</AutoFitTitle>
-                        <span className="control-item-subtext">
-                          {formatFrequencyLabel(control.frequency) || "-"}
-                        </span>
+                          <AutoFitTitle>{control.title}</AutoFitTitle>
+                          <span className="control-item-subtext">
+                            {formatExecutionCardSubtext(control)}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="pagination registration-pagination">
+                    {totalControlPages > 1 ? Array.from({ length: totalControlPages }, (_, index) => index + 1).map((page) => (
+                      <button
+                        key={page}
+                        type="button"
+                        className={page === currentControlPage ? "page-button active" : "page-button"}
+                        onClick={() => setControlListPage(page)}
+                      >
+                        {page}
                       </button>
-                    );
-                  })}
-                </div>
-                <div className="pagination">
-                  {Array.from({ length: totalControlPages }, (_, index) => index + 1).map((page) => (
-                    <button
-                      key={page}
-                      type="button"
-                      className={page === currentControlPage ? "page-button active" : "page-button"}
-                      onClick={() => setControlListPage(page)}
-                    >
-                      {page}
-                    </button>
-                  ))}
+                    )) : <span className="pagination-spacer" aria-hidden="true" />}
+                  </div>
                 </div>
               </article>
 
@@ -8169,44 +8336,15 @@ export default function App() {
                         <div className="evidence-upload-group execution-form-item">
                           <label>
                             <span className="evidence-upload-label">증적 파일 첨부</span>
-                            {GOOGLE_DRIVE_FOLDER_ID ? (
-                              <span className="field-help">
-                                업로드 대상 Drive Folder ID: {GOOGLE_DRIVE_FOLDER_ID}
-                                {" · "}
-                                <a href={getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)} target="_blank" rel="noreferrer">
-                                  폴더 열기
-                                </a>
-                              </span>
-                            ) : (
-                              <span className="field-help">Drive Folder ID가 설정되지 않았습니다.</span>
-                            )}
+                            <span className="field-help">첨부 파일은 서버를 통해 S3에 저장됩니다.</span>
                             <div className="evidence-input-stack">
-                              {Array.from({ length: evidenceInputCount }, (_, index) => (
-                                <div className="evidence-input-row" key={index}>
-                                  <input
-                                    className="file-input"
-                                    name="evidenceFiles"
-                                    type="file"
-                                    onChange={syncAssignmentPendingEvidenceCount}
-                                  />
-                                </div>
-                              ))}
-                              <span className="evidence-upload-actions">
-                                <button
-                                  className="secondary-button evidence-count-button"
-                                  type="button"
-                                  onClick={() => setEvidenceInputCount((count) => Math.max(1, count - 1))}
-                                >
-                                  -
-                                </button>
-                                <button
-                                  className="secondary-button evidence-count-button"
-                                  type="button"
-                                  onClick={() => setEvidenceInputCount((count) => Math.min(5, count + 1))}
-                                >
-                                  +
-                                </button>
-                              </span>
+                              <div className="evidence-input-row">
+                                <input
+                                  className="file-input"
+                                  type="file"
+                                  onChange={handleAssignmentEvidenceFileSelect}
+                                />
+                              </div>
                             </div>
                             <div
                               className="evidence-input-row"
@@ -8221,7 +8359,7 @@ export default function App() {
                           {assignmentDroppedFiles.length > 0 ? (
                             assignmentDroppedFiles.map((file, index) => (
                               <span className="evidence-file-chip-wrap" key={`${file.name}-${file.size}-${index}`}>
-                                <span className="system-chip evidence-file-chip">{file.name} (드롭됨)</span>
+                                <span className="system-chip evidence-file-chip">{file.name} (업로드 대기)</span>
                                 <button
                                   className="evidence-file-delete"
                                   type="button"
@@ -8240,7 +8378,7 @@ export default function App() {
                           <p className="field-help">현재는 업로드 URL 미설정 상태라 파일명이 먼저 저장됩니다.</p>
                         ) : null}
                         <div className="execution-form-item execution-form-action">
-                          <button className="primary-button" type="submit" disabled={!canSubmitAssignment}>등록 완료</button>
+                          <button className="primary-button" type="submit" disabled={!canSubmitAssignment}>등록</button>
                           {!canSubmitAssignment ? (
                             <p className="field-help" style={{ marginTop: "8px" }}>
                               {assignmentSubmitDisabledReason}
@@ -8264,46 +8402,46 @@ export default function App() {
                     <h2>등록 완료 목록</h2>
                   </div>
                 </div>
-                {completedPagedControls.length > 0 ? (
-                  <div className="control-list">
-                    {completedPagedControls.map((control) => (
-                      <button
-                        type="button"
-                        key={control.completedExecutionKey}
-                        className={
-                          control.completedExecutionKey === selectedCompletedControl?.completedExecutionKey
-                            ? "registration-example-item registration-control-item control-operation-card completed-operation-card active"
-                            : "registration-example-item registration-control-item control-operation-card completed-operation-card"
-                        }
-                        onClick={() => {
-                          setSelectedCompletedExecutionKey(control.completedExecutionKey);
-                          setSelectedControlId(control.id);
-                        }}
-                      >
-                        <div className="registration-example-head completed-example-head">
-                          <strong>{control.id}</strong>
-                          <div className="badge-row">
-                            <span className="status-badge unit-assignee-badge">
-                              수행: {resolveExecutionAuthorDisplay(control)}
-                            </span>
-                            <span className="status-badge unit-review-badge">
-                              검토: {resolveReviewDeptDisplay(control)}
-                            </span>
+                <div className="control-browser-list control-list-stack">
+                  {completedPagedControls.length > 0 ? (
+                    <div className="control-list">
+                      {completedPagedControls.map((control) => (
+                        <button
+                          type="button"
+                          key={control.completedExecutionKey}
+                          className={
+                            control.completedExecutionKey === selectedCompletedControl?.completedExecutionKey
+                              ? "registration-example-item registration-control-item control-operation-card completed-operation-card active"
+                              : "registration-example-item registration-control-item control-operation-card completed-operation-card"
+                          }
+                          onClick={() => {
+                            setSelectedCompletedExecutionKey(control.completedExecutionKey);
+                            setSelectedControlId(control.id);
+                          }}
+                        >
+                          <div className="registration-example-head completed-example-head">
+                            <strong>{control.id}</strong>
+                            <div className="badge-row">
+                              <span className="status-badge unit-assignee-badge">
+                                수행: {resolveExecutionAuthorDisplay(control)}
+                              </span>
+                              <span className="status-badge unit-review-badge">
+                                검토: {resolveReviewDeptDisplay(control)}
+                              </span>
+                            </div>
                           </div>
-                        </div>
-                        <AutoFitTitle>{control.title}</AutoFitTitle>
-                        <span className="control-item-subtext">
-                          {formatFrequencyLabel(control.frequency) || "-"}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="empty-text">등록 완료된 수행 결과가 없습니다.</p>
-                )}
-                {totalCompletedPages > 1 ? (
-                  <div className="pagination">
-                    {Array.from({ length: totalCompletedPages }, (_, index) => index + 1).map((page) => (
+                          <AutoFitTitle>{control.title}</AutoFitTitle>
+                          <span className="control-item-subtext">
+                            {formatExecutionCardSubtext(control)}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="empty-text">등록 완료된 수행 결과가 없습니다.</p>
+                  )}
+                  <div className="pagination registration-pagination">
+                    {totalCompletedPages > 1 ? Array.from({ length: totalCompletedPages }, (_, index) => index + 1).map((page) => (
                       <button
                         key={page}
                         type="button"
@@ -8312,9 +8450,9 @@ export default function App() {
                       >
                         {page}
                       </button>
-                    ))}
+                    )) : <span className="pagination-spacer" aria-hidden="true" />}
                   </div>
-                ) : null}
+                </div>
               </article>
 
               <div className="control-main review-tight-stack">
@@ -8326,16 +8464,11 @@ export default function App() {
                           <h2>등록 완료 상세</h2>
                         </div>
                         <div className="badge-row">
-                          <span className={`status-badge ${statusClass(selectedCompletedControl.status)}`}>{selectedCompletedControl.status}</span>
-                          <span className={`status-badge ${evidenceClass(selectedCompletedControl.evidenceStatus)}`}>{evidenceBadgeLabel(selectedCompletedControl, "review")}</span>
-                          {selectedCompletedControl.reviewRequested ? (
-                            <span className="status-badge pending-badge">검토 요청됨</span>
-                          ) : null}
                           <span className="status-badge unit-assignee-badge">
-                            수행: {resolveExecutionAuthorDisplay(selectedCompletedControl)}
+                            수행자: {`${String(selectedCompletedControl.executionAuthorName ?? "").trim() || String(selectedCompletedControl.executionAuthorEmail ?? "").trim() || "-"}(${String(selectedCompletedControl.executionAuthorUnit ?? selectedCompletedControl.performDept ?? selectedCompletedControl.performer ?? "-").trim() || "-"})`}
                           </span>
                           <span className="status-badge unit-assignee-badge">
-                            검토: {resolveReviewDeptDisplay(selectedCompletedControl)}
+                            검토 예정: {String(selectedCompletedControl.reviewDept ?? selectedCompletedControl.reviewer ?? selectedCompletedControl.reviewAuthorUnit ?? "-").trim() || "-"}
                           </span>
                         </div>
                       </div>
@@ -8445,44 +8578,15 @@ export default function App() {
                               <div className="evidence-upload-group execution-form-item">
                                 <label>
                                   <span className="evidence-upload-label">증적 파일 첨부</span>
-                                  {GOOGLE_DRIVE_FOLDER_ID ? (
-                                    <span className="field-help">
-                                      업로드 대상 Drive Folder ID: {GOOGLE_DRIVE_FOLDER_ID}
-                                      {" · "}
-                                      <a href={getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)} target="_blank" rel="noreferrer">
-                                        폴더 열기
-                                      </a>
-                                    </span>
-                                  ) : (
-                                    <span className="field-help">Drive Folder ID가 설정되지 않았습니다.</span>
-                                  )}
+                                  <span className="field-help">첨부 파일은 서버를 통해 S3에 저장됩니다.</span>
                                   <div className="evidence-input-stack">
-                                    {Array.from({ length: completedEvidenceInputCount }, (_, index) => (
-                                      <div className="evidence-input-row" key={index}>
-                                        <input
-                                          className="file-input"
-                                          name="completedEvidenceFiles"
-                                          type="file"
-                                          onChange={syncCompletedPendingEvidenceCount}
-                                        />
-                                      </div>
-                                    ))}
-                                    <span className="evidence-upload-actions">
-                                      <button
-                                        className="secondary-button evidence-count-button"
-                                        type="button"
-                                        onClick={() => setCompletedEvidenceInputCount((count) => Math.max(1, count - 1))}
-                                      >
-                                        -
-                                      </button>
-                                      <button
-                                        className="secondary-button evidence-count-button"
-                                        type="button"
-                                        onClick={() => setCompletedEvidenceInputCount((count) => Math.min(5, count + 1))}
-                                      >
-                                        +
-                                      </button>
-                                    </span>
+                                    <div className="evidence-input-row">
+                                      <input
+                                        className="file-input"
+                                        type="file"
+                                        onChange={handleCompletedEvidenceFileSelect}
+                                      />
+                                    </div>
                                   </div>
                                   <div
                                     className="evidence-input-row"
@@ -8524,7 +8628,7 @@ export default function App() {
                                     ))}
                                     {completedDroppedFiles.map((file, index) => (
                                       <span className="evidence-file-chip-wrap" key={`${file.name}-${file.size}-${index}`}>
-                                        <span className="system-chip evidence-file-chip">{file.name} (드롭됨)</span>
+                                        <span className="system-chip evidence-file-chip">{file.name} (업로드 대기)</span>
                                         <button
                                           className="evidence-file-delete"
                                           type="button"
@@ -8595,45 +8699,45 @@ export default function App() {
                     </label>
                   ) : null}
                 </div>
-                {reviewPagedControls.length > 0 ? (
-                  <div className="control-list">
-                    {reviewPagedControls.map((control) => (
-                      <button
-                        type="button"
-                        key={control.id}
-                        className={
-                          control.reviewExecutionKey === selectedReviewControl?.reviewExecutionKey
-                            ? "registration-example-item registration-control-item control-operation-card active"
-                            : "registration-example-item registration-control-item control-operation-card"
-                        }
-                        onClick={() => {
-                          setSelectedReviewExecutionKey(control.reviewExecutionKey);
-                          setSelectedControlId(control.id);
-                          writeAuditLog("REVIEW_VIEWED", control.id, `${control.title} 검토 화면 조회`);
-                        }}
-                      >
-                        <div className="registration-example-head">
-                          <strong>{control.id}</strong>
-                          <div className="badge-row">
-                            <span className="status-badge unit-assignee-badge">
-                              수행: {resolveExecutionAuthorDisplay(control)}
-                            </span>
-                            <span className="status-badge unit-review-badge">
-                              검토: {resolveReviewDeptDisplay(control)}
-                            </span>
+                <div className="control-browser-list control-list-stack">
+                  {reviewPagedControls.length > 0 ? (
+                    <div className="control-list">
+                      {reviewPagedControls.map((control) => (
+                        <button
+                          type="button"
+                          key={control.id}
+                          className={
+                            control.reviewExecutionKey === selectedReviewControl?.reviewExecutionKey
+                              ? "registration-example-item registration-control-item control-operation-card active"
+                              : "registration-example-item registration-control-item control-operation-card"
+                          }
+                          onClick={() => {
+                            setSelectedReviewExecutionKey(control.reviewExecutionKey);
+                            setSelectedControlId(control.id);
+                            writeAuditLog("REVIEW_VIEWED", control.id, `${control.title} 검토 화면 조회`);
+                          }}
+                        >
+                          <div className="registration-example-head">
+                            <strong>{control.id}</strong>
+                            <div className="badge-row">
+                              <span className="status-badge unit-assignee-badge">
+                                수행: {resolveExecutionAuthorDisplay(control)}
+                              </span>
+                              <span className="status-badge unit-review-badge">
+                                검토: {resolveReviewDeptDisplay(control)}
+                              </span>
+                            </div>
                           </div>
-                        </div>
-                        <AutoFitTitle>{control.title}</AutoFitTitle>
-                        <span className="control-item-subtext">
-                          {formatFrequencyLabel(control.frequency) || "-"}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-                {totalReviewPages > 1 ? (
-                  <div className="pagination">
-                    {Array.from({ length: totalReviewPages }, (_, index) => index + 1).map((page) => (
+                          <AutoFitTitle>{control.title}</AutoFitTitle>
+                          <span className="control-item-subtext">
+                            {formatExecutionCardSubtext(control)}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="pagination registration-pagination">
+                    {totalReviewPages > 1 ? Array.from({ length: totalReviewPages }, (_, index) => index + 1).map((page) => (
                       <button
                         key={page}
                         type="button"
@@ -8642,9 +8746,9 @@ export default function App() {
                       >
                         {page}
                       </button>
-                    ))}
+                    )) : <span className="pagination-spacer" aria-hidden="true" />}
                   </div>
-                ) : null}
+                </div>
               </article>
 
               <div className="control-main review-tight-stack">
@@ -8668,10 +8772,11 @@ export default function App() {
                         <h2>통제 운영 검토</h2>
                       </div>
                       <div className="badge-row">
-                        <span className={`status-badge ${statusClass(selectedReviewControl.status)}`}>{selectedReviewControl.status}</span>
-                        <span className={`status-badge ${evidenceClass(selectedReviewControl.evidenceStatus)}`}>{evidenceBadgeLabel(selectedReviewControl, "review")}</span>
                         <span className="status-badge unit-assignee-badge">
-                          수행: {resolveExecutionAuthorDisplay(selectedReviewControl)}
+                          수행자: {`${String(selectedReviewControl.executionAuthorName ?? "").trim() || String(selectedReviewControl.executionAuthorEmail ?? "").trim() || "-"}(${String(selectedReviewControl.executionAuthorUnit ?? selectedReviewControl.performDept ?? selectedReviewControl.performer ?? "-").trim() || "-"})`}
+                        </span>
+                        <span className="status-badge unit-review-badge">
+                          검토: {String(selectedReviewControl.reviewDept ?? selectedReviewControl.reviewer ?? "-").trim() || "-"}
                         </span>
                       </div>
                     </div>
@@ -8739,7 +8844,8 @@ export default function App() {
                         <textarea
                           name="reviewNote"
                           rows="4"
-                          defaultValue={selectedReviewControl.note ?? ""}
+                          value={reviewNoteDraft}
+                          onChange={(event) => setReviewNoteDraft(event.target.value)}
                           placeholder="개선 필요 사유 또는 검토 코멘트"
                         />
                       </label>
@@ -8757,7 +8863,7 @@ export default function App() {
                           </select>
                         </label>
                         <div className="review-complete-inline-action">
-                          <button className="primary-button review-complete-submit-button" type="submit" disabled={!canReviewControl}>검토 완료</button>
+                          <button className="primary-button review-complete-submit-button" type="submit" disabled={!canSubmitReviewDecision}>검토 완료</button>
                         </div>
                       </div>
                     </form>
@@ -8777,41 +8883,41 @@ export default function App() {
                     <h2>수행 완료</h2>
                   </div>
                 </div>
-                {performedPagedControls.length > 0 ? (
-                  <div className="control-list">
-                    {performedPagedControls.map((control) => (
-                      <button
-                        type="button"
-                        key={control.performedExecutionKey}
-                        className={
-                          control.performedExecutionKey === selectedPerformedControl?.performedExecutionKey
-                            ? "registration-example-item registration-control-item control-operation-card completed-operation-card active"
-                            : "registration-example-item registration-control-item control-operation-card completed-operation-card"
-                        }
-                        onClick={() => {
-                          setSelectedPerformedExecutionKey(control.performedExecutionKey);
-                          setSelectedControlId(control.id);
-                        }}
-                      >
-                        <div className="registration-example-head completed-example-head">
-                          <strong>{control.id}</strong>
-                          <div className="badge-row">
-                            <span className={`status-badge ${statusClass(control.status)}`}>{control.status}</span>
+                <div className="control-browser-list control-list-stack">
+                  {performedPagedControls.length > 0 ? (
+                    <div className="control-list">
+                      {performedPagedControls.map((control) => (
+                        <button
+                          type="button"
+                          key={control.performedExecutionKey}
+                          className={
+                            control.performedExecutionKey === selectedPerformedControl?.performedExecutionKey
+                              ? "registration-example-item registration-control-item control-operation-card completed-operation-card active"
+                              : "registration-example-item registration-control-item control-operation-card completed-operation-card"
+                          }
+                          onClick={() => {
+                            setSelectedPerformedExecutionKey(control.performedExecutionKey);
+                            setSelectedControlId(control.id);
+                          }}
+                        >
+                          <div className="registration-example-head completed-example-head">
+                            <strong>{control.id}</strong>
+                            <div className="badge-row">
+                              <span className={`status-badge ${statusClass(control.status)}`}>{control.status}</span>
+                            </div>
                           </div>
-                        </div>
-                        <AutoFitTitle>{control.title}</AutoFitTitle>
-                        <span className="control-item-subtext">
-                          {formatFrequencyLabel(control.frequency) || "-"}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="empty-text">검토 완료된 수행 이력이 없습니다.</p>
-                )}
-                {totalPerformedPages > 1 ? (
-                  <div className="pagination">
-                    {Array.from({ length: totalPerformedPages }, (_, index) => index + 1).map((page) => (
+                          <AutoFitTitle>{control.title}</AutoFitTitle>
+                          <span className="control-item-subtext">
+                            {formatFrequencyLabel(control.frequency) || "-"}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="empty-text">검토 완료된 수행 이력이 없습니다.</p>
+                  )}
+                  <div className="pagination registration-pagination">
+                    {totalPerformedPages > 1 ? Array.from({ length: totalPerformedPages }, (_, index) => index + 1).map((page) => (
                       <button
                         key={page}
                         type="button"
@@ -8820,9 +8926,9 @@ export default function App() {
                       >
                         {page}
                       </button>
-                    ))}
+                    )) : <span className="pagination-spacer" aria-hidden="true" />}
                   </div>
-                ) : null}
+                </div>
               </article>
 
               <div className="control-main review-tight-stack">
@@ -8834,13 +8940,11 @@ export default function App() {
                           <h2>수행 내역 상세</h2>
                         </div>
                         <div className="badge-row">
-                          <span className={`status-badge ${statusClass(selectedPerformedControl.status)}`}>{selectedPerformedControl.status}</span>
-                          <span className="status-badge normal-badge">{selectedPerformedControl.reviewChecked || "검토 완료"}</span>
                           <span className="status-badge unit-assignee-badge">
-                            수행: {`${String(selectedPerformedControl.executionAuthorName ?? "").trim() || String(selectedPerformedControl.executionAuthorEmail ?? "").trim() || "-"}(${String(selectedPerformedControl.executionAuthorUnit ?? selectedPerformedControl.performDept ?? selectedPerformedControl.performer ?? "-").trim() || "-"})`}
+                            수행자: {`${String(selectedPerformedControl.executionAuthorName ?? "").trim() || String(selectedPerformedControl.executionAuthorEmail ?? "").trim() || "-"}(${String(selectedPerformedControl.executionAuthorUnit ?? selectedPerformedControl.performDept ?? selectedPerformedControl.performer ?? "-").trim() || "-"})`}
                           </span>
                           <span className="status-badge unit-review-badge">
-                            검토: {`${String(selectedPerformedControl.reviewAuthorName ?? "").trim() || String(selectedPerformedControl.reviewAuthorEmail ?? "").trim() || "-"}(${String(selectedPerformedControl.reviewAuthorUnit ?? selectedPerformedControl.reviewDept ?? selectedPerformedControl.reviewer ?? "-").trim() || "-"})`}
+                            검토자: {`${String(selectedPerformedControl.reviewAuthorName ?? "").trim() || String(selectedPerformedControl.reviewAuthorEmail ?? "").trim() || String(selectedPerformedControl.reviewDept ?? selectedPerformedControl.reviewer ?? "-").trim() || "-"}(${String(selectedPerformedControl.reviewAuthorUnit ?? selectedPerformedControl.reviewDept ?? selectedPerformedControl.reviewer ?? "-").trim() || "-"})`}
                           </span>
                         </div>
                       </div>
@@ -9072,44 +9176,15 @@ export default function App() {
                               <div className="evidence-upload-group execution-form-item">
                                 <label>
                                   <span className="evidence-upload-label">증적 파일 첨부</span>
-                                  {GOOGLE_DRIVE_FOLDER_ID ? (
-                                    <span className="field-help">
-                                      업로드 대상 Drive Folder ID: {GOOGLE_DRIVE_FOLDER_ID}
-                                      {" · "}
-                                      <a href={getDriveFolderUrl(GOOGLE_DRIVE_FOLDER_ID)} target="_blank" rel="noreferrer">
-                                        폴더 열기
-                                      </a>
-                                    </span>
-                                  ) : (
-                                    <span className="field-help">Drive Folder ID가 설정되지 않았습니다.</span>
-                                  )}
+                                  <span className="field-help">첨부 파일은 서버를 통해 S3에 저장됩니다.</span>
                                   <div className="evidence-input-stack">
-                                    {Array.from({ length: performedEvidenceInputCount }, (_, index) => (
-                                      <div className="evidence-input-row" key={index}>
-                                        <input
-                                          className="file-input"
-                                          name="performedEvidenceFiles"
-                                          type="file"
-                                          onChange={syncPerformedPendingEvidenceCount}
-                                        />
-                                      </div>
-                                    ))}
-                                    <span className="evidence-upload-actions">
-                                      <button
-                                        className="secondary-button evidence-count-button"
-                                        type="button"
-                                        onClick={() => setPerformedEvidenceInputCount((count) => Math.max(1, count - 1))}
-                                      >
-                                        -
-                                      </button>
-                                      <button
-                                        className="secondary-button evidence-count-button"
-                                        type="button"
-                                        onClick={() => setPerformedEvidenceInputCount((count) => Math.min(5, count + 1))}
-                                      >
-                                        +
-                                      </button>
-                                    </span>
+                                    <div className="evidence-input-row">
+                                      <input
+                                        className="file-input"
+                                        type="file"
+                                        onChange={handlePerformedEvidenceFileSelect}
+                                      />
+                                    </div>
                                   </div>
                                   <div
                                     className="evidence-input-row"
@@ -9140,7 +9215,7 @@ export default function App() {
                                     ))}
                                     {performedDroppedFiles.map((file, index) => (
                                       <span className="evidence-file-chip-wrap" key={`${file.name}-${file.size}-${index}`}>
-                                        <span className="system-chip evidence-file-chip">{file.name} (드롭됨)</span>
+                                        <span className="system-chip evidence-file-chip">{file.name} (업로드 대기)</span>
                                         <button
                                           className="evidence-file-delete"
                                           type="button"
@@ -9238,36 +9313,22 @@ export default function App() {
                   <table className="member-table">
                     <thead>
                       <tr>
-                        <th>삭제</th>
                         <th>이름</th>
                         <th>이메일</th>
-                        <th>유닛</th>
+                        <th>최초 로그인</th>
+                        <th>최근 로그인</th>
                         <th>권한</th>
+                        <th>유닛</th>
+                        <th>삭제</th>
                       </tr>
                     </thead>
                     <tbody>
                       {sortedMemberDirectory.map((person) => (
                         <tr key={person.id}>
-                          <td>
-                            <input
-                              type="checkbox"
-                              checked={Boolean(memberDrafts[person.id]?.deleteChecked)}
-                              onChange={(event) => handleMemberDraftChange(person.id, "deleteChecked", event.target.checked)}
-                              disabled={!canManageMembers || !people.some((entry) => entry.id === person.id)}
-                              aria-label={`${person.name} 삭제 선택`}
-                            />
-                          </td>
                           <td>{person.name}</td>
                           <td>{person.email || "-"}</td>
-                          <td>
-                            <input
-                              type="text"
-                              value={memberDrafts[person.id]?.unit ?? person.unit ?? "미지정"}
-                              onChange={(event) => handleMemberDraftChange(person.id, "unit", event.target.value)}
-                              placeholder="유닛 입력"
-                              disabled={!canManageMembers}
-                            />
-                          </td>
+                          <td>{formatMemberLoginDateTime(person.firstLoginAt)}</td>
+                          <td>{formatMemberLoginDateTime(person.lastLoginAt)}</td>
                           <td>
                             <select
                               className={accessRoleClassName(memberDrafts[person.id]?.accessRole ?? person.accessRole ?? "viewer")}
@@ -9279,6 +9340,24 @@ export default function App() {
                               <option value="reviewer">reviewer</option>
                               <option value="viewer">viewer</option>
                             </select>
+                          </td>
+                          <td>
+                            <input
+                              type="text"
+                              value={memberDrafts[person.id]?.unit ?? person.unit ?? "미지정"}
+                              onChange={(event) => handleMemberDraftChange(person.id, "unit", event.target.value)}
+                              placeholder="유닛 입력"
+                              disabled={!canManageMembers}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={Boolean(memberDrafts[person.id]?.deleteChecked)}
+                              onChange={(event) => handleMemberDraftChange(person.id, "deleteChecked", event.target.checked)}
+                              disabled={!canManageMembers || !people.some((entry) => entry.id === person.id)}
+                              aria-label={`${person.name} 삭제 선택`}
+                            />
                           </td>
                         </tr>
                       ))}
@@ -9343,30 +9422,16 @@ export default function App() {
                       </button>
                     </div>
                   </div>
-                  <div className="report-action">
-                    <button className="primary-button" type="button" onClick={handleReportExport}>
-                      {reportFormat === "pdf" ? "PDF 출력" : "HTML 출력"}
-                    </button>
+                  <div className="report-toolbar-right">
+                    <div className="report-result-count" aria-live="polite">
+                      전체 <strong>{reportSummary.total}건</strong>
+                    </div>
+                    <div className="report-action">
+                      <button className="primary-button" type="button" onClick={handleReportExport}>
+                        {reportFormat === "pdf" ? "PDF 출력" : "HTML 출력"}
+                      </button>
+                    </div>
                   </div>
-                </div>
-
-                  <div className="report-summary-grid">
-                    <article className="report-summary-card">
-                      <span>전체</span>
-                      <strong>{reportSummary.total}건</strong>
-                    </article>
-                  <article className="report-summary-card">
-                    <span>완료</span>
-                    <strong>{reportSummary.completed}건</strong>
-                  </article>
-                  <article className="report-summary-card">
-                    <span>진행 중</span>
-                    <strong>{reportSummary.inProgress}건</strong>
-                  </article>
-                  <article className="report-summary-card">
-                    <span>예정</span>
-                    <strong>{reportSummary.scheduled}건</strong>
-                  </article>
                 </div>
 
                 <div className="table-wrap report-table-wrap">
@@ -9374,14 +9439,11 @@ export default function App() {
                     <thead>
                       <tr>
                         <th>통제명</th>
-                        <th>카테고리</th>
-                        <th>수행자</th>
-                        <th>검토자</th>
                         <th>상태</th>
                         <th>승인</th>
-                        <th>수행 내역</th>
-                        <th>검토 의견</th>
-                        <th>증적</th>
+                        <th>증적 여부</th>
+                        <th>수행자</th>
+                        <th>검토자</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -9389,45 +9451,16 @@ export default function App() {
                         reportControls.map((item) => (
                           <tr key={`${item.id}-${item.executionYear}-${item.executionPeriod}`}>
                             <td>{item.title}</td>
-                            <td>{item.process}</td>
-                            <td>{item.performer}</td>
-                            <td>{item.reviewer}</td>
                             <td>{item.status}</td>
                             <td>{item.reviewChecked}</td>
-                            <td className="report-execution-note report-execution-note-body">{preserveDisplayLineBreaks(item.executionNote) || "-"}</td>
-                            <td className="report-execution-note report-review-note">{preserveDisplayLineBreaks(item.reviewNote) || "-"}</td>
-                            <td className="report-evidence-cell">
-                              <div className="report-execution-image-list">
-                                {(item.evidenceFiles ?? [])
-                                  .filter((file) => isImageEvidence(file) && Boolean(getEvidenceReportImageUrl(file)))
-                                  .map((file, index) => (
-                                    <img
-                                      key={`${item.id}-report-evidence-${index}`}
-                                      src={getEvidenceReportImageUrl(file)}
-                                      alt={file.name || "증적 이미지"}
-                                      className="report-execution-image"
-                                      data-fallback-src={getEvidenceReportImageFallbackUrl(file)}
-                                      onError={(event) => {
-                                        const fallback = event.currentTarget.dataset.fallbackSrc;
-                                        if (fallback && event.currentTarget.src !== fallback) {
-                                          event.currentTarget.src = fallback;
-                                          return;
-                                        }
-                                        event.currentTarget.onerror = null;
-                                      }}
-                                      loading="lazy"
-                                    />
-                                  ))}
-                              </div>
-                              {((item.evidenceFiles ?? []).filter((file) => isImageEvidence(file) && Boolean(getEvidenceReportImageUrl(file))).length === 0) && (
-                                <div className="report-execution-empty">-</div>
-                              )}
-                            </td>
+                            <td>{(item.evidenceFiles ?? []).length > 0 ? `첨부 ${(item.evidenceFiles ?? []).length}건` : "-"}</td>
+                            <td>{item.performer}</td>
+                            <td>{item.reviewer}</td>
                           </tr>
                         ))
                       ) : (
                         <tr>
-                          <td colSpan="10">선택한 주기에 해당하는 수행 대상이 없습니다.</td>
+                          <td colSpan="6">선택한 주기에 해당하는 수행 대상이 없습니다.</td>
                         </tr>
                       )}
                     </tbody>
@@ -9471,7 +9504,7 @@ export default function App() {
                     </button>
                   </div>
                 </div>
-                {isImageEvidence(evidencePreviewFile) && !isDriveEvidence(evidencePreviewFile) && getEvidencePreviewUrl(evidencePreviewFile) ? (
+                {isImageEvidence(evidencePreviewFile) && getEvidencePreviewUrl(evidencePreviewFile) ? (
                   <div className="evidence-preview-body">
                     <img
                       className="evidence-preview-image-large"
@@ -9591,11 +9624,11 @@ export default function App() {
                         <thead>
                           <tr>
                             <th className="audit-col-time">시각</th>
-                            <th className="audit-col-user">사용자</th>
                             <th className="audit-col-action">액션</th>
-                            <th className="audit-col-ip">IP</th>
                             <th className="audit-col-target">대상</th>
+                            <th className="audit-col-user">사용자</th>
                             <th className="audit-col-detail">내용</th>
+                            <th className="audit-col-ip">IP</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -9609,20 +9642,20 @@ export default function App() {
                                 <td className="audit-col-time" data-label="시각">
                                   {String(log.createdAt ?? "-").slice(0, 16) || "-"}
                                 </td>
-                                <td className="audit-col-user" data-label="사용자">
-                                  {log.actorName || log.actorEmail || "-"}
-                                </td>
                                 <td className="audit-col-action" data-label="액션">
                                   {log.action ? `${log.action} · ${auditActionLabel(log.action)}` : "-"}
-                                </td>
-                                <td className="audit-col-ip" data-label="IP">
-                                  {log.ip || "-"}
                                 </td>
                                 <td className="audit-col-target" data-label="대상">
                                   {log.target || "-"}
                                 </td>
+                                <td className="audit-col-user" data-label="사용자">
+                                  {log.actorName || log.actorEmail || "-"}
+                                </td>
                                 <td className="audit-col-detail" data-label="내용">
                                   {log.detail || "-"}
+                                </td>
+                                <td className="audit-col-ip" data-label="IP">
+                                  {log.ip || "-"}
                                 </td>
                               </tr>
                             ))

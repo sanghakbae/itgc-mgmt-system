@@ -11,6 +11,8 @@
     "workspace:restore-backup": "node scripts/restore_workspace_backup_to_postgres.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.908.0",
+    "@aws-sdk/s3-request-presigner": "^3.908.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

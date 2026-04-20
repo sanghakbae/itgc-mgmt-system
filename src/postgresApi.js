@@ -5,7 +5,7 @@ export const ITGC_WORKFLOWS_TABLE = "itgc_workflows";
 export const ITGC_MEMBER_TABLE = "itgc_member_master";
 export const ITGC_AUDIT_TABLE = "itgc_audit_log";
 export const ITGC_CONFIG_TABLE = "itgc_app_config";
-export const ITGC_EVIDENCE_BUCKET = "itgc_evidence_files";
+export const ITGC_EVIDENCE_BUCKET = "itgcp-evidence-files";
 const DATA_BACKEND = (import.meta.env.VITE_DATA_BACKEND ?? "").trim().toLowerCase();
 const POSTGRES_API_BASE_URL = (import.meta.env.VITE_POSTGRES_API_BASE_URL ?? "").trim();
 const USE_POSTGRES_BACKEND = DATA_BACKEND === "postgres";
@@ -199,11 +199,6 @@ function createExecutionEntryKey(controlId, executionYear, executionPeriod) {
 function normalizeExecutionId(value, controlId, executionYear, executionPeriod) {
   const rawId = String(value ?? "").trim();
   const canonicalId = createExecutionEntryKey(controlId, executionYear, executionPeriod);
-  if (String(controlId ?? "").trim() && String(executionYear ?? "").trim() && String(executionPeriod ?? "").trim()) {
-    if (!rawId || rawId.startsWith("EXE-")) {
-      return canonicalId;
-    }
-  }
   return rawId || canonicalId;
 }
 
@@ -472,10 +467,10 @@ function mapControlToEvidenceRows(control, nowIso) {
       uploaded_at: file.uploadedAt ?? nowIso,
       uploaded_by: file.uploadedBy ?? uploader,
       file_note: file.note ?? null,
-      storage_bucket: ITGC_EVIDENCE_BUCKET,
+      storage_bucket: file.storageBucket ?? ITGC_EVIDENCE_BUCKET,
       storage_path: file.storagePath ?? null,
       storage_url: file.url ?? null,
-      provider: file.provider ?? (file.storagePath ? "postgres" : "google"),
+      provider: file.provider ?? (file.storagePath ? "s3" : "google"),
       evidence_payload: {
         ...file,
         executionId,
@@ -706,6 +701,7 @@ function buildWorkspaceFromRawRows({
       uploadedAt: row.uploaded_at,
       uploadedBy: row.uploaded_by,
       note: row.file_note,
+      storageBucket: row.storage_bucket,
       storagePath: row.storage_path,
       provider: row.provider,
     };
