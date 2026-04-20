@@ -2822,6 +2822,7 @@ export default function App() {
   const [queryTestRowCount, setQueryTestRowCount] = useState(0);
   const [queryTestLimitedTo, setQueryTestLimitedTo] = useState(100);
   const [queryTestExecutedSql, setQueryTestExecutedSql] = useState("");
+  const [queryTestElapsedMs, setQueryTestElapsedMs] = useState(null);
   const [queryTestLoading, setQueryTestLoading] = useState(false);
   const [queryTestError, setQueryTestError] = useState("");
   const [remoteAuditLogs, setRemoteAuditLogs] = useState([]);
@@ -2841,6 +2842,7 @@ export default function App() {
   const workspaceBackupInputRef = useRef(null);
   const pendingAssignmentPresetRef = useRef(null);
   const confirmResolverRef = useRef(null);
+  const postgresDatabaseInfoFetchedRef = useRef(false);
   const autoBackupInFlightRef = useRef(false);
   const deletedMemberEmailSet = useMemo(() => new Set(deletedMemberEmails), [deletedMemberEmails]);
   const effectiveLoginDomains = useMemo(() => {
@@ -3078,16 +3080,25 @@ export default function App() {
 
     setQueryTestLoading(true);
     setQueryTestError("");
+    setQueryTestElapsedMs(null);
+    const startedAt = performance.now();
     try {
       const result = await runPostgresQueryTest(sql);
       setQueryTestExecutedSql(sql);
       setQueryTestResult(Array.isArray(result.rows) ? result.rows : []);
       setQueryTestRowCount(Number(result.rowCount) || 0);
       setQueryTestLimitedTo(Number(result.limitedTo) || 100);
+      setQueryTestElapsedMs(Math.round(performance.now() - startedAt));
     } catch (error) {
       setQueryTestResult([]);
       setQueryTestRowCount(0);
-      setQueryTestError(error?.message || "query_test_failed");
+      const message = String(error?.message || "query_test_failed");
+      setQueryTestError(
+        message.startsWith("query_test_timeout:")
+          ? "쿼리 실행 시간이 제한을 초과했습니다. 조건을 좁히거나 limit을 낮춰 다시 실행하세요."
+          : message,
+      );
+      setQueryTestElapsedMs(Math.round(performance.now() - startedAt));
     } finally {
       setQueryTestLoading(false);
     }
@@ -3463,11 +3474,12 @@ export default function App() {
   }, [auditLogPage, auditLogQuery, currentView]);
 
   useEffect(() => {
-    if (currentView !== "audit" || auditSectionView !== "db") {
+    if (!HAS_REMOTE_BACKEND || postgresDatabaseInfoFetchedRef.current) {
       return;
     }
 
     let active = true;
+    postgresDatabaseInfoFetchedRef.current = true;
     setPostgresDatabaseInfoLoading(true);
     setPostgresDatabaseInfoError("");
     fetchPostgresDatabaseInfo()
@@ -3493,7 +3505,41 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [auditSectionView, currentView]);
+  }, []);
+
+  useEffect(() => {
+    if (currentView !== "audit" || auditSectionView !== "db" || postgresDatabaseInfo || postgresDatabaseInfoLoading) {
+      return;
+    }
+
+    let active = true;
+    setPostgresDatabaseInfoLoading(true);
+    setPostgresDatabaseInfoError("");
+    fetchPostgresDatabaseInfo()
+      .then((result) => {
+        if (!active) {
+          return;
+        }
+        postgresDatabaseInfoFetchedRef.current = true;
+        setPostgresDatabaseInfo(result);
+      })
+      .catch((error) => {
+        if (!active) {
+          return;
+        }
+        setPostgresDatabaseInfo(null);
+        setPostgresDatabaseInfoError(error?.message || "db_info_failed");
+      })
+      .finally(() => {
+        if (active) {
+          setPostgresDatabaseInfoLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [auditSectionView, currentView, postgresDatabaseInfo, postgresDatabaseInfoLoading]);
 
   useEffect(() => {
     if (!authUser?.email) {
@@ -9802,6 +9848,13 @@ export default function App() {
                         <div className="info-block audit-diagnostics-block">
                           <span>쿼리 실행 오류</span>
                           <strong style={{ whiteSpace: "pre-line" }}>{queryTestError}</strong>
+                        </div>
+                      ) : null}
+
+                      {queryTestElapsedMs !== null ? (
+                        <div className="info-block audit-diagnostics-block">
+                          <span>쿼리 소요 시간</span>
+                          <strong>{(queryTestElapsedMs / 1000).toFixed(2)}초</strong>
                         </div>
                       ) : null}
 

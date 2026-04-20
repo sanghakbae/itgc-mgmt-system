@@ -14,6 +14,7 @@ const LOGIN_DOMAIN_CONFIG_MEMBER_ID = "CFG-LOGIN-DOMAINS";
 const LOGIN_DOMAIN_CONFIG_KEY = "login_domains";
 const AUDIT_LOG_FETCH_LIMIT_MAX = 100;
 const QUERY_TEST_FETCH_LIMIT = 100;
+const QUERY_TEST_TIMEOUT_MS = Number(import.meta.env.VITE_QUERY_TEST_TIMEOUT_MS ?? 20000);
 
 async function fetchPostgresBackend(path, options = {}) {
   const requestUrl = POSTGRES_API_BASE_URL ? new URL(path, POSTGRES_API_BASE_URL) : path;
@@ -48,13 +49,29 @@ async function fetchPostgresDatabaseInfoRequest() {
 }
 
 async function fetchPostgresQueryTest(query) {
-  const payload = await fetchPostgresBackend("/api/query-test", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ query }),
-  });
+  const controller = new AbortController();
+  const timeoutMs = Number.isFinite(QUERY_TEST_TIMEOUT_MS) && QUERY_TEST_TIMEOUT_MS > 0
+    ? QUERY_TEST_TIMEOUT_MS
+    : 20000;
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  let payload;
+  try {
+    payload = await fetchPostgresBackend("/api/query-test", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`query_test_timeout:${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 
   return {
     rows: Array.isArray(payload?.rows) ? payload.rows : [],

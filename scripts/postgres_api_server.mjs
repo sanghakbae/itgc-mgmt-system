@@ -21,6 +21,7 @@ const STORAGE_PROVIDER = String(process.env.STORAGE_PROVIDER || "local").trim().
 const S3_REGION = process.env.S3_REGION || "ap-northeast-2";
 const S3_BUCKET = process.env.S3_BUCKET || "itgcp-evidence-files";
 const S3_PRESIGNED_URL_TTL_SECONDS = Number(process.env.S3_PRESIGNED_URL_TTL_SECONDS || 3600);
+const QUERY_TEST_TIMEOUT_MS = Number(process.env.QUERY_TEST_TIMEOUT_MS || 15000);
 const LOCAL_EVIDENCE_DIR = path.resolve(process.env.LOCAL_EVIDENCE_DIR || "uploads/evidence");
 const s3Client = S3_REGION && S3_BUCKET
   ? new S3Client({ region: S3_REGION })
@@ -475,7 +476,8 @@ function isReadOnlyQuery(query) {
   return !forbiddenPatterns.some((pattern) => pattern.test(normalized));
 }
 
-async function runPsqlJson(sql) {
+async function runPsqlJson(sql, options = {}) {
+  const timeoutMs = Number(options.timeoutMs ?? 0);
   const { stdout, stderr } = await execFileAsync(
     "psql",
     [
@@ -500,6 +502,8 @@ async function runPsqlJson(sql) {
         PGPASSWORD: PASSWORD,
       },
       maxBuffer: 10 * 1024 * 1024,
+      timeout: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined,
+      killSignal: "SIGTERM",
     },
   );
 
@@ -588,12 +592,16 @@ async function runQueryTest(query) {
     throw new Error("read_only_select_queries_only");
   }
 
+  const statementTimeoutMs = Number.isFinite(QUERY_TEST_TIMEOUT_MS) && QUERY_TEST_TIMEOUT_MS > 0
+    ? QUERY_TEST_TIMEOUT_MS
+    : 15000;
   const sql = `
     select coalesce(
       json_agg(to_jsonb(t)),
       '[]'::json
     )
-    from (
+    from (select set_config('statement_timeout', ${quoteLiteral(String(Math.max(1000, Math.floor(statementTimeoutMs))))}, true)) s
+    cross join lateral (
       select *
       from (
         ${query}
@@ -602,7 +610,16 @@ async function runQueryTest(query) {
     ) t;
   `;
 
-  const rows = await runPsqlJson(sql);
+  let rows;
+  try {
+    rows = await runPsqlJson(sql, { timeoutMs: statementTimeoutMs + 2000 });
+  } catch (error) {
+    const message = String(error?.stderr || error?.message || "").toLowerCase();
+    if (error?.killed || message.includes("statement timeout") || message.includes("canceling statement due to statement timeout")) {
+      throw new Error(`query_test_timeout:${statementTimeoutMs}ms`);
+    }
+    throw error;
+  }
   return Array.isArray(rows) ? rows : [];
 }
 
@@ -750,13 +767,12 @@ export async function handlePostgresApiRequest(req, res) {
     }
 
     if (url.pathname === "/api/workspace") {
-      const [controlRows, executionRows, rawEvidenceRows, workflowRows, memberRows, auditRows, configRows] = await Promise.all([
+      const [controlRows, executionRows, rawEvidenceRows, workflowRows, memberRows, configRows] = await Promise.all([
         getTableRows("itgc_control_master", "order by t.control_id asc"),
         getTableRows("itgc_control_execution", "order by t.last_updated_at desc nulls last, t.updated_at desc nulls last, t.execution_id asc"),
         getTableRows("itgc_evidence_files", "order by t.uploaded_at desc nulls last, t.updated_at desc nulls last, t.evidence_id asc"),
         getTableRows("itgc_workflows", "order by t.due_date asc nulls last, t.workflow_id asc"),
         getTableRows("itgc_member_master", "order by t.member_name asc nulls last, t.member_id asc"),
-        getTableRows("itgc_audit_log", "order by t.created_at_ts desc nulls last, t.log_id desc limit 3000"),
         getOptionalTableRows("itgc_app_config", "order by t.config_key asc"),
       ]);
       const evidenceRows = await enrichEvidenceRowsWithSignedUrls(rawEvidenceRows);
@@ -768,7 +784,7 @@ export async function handlePostgresApiRequest(req, res) {
         evidenceRows,
         workflowRows,
         memberRows,
-        auditRows,
+        auditRows: [],
         configRows,
       }));
       return;
