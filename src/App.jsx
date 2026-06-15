@@ -34,6 +34,7 @@ const LOGIN_DOMAIN_ERROR_MESSAGE = "허용된 도메인만 로그인할 수 있�
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
 const ALLOWED_DOMAIN_ENV = (import.meta.env.VITE_ALLOWED_DOMAIN ?? "").trim() || "gmail.com";
 const POSTGRES_API_BASE_URL = (import.meta.env.VITE_POSTGRES_API_BASE_URL ?? "").trim();
+const EVIDENCE_API_BASE_URL = (import.meta.env.VITE_EVIDENCE_API_BASE_URL ?? "").trim().replace(/\/+$/g, "");
 const GOOGLE_CHAT_WEBHOOK_URL = (import.meta.env.VITE_GOOGLE_CHAT_WEBHOOK_URL ?? "").trim();
 const GOOGLE_CHAT_ALERT_ACTIONS_ENV = (import.meta.env.VITE_GOOGLE_CHAT_ALERT_ACTIONS ?? "").trim();
 const GOOGLE_CHAT_DEDUP_MS_ENV = Number(import.meta.env.VITE_GOOGLE_CHAT_DEDUP_MS ?? 60000);
@@ -90,6 +91,17 @@ const DASHBOARD_DELAY_BUCKET_CONFIG = {
     ],
   },
 };
+
+function evidenceApiUrl(path, params = {}) {
+  const base = EVIDENCE_API_BASE_URL || (typeof window !== "undefined" ? window.location.origin : "");
+  const url = new URL(path, base);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value) !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  });
+  return EVIDENCE_API_BASE_URL ? url.toString() : `${url.pathname}${url.search}`;
+}
 
 const defaultData = {
   controls: [],
@@ -1454,7 +1466,7 @@ async function uploadEvidenceFiles(controlId, files) {
 
   const uploadedFiles = [];
   for (const file of files) {
-    const response = await fetch(`/api/evidence/upload?controlId=${encodeURIComponent(controlId)}`, {
+    const response = await fetch(evidenceApiUrl("/api/evidence/upload", { controlId }), {
       method: "POST",
       headers: {
         "Content-Type": file.type || "application/octet-stream",
@@ -1503,7 +1515,7 @@ async function deleteEvidenceFileFromStorage(file) {
     await deleteObject(storageRef(firebaseStorage, storagePath));
     return;
   }
-  const response = await fetch("/api/evidence/delete", {
+  const response = await fetch(evidenceApiUrl("/api/evidence/delete"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
