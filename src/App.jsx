@@ -32,7 +32,7 @@ const AUDIT_LOG_MAX_ITEMS = 3000;
 const AUDIT_LOG_PAGE_SIZE = 30;
 const LOGIN_DOMAIN_ERROR_MESSAGE = "허용된 도메인만 로그인할 수 있습니다.";
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
-const ALLOWED_DOMAIN_ENV = (import.meta.env.VITE_ALLOWED_DOMAIN ?? "").trim() || "muhayu.com";
+const ALLOWED_DOMAIN_ENV = (import.meta.env.VITE_ALLOWED_DOMAIN ?? "").trim() || "gmail.com";
 const POSTGRES_API_BASE_URL = (import.meta.env.VITE_POSTGRES_API_BASE_URL ?? "").trim();
 const GOOGLE_CHAT_WEBHOOK_URL = (import.meta.env.VITE_GOOGLE_CHAT_WEBHOOK_URL ?? "").trim();
 const GOOGLE_CHAT_ALERT_ACTIONS_ENV = (import.meta.env.VITE_GOOGLE_CHAT_ALERT_ACTIONS ?? "").trim();
@@ -51,7 +51,7 @@ const ALLOWED_EMAIL_DOMAINS = ALLOWED_DOMAIN_ENV
   .map((domain) => domain.trim().toLowerCase())
   .filter(Boolean);
 const DEV_LOCAL_LOGIN_ENABLED = Boolean(import.meta.env.DEV);
-const DEFAULT_DEV_LOGIN_EMAIL = `shbae@${ALLOWED_EMAIL_DOMAINS[0] ?? "muhayu.com"}`;
+const DEFAULT_DEV_LOGIN_EMAIL = `totoriverce@${ALLOWED_EMAIL_DOMAINS[0] ?? "gmail.com"}`;
 const DEFAULT_SECURITY_SETTINGS = {
   sessionTimeoutMinutes: 480,
 };
@@ -7675,7 +7675,7 @@ export default function App() {
                   type="email"
                   value={devLoginEmail}
                   onChange={(event) => setDevLoginEmail(event.target.value)}
-                  placeholder="muhayu.com 이메일"
+                  placeholder="gmail.com 이메일"
                 />
                 <button className="secondary-button" type="button" onClick={handleDevLogin}>
                   바로 로그인
@@ -10379,7 +10379,7 @@ export default function App() {
                         type="text"
                         value={loginDomainDraft}
                         onChange={(event) => setLoginDomainDraft(event.target.value)}
-                        placeholder="예: muhayu.com,example.com"
+                        placeholder="예: gmail.com,example.com"
                         disabled={!canManageMembers}
                       />
                     </label>
