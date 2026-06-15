@@ -1,3 +1,16 @@
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getDocs,
+  limit,
+  orderBy,
+  query,
+  setDoc,
+  writeBatch,
+} from "firebase/firestore";
+import { firebaseDb, isFirebaseConfigured } from "./firebaseClient";
+
 export const ITGC_CONTROL_MASTER_TABLE = "itgc_control_master";
 export const ITGC_CONTROL_EXECUTION_TABLE = "itgc_control_execution";
 export const ITGC_EVIDENCE_TABLE = "itgc_evidence_files";
@@ -9,6 +22,8 @@ export const ITGC_EVIDENCE_BUCKET = "itgcp-evidence-files";
 const DATA_BACKEND = (import.meta.env.VITE_DATA_BACKEND ?? "").trim().toLowerCase();
 const POSTGRES_API_BASE_URL = (import.meta.env.VITE_POSTGRES_API_BASE_URL ?? "").trim();
 const USE_POSTGRES_BACKEND = DATA_BACKEND === "postgres";
+const USE_FIREBASE_BACKEND = DATA_BACKEND === "firebase";
+const FIREBASE_COLLECTION_PREFIX = (import.meta.env.VITE_FIREBASE_COLLECTION_PREFIX ?? "itgc").trim();
 const AUDIT_LOG_MAX_ITEMS = 3000;
 const LOGIN_DOMAIN_CONFIG_MEMBER_ID = "CFG-LOGIN-DOMAINS";
 const LOGIN_DOMAIN_CONFIG_KEY = "login_domains";
@@ -48,6 +63,143 @@ async function fetchPostgresBackend(path, options = {}) {
   }
 
   return payload;
+}
+
+function requireFirebaseBackend() {
+  if (!USE_FIREBASE_BACKEND) {
+    throw new Error("firebase_backend_required");
+  }
+  if (!isFirebaseConfigured || !firebaseDb) {
+    throw new Error("firebase_backend_unconfigured");
+  }
+}
+
+function firebaseCollectionName(tableName) {
+  return FIREBASE_COLLECTION_PREFIX ? `${FIREBASE_COLLECTION_PREFIX}_${tableName}` : tableName;
+}
+
+function getFirebaseCollection(tableName) {
+  requireFirebaseBackend();
+  return collection(firebaseDb, firebaseCollectionName(tableName));
+}
+
+function docIdFromRow(tableName, row) {
+  if (tableName === ITGC_CONTROL_MASTER_TABLE) {
+    return row.control_id;
+  }
+  if (tableName === ITGC_CONTROL_EXECUTION_TABLE) {
+    return row.execution_id;
+  }
+  if (tableName === ITGC_EVIDENCE_TABLE) {
+    return row.evidence_id;
+  }
+  if (tableName === ITGC_WORKFLOWS_TABLE) {
+    return row.workflow_id;
+  }
+  if (tableName === ITGC_MEMBER_TABLE) {
+    return row.member_id;
+  }
+  if (tableName === ITGC_AUDIT_TABLE) {
+    return row.log_id;
+  }
+  if (tableName === ITGC_CONFIG_TABLE) {
+    return row.config_key;
+  }
+  return row.id;
+}
+
+function sanitizeFirestoreValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeFirestoreValue(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entryValue]) => entryValue !== undefined)
+        .map(([key, entryValue]) => [key, sanitizeFirestoreValue(entryValue)]),
+    );
+  }
+  return value === undefined ? null : value;
+}
+
+async function setFirebaseRows(tableName, rows) {
+  requireFirebaseBackend();
+  const safeRows = Array.isArray(rows) ? rows : [];
+  for (let index = 0; index < safeRows.length; index += 450) {
+    const batch = writeBatch(firebaseDb);
+    for (const row of safeRows.slice(index, index + 450)) {
+      const id = String(docIdFromRow(tableName, row) ?? "").trim();
+      if (!id) {
+        continue;
+      }
+      batch.set(doc(firebaseDb, firebaseCollectionName(tableName), id), sanitizeFirestoreValue(row), { merge: true });
+    }
+    await batch.commit();
+  }
+}
+
+async function deleteFirebaseRows(tableName, predicate = () => true) {
+  requireFirebaseBackend();
+  const snapshot = await getDocs(getFirebaseCollection(tableName));
+  const refs = [];
+  snapshot.forEach((item) => {
+    const row = item.data();
+    if (predicate(row)) {
+      refs.push(item.ref);
+    }
+  });
+  for (let index = 0; index < refs.length; index += 450) {
+    const batch = writeBatch(firebaseDb);
+    refs.slice(index, index + 450).forEach((ref) => batch.delete(ref));
+    await batch.commit();
+  }
+}
+
+async function getFirebaseRows(tableName, options = {}) {
+  requireFirebaseBackend();
+  const clauses = [];
+  if (Array.isArray(options.orderBy)) {
+    options.orderBy.forEach(([field, direction]) => clauses.push(orderBy(field, direction)));
+  }
+  if (options.limit) {
+    clauses.push(limit(options.limit));
+  }
+  const snapshot = await getDocs(
+    clauses.length > 0
+      ? query(getFirebaseCollection(tableName), ...clauses)
+      : getFirebaseCollection(tableName),
+  );
+  return snapshot.docs.map((item) => ({ ...item.data() }));
+}
+
+async function getFirebaseWorkspaceRows() {
+  const [
+    controlRows,
+    executionRows,
+    evidenceRows,
+    workflowRows,
+    memberRows,
+    auditRows,
+    configRows,
+  ] = await Promise.all([
+    getFirebaseRows(ITGC_CONTROL_MASTER_TABLE),
+    getFirebaseRows(ITGC_CONTROL_EXECUTION_TABLE),
+    getFirebaseRows(ITGC_EVIDENCE_TABLE),
+    getFirebaseRows(ITGC_WORKFLOWS_TABLE),
+    getFirebaseRows(ITGC_MEMBER_TABLE),
+    getFirebaseRows(ITGC_AUDIT_TABLE, { orderBy: [["created_at_ts", "desc"]] }),
+    getFirebaseRows(ITGC_CONFIG_TABLE),
+  ]);
+
+  return {
+    controlRows,
+    executionRows,
+    evidenceRows,
+    workflowRows,
+    memberRows,
+    auditRows,
+    configRows,
+  };
 }
 
 async function fetchPostgresDatabaseInfoRequest() {
@@ -720,6 +872,16 @@ async function protectExecutionRowsFromBlankOverwrite(rows) {
 }
 
 export async function fetchPostgresIntegrationStatus() {
+  if (USE_FIREBASE_BACKEND) {
+    requireFirebaseBackend();
+    return {
+      spreadsheet: false,
+      drive: false,
+      firebase: true,
+      auth: true,
+      firestore: true,
+    };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1009,6 +1171,9 @@ function buildWorkspaceFromRawRows({
 }
 
 export async function fetchPostgresWorkspace() {
+  if (USE_FIREBASE_BACKEND) {
+    return buildWorkspaceFromRawRows(await getFirebaseWorkspaceRows());
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1018,6 +1183,43 @@ export async function fetchPostgresWorkspace() {
 }
 
 export async function fetchPostgresAuditLogsPage(options = {}) {
+  if (USE_FIREBASE_BACKEND) {
+    const page = Math.max(1, Number(options.page) || 1);
+    const pageSize = Math.min(AUDIT_LOG_FETCH_LIMIT_MAX, Math.max(1, Number(options.pageSize) || 30));
+    const queryText = String(options.query ?? "").trim().toLowerCase();
+    const rows = await getFirebaseRows(ITGC_AUDIT_TABLE, { orderBy: [["created_at_ts", "desc"]] });
+    const logs = rows
+      .map((row) => {
+        const payload = typeof row.audit_payload === "object" && row.audit_payload ? row.audit_payload : {};
+        return {
+          ...payload,
+          id: row.log_id,
+          action: row.action,
+          target: row.target,
+          detail: row.detail,
+          actorName: row.actor_name,
+          actorEmail: row.actor_email,
+          ip: row.ip,
+          createdAt: row.created_at,
+          createdAtTs: row.created_at_ts,
+        };
+      })
+      .filter((log) => {
+        if (!queryText) {
+          return true;
+        }
+        return [log.action, log.target, log.detail, log.actorName, log.actorEmail]
+          .some((value) => String(value ?? "").toLowerCase().includes(queryText));
+      });
+    const totalCount = logs.length;
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const startIndex = (page - 1) * pageSize;
+    return {
+      logs: logs.slice(startIndex, startIndex + pageSize),
+      totalCount,
+      totalPages,
+    };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1058,6 +1260,17 @@ export async function fetchPostgresAuditLogsPage(options = {}) {
 }
 
 export async function fetchPostgresDatabaseInfo() {
+  if (USE_FIREBASE_BACKEND) {
+    requireFirebaseBackend();
+    return {
+      source: "firebase",
+      host: "firestore.googleapis.com",
+      port: 443,
+      database: import.meta.env.VITE_FIREBASE_PROJECT_ID ?? "미설정",
+      user: "Firebase Auth",
+      passwordSet: true,
+    };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1066,6 +1279,23 @@ export async function fetchPostgresDatabaseInfo() {
 }
 
 export async function runPostgresQueryTest(query) {
+  if (USE_FIREBASE_BACKEND) {
+    const lowerQuery = String(query ?? "").toLowerCase();
+    const tableName = [
+      ITGC_CONTROL_MASTER_TABLE,
+      ITGC_CONTROL_EXECUTION_TABLE,
+      ITGC_EVIDENCE_TABLE,
+      ITGC_WORKFLOWS_TABLE,
+      ITGC_MEMBER_TABLE,
+      ITGC_AUDIT_TABLE,
+    ].find((candidate) => lowerQuery.includes(candidate)) ?? ITGC_CONTROL_MASTER_TABLE;
+    const rows = await getFirebaseRows(tableName, { limit: QUERY_TEST_FETCH_LIMIT });
+    return {
+      rows,
+      rowCount: rows.length,
+      limitedTo: QUERY_TEST_FETCH_LIMIT,
+    };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1074,6 +1304,61 @@ export async function runPostgresQueryTest(query) {
 }
 
 export async function syncPostgresWorkspace(workspace) {
+  if (USE_FIREBASE_BACKEND) {
+    const nowIso = new Date().toISOString();
+    const controls = Array.isArray(workspace.controls) ? workspace.controls : [];
+    const workflows = Array.isArray(workspace.workflows) ? workspace.workflows : [];
+    const controlRows = controls.map((control, index) => mapControlToMasterRow(control, index, nowIso));
+    const executionRows = await protectExecutionRowsFromBlankOverwrite(
+      controls.flatMap((control) => mapControlToExecutionRows(control, nowIso)),
+    );
+    const evidenceRows = controls.flatMap((control) => mapControlToEvidenceRows(control, nowIso));
+    const workflowRows = workflows.map((workflow) => mapWorkflowToRow(workflow, nowIso));
+    const loginDomains = normalizeDomainList(workspace.loginDomains);
+    const securitySettings = normalizeSecuritySettings(workspace.securitySettings);
+    const memberRows = [
+      ...((Array.isArray(workspace.people) ? workspace.people : []).filter((member) => String(member?.id ?? "").startsWith("MBR-"))),
+      mapLoginDomainConfigRow(loginDomains, nowIso),
+      mapSecuritySettingsConfigRow(securitySettings, nowIso),
+    ].map((member) => ({
+      member_id: member.id ?? member.member_id ?? "",
+      member_name: member.name ?? member.member_name ?? "",
+      email: member.email ?? "",
+      role: member.role ?? "",
+      team: member.team ?? "",
+      unit: member.unit ?? "",
+      access_role: member.accessRole ?? member.access_role ?? "viewer",
+      active_yn: member.activeYn ?? member.active_yn ?? "Y",
+      member_payload: member.memberPayload ?? member.member_payload ?? member,
+      created_at: member.createdAt ?? member.created_at ?? nowIso,
+      updated_at: member.updatedAt ?? member.updated_at ?? nowIso,
+    }));
+    const auditRows = Array.isArray(workspace.auditLogs)
+      ? workspace.auditLogs.slice(0, AUDIT_LOG_MAX_ITEMS).map((log) => mapAuditToRow(log, nowIso))
+      : [];
+
+    await Promise.all([
+      deleteFirebaseRows(ITGC_CONTROL_MASTER_TABLE),
+      deleteFirebaseRows(ITGC_CONTROL_EXECUTION_TABLE),
+      deleteFirebaseRows(ITGC_EVIDENCE_TABLE),
+      deleteFirebaseRows(ITGC_WORKFLOWS_TABLE),
+      deleteFirebaseRows(ITGC_MEMBER_TABLE),
+      deleteFirebaseRows(ITGC_AUDIT_TABLE),
+    ]);
+    await Promise.all([
+      setFirebaseRows(ITGC_CONTROL_MASTER_TABLE, controlRows),
+      setFirebaseRows(ITGC_CONTROL_EXECUTION_TABLE, executionRows),
+      setFirebaseRows(ITGC_EVIDENCE_TABLE, evidenceRows),
+      setFirebaseRows(ITGC_WORKFLOWS_TABLE, workflowRows),
+      setFirebaseRows(ITGC_MEMBER_TABLE, memberRows),
+      setFirebaseRows(ITGC_AUDIT_TABLE, auditRows),
+      setFirebaseRows(ITGC_CONFIG_TABLE, [
+        mapLoginDomainConfigToConfigRow(loginDomains, nowIso),
+        { config_key: SECURITY_SETTINGS_CONFIG_KEY, config_value: { securitySettings }, updated_at: nowIso },
+      ]),
+    ]);
+    return { ok: true, source: "firebase" };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1130,6 +1415,19 @@ export async function syncPostgresWorkspace(workspace) {
 }
 
 export async function savePostgresControlBundle(control, workflows = []) {
+  if (USE_FIREBASE_BACKEND) {
+    const nowIso = new Date().toISOString();
+    await deleteFirebaseRows(ITGC_CONTROL_EXECUTION_TABLE, (row) => row.control_id === control.id);
+    await deleteFirebaseRows(ITGC_EVIDENCE_TABLE, (row) => row.control_id === control.id);
+    await setFirebaseRows(ITGC_CONTROL_MASTER_TABLE, [mapControlToMasterRow(control, 0, nowIso)]);
+    await setFirebaseRows(
+      ITGC_CONTROL_EXECUTION_TABLE,
+      await protectExecutionRowsFromBlankOverwrite(mapControlToExecutionRows(control, nowIso)),
+    );
+    await setFirebaseRows(ITGC_EVIDENCE_TABLE, mapControlToEvidenceRows(control, nowIso));
+    await setFirebaseRows(ITGC_WORKFLOWS_TABLE, (Array.isArray(workflows) ? workflows : []).map((workflow) => mapWorkflowToRow(workflow, nowIso)));
+    return { ok: true, source: "firebase" };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1162,6 +1460,11 @@ export async function savePostgresControlBundle(control, workflows = []) {
 }
 
 export async function appendPostgresAuditLog(log) {
+  if (USE_FIREBASE_BACKEND) {
+    const nowIso = new Date().toISOString();
+    await setFirebaseRows(ITGC_AUDIT_TABLE, [mapAuditToRow(log, nowIso)]);
+    return { ok: true, source: "firebase" };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1180,6 +1483,11 @@ export async function appendPostgresAuditLog(log) {
 }
 
 export async function deletePostgresMember(memberId) {
+  if (USE_FIREBASE_BACKEND) {
+    requireFirebaseBackend();
+    await deleteDoc(doc(firebaseDb, firebaseCollectionName(ITGC_MEMBER_TABLE), String(memberId)));
+    return { ok: true, source: "firebase" };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1195,6 +1503,24 @@ export async function deletePostgresMember(memberId) {
 }
 
 export async function upsertPostgresMember(member) {
+  if (USE_FIREBASE_BACKEND) {
+    const nowIso = new Date().toISOString();
+    const row = {
+      member_id: member.id ?? member.member_id ?? "",
+      member_name: member.name ?? member.member_name ?? "",
+      email: member.email ?? "",
+      role: member.role ?? "",
+      team: member.team ?? "",
+      unit: member.unit ?? "",
+      access_role: member.accessRole ?? member.access_role ?? "viewer",
+      active_yn: member.activeYn ?? member.active_yn ?? "Y",
+      member_payload: member.memberPayload ?? member.member_payload ?? member,
+      created_at: member.createdAt ?? member.created_at ?? nowIso,
+      updated_at: member.updatedAt ?? member.updated_at ?? nowIso,
+    };
+    await setFirebaseRows(ITGC_MEMBER_TABLE, [row]);
+    return { ok: true, source: "firebase" };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1210,6 +1536,29 @@ export async function upsertPostgresMember(member) {
 }
 
 export async function savePostgresSecuritySettings({ loginDomains, securitySettings }) {
+  if (USE_FIREBASE_BACKEND) {
+    const nowIso = new Date().toISOString();
+    const normalizedLoginDomains = normalizeDomainList(loginDomains);
+    const normalizedSecuritySettings = normalizeSecuritySettings(securitySettings);
+    await setFirebaseRows(ITGC_MEMBER_TABLE, [
+      mapLoginDomainConfigRow(normalizedLoginDomains, nowIso),
+      mapSecuritySettingsConfigRow(normalizedSecuritySettings, nowIso),
+    ]);
+    await setFirebaseRows(ITGC_CONFIG_TABLE, [
+      mapLoginDomainConfigToConfigRow(normalizedLoginDomains, nowIso),
+      {
+        config_key: SECURITY_SETTINGS_CONFIG_KEY,
+        config_value: { securitySettings: normalizedSecuritySettings },
+        updated_at: nowIso,
+      },
+    ]);
+    return {
+      ok: true,
+      source: "firebase",
+      loginDomains: normalizedLoginDomains,
+      securitySettings: normalizedSecuritySettings,
+    };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1225,6 +1574,11 @@ export async function savePostgresSecuritySettings({ loginDomains, securitySetti
 }
 
 export async function upsertPostgresControl(control) {
+  if (USE_FIREBASE_BACKEND) {
+    const nowIso = new Date().toISOString();
+    await setFirebaseRows(ITGC_CONTROL_MASTER_TABLE, [mapControlToMasterRow(control, 0, nowIso)]);
+    return { ok: true, source: "firebase" };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1240,6 +1594,16 @@ export async function upsertPostgresControl(control) {
 }
 
 export async function deletePostgresControl(controlId) {
+  if (USE_FIREBASE_BACKEND) {
+    requireFirebaseBackend();
+    await deleteDoc(doc(firebaseDb, firebaseCollectionName(ITGC_CONTROL_MASTER_TABLE), String(controlId)));
+    await Promise.all([
+      deleteFirebaseRows(ITGC_CONTROL_EXECUTION_TABLE, (row) => row.control_id === controlId),
+      deleteFirebaseRows(ITGC_EVIDENCE_TABLE, (row) => row.control_id === controlId),
+      deleteFirebaseRows(ITGC_WORKFLOWS_TABLE, (row) => row.control_id === controlId),
+    ]);
+    return { ok: true, source: "firebase" };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }
@@ -1255,6 +1619,12 @@ export async function deletePostgresControl(controlId) {
 }
 
 export async function deletePostgresExecution(executionId) {
+  if (USE_FIREBASE_BACKEND) {
+    requireFirebaseBackend();
+    await deleteDoc(doc(firebaseDb, firebaseCollectionName(ITGC_CONTROL_EXECUTION_TABLE), String(executionId)));
+    await deleteFirebaseRows(ITGC_EVIDENCE_TABLE, (row) => row.execution_id === executionId);
+    return { ok: true, source: "firebase" };
+  }
   if (!USE_POSTGRES_BACKEND) {
     throw new Error("postgres_backend_required");
   }

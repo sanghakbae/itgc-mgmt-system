@@ -35,7 +35,7 @@ const serverEnv = {
   POSTGRES_DB: process.env.POSTGRES_DB || dotEnv.POSTGRES_DB || "itgc",
   POSTGRES_USER: process.env.POSTGRES_USER || dotEnv.POSTGRES_USER || "shbae",
   POSTGRES_PASSWORD: process.env.POSTGRES_PASSWORD || process.env.PGPASSWORD || dotEnv.POSTGRES_PASSWORD || "",
-  VITE_DATA_BACKEND: "postgres",
+  VITE_DATA_BACKEND: process.env.VITE_DATA_BACKEND || dotEnv.VITE_DATA_BACKEND || "postgres",
   VITE_POSTGRES_API_BASE_URL: process.env.VITE_POSTGRES_API_BASE_URL || dotEnv.VITE_POSTGRES_API_BASE_URL || "",
   VITE_HOST: process.env.VITE_HOST || dotEnv.VITE_HOST || "127.0.0.1",
   VITE_PORT: process.env.VITE_PORT || dotEnv.VITE_PORT || "5180",

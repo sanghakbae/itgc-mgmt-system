@@ -20,12 +20,24 @@ const LISTEN_HOST = process.env.POSTGRES_API_HOST || "0.0.0.0";
 const STORAGE_PROVIDER = String(process.env.STORAGE_PROVIDER || "local").trim().toLowerCase() || "local";
 const S3_REGION = process.env.S3_REGION || "ap-northeast-2";
 const S3_BUCKET = process.env.S3_BUCKET || "itgcp-evidence-files";
+const R2_ACCOUNT_ID = String(process.env.R2_ACCOUNT_ID || "").trim();
+const S3_ENDPOINT = String(
+  process.env.S3_ENDPOINT
+    || process.env.R2_ENDPOINT
+    || (R2_ACCOUNT_ID ? `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : ""),
+).trim();
+const S3_FORCE_PATH_STYLE = String(process.env.S3_FORCE_PATH_STYLE || (STORAGE_PROVIDER === "r2" ? "true" : "")).trim().toLowerCase() === "true";
 const S3_PRESIGNED_URL_TTL_SECONDS = Number(process.env.S3_PRESIGNED_URL_TTL_SECONDS || 3600);
+const HAS_EXPLICIT_S3_CREDENTIALS = Boolean(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
 const QUERY_TEST_TIMEOUT_MS = Number(process.env.QUERY_TEST_TIMEOUT_MS || 15000);
 const LOCAL_EVIDENCE_DIR = path.resolve(process.env.LOCAL_EVIDENCE_DIR || "uploads/evidence");
 const PROTECTED_MEMBER_IDS = new Set(["CFG-LOGIN-DOMAINS", "CFG-SECURITY-SETTINGS"]);
 const s3Client = S3_REGION && S3_BUCKET
-  ? new S3Client({ region: S3_REGION })
+  ? new S3Client({
+      region: S3_REGION,
+      endpoint: S3_ENDPOINT || undefined,
+      forcePathStyle: S3_FORCE_PATH_STYLE,
+    })
   : null;
 
 const TABLE_ORDER = [
@@ -209,6 +221,9 @@ function ensureS3Configured() {
   if (!s3Client || !S3_BUCKET) {
     throw new Error("s3_not_configured");
   }
+  if (STORAGE_PROVIDER === "r2" && !HAS_EXPLICIT_S3_CREDENTIALS) {
+    throw new Error("r2_credentials_not_configured");
+  }
 }
 
 function ensureLocalStorageConfigured() {
@@ -270,7 +285,7 @@ async function uploadEvidenceToS3({ body, controlId, executionId, executionYear,
     storageBucket: S3_BUCKET,
     storagePath,
     url,
-    provider: "s3",
+    provider: STORAGE_PROVIDER === "r2" ? "r2" : "s3",
   };
 }
 
@@ -296,7 +311,7 @@ async function uploadEvidenceToLocal({ body, controlId, executionId, executionYe
 }
 
 async function uploadEvidenceByProvider(params) {
-  if (STORAGE_PROVIDER === "s3") {
+  if (STORAGE_PROVIDER === "s3" || STORAGE_PROVIDER === "r2") {
     return uploadEvidenceToS3(params);
   }
   return uploadEvidenceToLocal(params);
@@ -311,7 +326,7 @@ async function enrichEvidenceRowsWithSignedUrls(rows) {
     }
 
     try {
-      const signedUrl = row?.provider === "s3"
+      const signedUrl = row?.provider === "s3" || row?.provider === "r2"
         ? await createPresignedEvidenceUrl(storagePath, fileName, "inline")
         : `/api/evidence/file?storagePath=${encodeURIComponent(storagePath)}&fileName=${encodeURIComponent(fileName || path.basename(storagePath))}`;
       return {
@@ -723,7 +738,11 @@ export async function handlePostgresApiRequest(req, res) {
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify({
         spreadsheet: true,
-        drive: STORAGE_PROVIDER === "s3" ? Boolean(s3Client && S3_BUCKET) : true,
+        drive: STORAGE_PROVIDER === "r2"
+          ? Boolean(s3Client && S3_BUCKET && HAS_EXPLICIT_S3_CREDENTIALS)
+          : STORAGE_PROVIDER === "s3"
+            ? Boolean(s3Client && S3_BUCKET)
+            : true,
         storage: true,
         storageProvider: STORAGE_PROVIDER,
       }));
@@ -813,7 +832,7 @@ export async function handlePostgresApiRequest(req, res) {
         throw new Error("invalid_storage_path");
       }
 
-      const signedUrl = STORAGE_PROVIDER === "s3"
+      const signedUrl = STORAGE_PROVIDER === "s3" || STORAGE_PROVIDER === "r2"
         ? await createPresignedEvidenceUrl(
           storagePath,
           fileName,
@@ -832,7 +851,7 @@ export async function handlePostgresApiRequest(req, res) {
       if (!storagePath) {
         throw new Error("invalid_storage_path");
       }
-      if (STORAGE_PROVIDER === "s3") {
+      if (STORAGE_PROVIDER === "s3" || STORAGE_PROVIDER === "r2") {
         ensureS3Configured();
         await s3Client.send(new DeleteObjectCommand({
           Bucket: S3_BUCKET,

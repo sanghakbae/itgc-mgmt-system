@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { signInWithPopup, signOut } from "firebase/auth";
+import { deleteObject, getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import {
   appendPostgresAuditLog,
   fetchPostgresIntegrationStatus,
@@ -15,6 +17,7 @@ import {
   upsertPostgresControl,
   upsertPostgresMember,
 } from "./postgresApi";
+import { firebaseAuth, firebaseStorage, googleProvider, isFirebaseConfigured } from "./firebaseClient";
 
 const STORAGE_KEY = "itgc-workspace-v8";
 const REGISTRATION_DRAFT_KEY = "itgc-registration-draft-v1";
@@ -38,6 +41,7 @@ const GOOGLE_CHAT_DEDUP_WINDOW_MS = Number.isFinite(GOOGLE_CHAT_DEDUP_MS_ENV) &&
   ? GOOGLE_CHAT_DEDUP_MS_ENV
   : 60000;
 const DATA_BACKEND_ENV = (import.meta.env.VITE_DATA_BACKEND ?? "").trim().toLowerCase();
+const EVIDENCE_STORAGE_PROVIDER = (import.meta.env.VITE_EVIDENCE_STORAGE_PROVIDER ?? "").trim().toLowerCase();
 const IS_LOCAL_RUNTIME =
   Boolean(import.meta.env.DEV)
   || (typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname));
@@ -55,6 +59,9 @@ const LOGIN_DOMAIN_CONFIG_MEMBER_ID = "CFG-LOGIN-DOMAINS";
 const SECURITY_SETTINGS_CONFIG_MEMBER_ID = "CFG-SECURITY-SETTINGS";
 
 const DATA_BACKEND = (() => {
+  if (DATA_BACKEND_ENV === "firebase") {
+    return "firebase";
+  }
   if (DATA_BACKEND_ENV === "postgres") {
     return "postgres";
   }
@@ -1412,6 +1419,39 @@ async function uploadEvidenceFiles(controlId, files) {
     };
   }
 
+  if (DATA_BACKEND === "firebase" && EVIDENCE_STORAGE_PROVIDER === "firebase") {
+    if (!firebaseStorage) {
+      throw new Error("firebase_storage_unconfigured");
+    }
+    const uploadedFiles = [];
+    for (const file of files) {
+      const evidenceId = `EVD-${controlId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const safeName = String(file.name || "evidence").replace(/[^a-zA-Z0-9._-]/g, "_");
+      const storagePath = `evidence/${encodeURIComponent(String(controlId))}/${evidenceId}-${safeName}`;
+      const fileRef = storageRef(firebaseStorage, storagePath);
+      const snapshot = await uploadBytes(fileRef, file, {
+        contentType: file.type || "application/octet-stream",
+      });
+      const url = await getDownloadURL(snapshot.ref);
+      uploadedFiles.push({
+        evidenceId,
+        name: file.name,
+        mimeType: file.type || "application/octet-stream",
+        size: file.size,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: "",
+        url,
+        storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET ?? "",
+        storagePath,
+        provider: "firebase",
+      });
+    }
+    return {
+      uploaded: true,
+      files: uploadedFiles,
+    };
+  }
+
   const uploadedFiles = [];
   for (const file of files) {
     const response = await fetch(`/api/evidence/upload?controlId=${encodeURIComponent(controlId)}`, {
@@ -1453,6 +1493,13 @@ async function uploadEvidenceFiles(controlId, files) {
 async function deleteEvidenceFileFromStorage(file) {
   const storagePath = String(file?.storagePath ?? "").trim();
   if (!storagePath || DATA_BACKEND === "local") {
+    return;
+  }
+  if (DATA_BACKEND === "firebase") {
+    if (!firebaseStorage) {
+      throw new Error("firebase_storage_unconfigured");
+    }
+    await deleteObject(storageRef(firebaseStorage, storagePath));
     return;
   }
   const response = await fetch("/api/evidence/delete", {
@@ -4675,6 +4722,27 @@ export default function App() {
     });
   }
 
+  async function handleFirebaseGoogleLogin() {
+    if (!isFirebaseConfigured || !firebaseAuth) {
+      setAuthError("Firebase 설정이 필요합니다. .env에 VITE_FIREBASE_* 값을 설정하세요.");
+      return;
+    }
+    try {
+      const result = await signInWithPopup(firebaseAuth, googleProvider);
+      const user = result.user;
+      await completeLogin({
+        email: user.email ?? "",
+        name: user.displayName ?? user.email ?? "",
+        picture: user.photoURL ?? "",
+        uid: user.uid,
+      }, {
+        verified: Boolean(user.emailVerified),
+      });
+    } catch (error) {
+      setAuthError(`Firebase 로그인에 실패했습니다: ${String(error?.message ?? "unknown_error")}`);
+    }
+  }
+
   function handleDevLogin() {
     const normalizedEmail = String(devLoginEmail ?? "").trim().toLowerCase();
     const currentWorkspace = workspaceRef.current;
@@ -4694,6 +4762,9 @@ export default function App() {
     writeAuditLog("LOGOUT", authUser?.email ?? "", `${authUser?.name ?? ""} 로그아웃`);
     clearAuthSession();
     window.google?.accounts?.id?.disableAutoSelect?.();
+    if (firebaseAuth) {
+      void signOut(firebaseAuth);
+    }
     setAuthUser(null);
     setAuthError("");
   }
@@ -4702,6 +4773,9 @@ export default function App() {
     writeAuditLog("LOGOUT", authUser?.email ?? "", "세션 타임아웃으로 자동 로그아웃");
     clearAuthSession();
     window.google?.accounts?.id?.disableAutoSelect?.();
+    if (firebaseAuth) {
+      void signOut(firebaseAuth);
+    }
     setAuthUser(null);
     setAuthError("세션 시간이 만료되었습니다. 다시 로그인하세요.");
   }
@@ -4755,6 +4829,9 @@ export default function App() {
   }, [authUser?.email, securitySettings.sessionTimeoutMinutes]);
 
   useEffect(() => {
+    if (DATA_BACKEND === "firebase") {
+      return;
+    }
     if (authUser || !GOOGLE_CLIENT_ID || !googleLoginRef.current) {
       return;
     }
@@ -4989,8 +5066,8 @@ export default function App() {
     fetchRemoteIntegrationStatusByBackend()
       .then((status) => {
         setIntegrationStatus({
-          spreadsheet: status.spreadsheet ? "연결됨" : "오류",
-          drive: status.drive ? "연결됨" : "오류",
+          spreadsheet: status.firebase || status.firestore || status.spreadsheet ? "연결됨" : "오류",
+          drive: status.firebase || status.storage || status.drive ? "연결됨" : "오류",
         });
       })
       .catch(() => {
@@ -5005,8 +5082,13 @@ export default function App() {
     if (!HAS_REMOTE_BACKEND) {
       return;
     }
+    if (DATA_BACKEND === "firebase" && !authUser?.email) {
+      setRemoteWorkspaceReady(false);
+      return;
+    }
 
     let active = true;
+    setRemoteWorkspaceReady(false);
 
     fetchRemoteWorkspaceByBackend()
       .then((remoteWorkspace) => {
@@ -5014,6 +5096,18 @@ export default function App() {
           return;
         }
         const nextWorkspace = normalizeRemoteWorkspace(remoteWorkspace);
+        const normalizedAuthEmail = String(authUser?.email ?? "").trim().toLowerCase();
+        if (DATA_BACKEND === "firebase" && normalizedAuthEmail) {
+          const remotePeople = Array.isArray(nextWorkspace.people) ? nextWorkspace.people : [];
+          const hasRemoteMember = remotePeople.some((person) => String(person.email ?? "").trim().toLowerCase() === normalizedAuthEmail);
+          if (!hasRemoteMember) {
+            const localMember = (Array.isArray(workspaceRef.current.people) ? workspaceRef.current.people : [])
+              .find((person) => String(person.email ?? "").trim().toLowerCase() === normalizedAuthEmail);
+            if (localMember) {
+              nextWorkspace.people = normalizePeopleCollection([localMember, ...remotePeople]);
+            }
+          }
+        }
 
         setIntegrationStatus((current) => ({
           ...current,
@@ -5030,7 +5124,7 @@ export default function App() {
           ...current,
           spreadsheet: "오류",
         }));
-        showCenterAlert("데이터베이스에 연결할 수 없습니다. 데이터는 DB에서만 불러오며, 연결이 복구될 때까지 화면에는 로컬 데이터가 표시되지 않습니다.");
+        showCenterAlert("원격 데이터베이스에 연결할 수 없습니다. 연결이 복구될 때까지 화면에는 로컬 데이터가 표시되지 않습니다.");
       })
       .finally(() => {
         if (active) {
@@ -5041,7 +5135,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [authUser?.email]);
 
   function updateWorkspace(nextWorkspaceOrUpdater) {
     const nextWorkspace =
@@ -7552,31 +7646,28 @@ export default function App() {
     return (
       <div className="login-shell">
         <section className="login-card">
-          <div className="login-badge">itgc management system</div>
+          <div className="login-badge">ITGC</div>
           <div className="login-copy-block">
             <h1>IT 통제(ITGC) 관리 시스템</h1>
-            <p className="login-copy">Google 계정으로 로그인합니다.</p>
+            <p className="login-copy">Google 계정으로 로그인하세요.</p>
           </div>
-          <div className="login-method-card">
-            <span className="login-method-label">로그인 방식</span>
-            <div className="login-method-row">
-              <strong>Google OAuth</strong>
-              <span>{allowedDomainText}</span>
+          {DATA_BACKEND === "firebase" ? (
+            <div className="login-button-panel">
+              <button className="primary-button login-firebase-button" type="button" onClick={handleFirebaseGoogleLogin}>
+                Google로 로그인
+              </button>
             </div>
-            <p className="login-method-note">로그인 시 이름과 이메일 정보를 수집합니다.</p>
-          </div>
-          {GOOGLE_CLIENT_ID ? (
+          ) : GOOGLE_CLIENT_ID ? (
             <div className="login-button-panel">
               <div className="google-login-button-wrap" ref={googleLoginRef} />
             </div>
           ) : (
-            <p className="login-error">`.env`에 `VITE_GOOGLE_CLIENT_ID`를 설정하세요.</p>
+            <p className="login-error">`.env`에 `VITE_GOOGLE_CLIENT_ID` 또는 Firebase 설정을 입력하세요.</p>
           )}
           {DEV_LOCAL_LOGIN_ENABLED ? (
-            <div className="login-method-card login-dev-card">
-              <span className="login-method-label">개발 서버 전용</span>
+            <details className="login-dev-card">
+              <summary>개발 서버 전용 로그인</summary>
               <div className="login-method-row">
-                <strong>로컬 로그인</strong>
                 <span>모바일 확인용</span>
               </div>
               <div className="login-dev-row">
@@ -7590,10 +7681,9 @@ export default function App() {
                   바로 로그인
                 </button>
               </div>
-            </div>
+            </details>
           ) : null}
           {authError ? <p className="login-error">{authError}</p> : null}
-          <p className="login-footnote">인가된 도메인 계정만 접근할 수 있습니다.</p>
         </section>
       </div>
     );
@@ -10179,17 +10269,17 @@ export default function App() {
                           <button
                             type="submit"
                             className="primary-button slim-button"
-                            disabled={queryTestLoading || DATA_BACKEND !== "postgres"}
+                            disabled={queryTestLoading || DATA_BACKEND === "local"}
                           >
                             {queryTestLoading ? "실행 중..." : "쿼리 실행"}
                           </button>
                         </div>
                       </form>
 
-                      {DATA_BACKEND !== "postgres" ? (
+                      {DATA_BACKEND === "local" ? (
                         <div className="info-block audit-diagnostics-block">
                           <span>쿼리 테스트 제한</span>
-                          <strong>현재 데이터 백엔드가 PostgreSQL이 아니어서 쿼리 테스트를 사용할 수 없습니다.</strong>
+                          <strong>현재 로컬 저장 모드라서 원격 데이터 조회 테스트를 사용할 수 없습니다.</strong>
                         </div>
                       ) : null}
 
@@ -10434,7 +10524,7 @@ export default function App() {
                     <button
                       type="submit"
                       className="primary-button slim-button"
-                      disabled={queryTestLoading || DATA_BACKEND !== "postgres"}
+                      disabled={queryTestLoading || DATA_BACKEND === "local"}
                     >
                       {queryTestLoading ? "실행 중..." : "쿼리 실행"}
                     </button>
