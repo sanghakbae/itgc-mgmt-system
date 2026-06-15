@@ -1495,7 +1495,8 @@ async function deleteEvidenceFileFromStorage(file) {
   if (!storagePath || DATA_BACKEND === "local") {
     return;
   }
-  if (DATA_BACKEND === "firebase") {
+  const provider = String(file?.provider ?? EVIDENCE_STORAGE_PROVIDER).trim().toLowerCase();
+  if (DATA_BACKEND === "firebase" && provider === "firebase" && EVIDENCE_STORAGE_PROVIDER === "firebase") {
     if (!firebaseStorage) {
       throw new Error("firebase_storage_unconfigured");
     }
