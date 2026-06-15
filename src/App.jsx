@@ -4331,13 +4331,13 @@ export default function App() {
     && reviewNoteDraft.trim().length > 0;
   const runtimeOrigin = typeof window !== "undefined" ? window.location.origin : "";
   const menuItems = [
-    { key: "dashboard", label: "대시보드", icon: <DashboardIcon /> },
-    { key: "control-list", label: "통제 목록", icon: <ControlIcon /> },
-    { key: "control-workbench", label: "통제 관리", icon: <ControlIcon /> },
-    { key: "report", label: "리포트", icon: <FileStackIcon /> },
-    { key: "people", label: "회원 관리", icon: <PeopleIcon /> },
-    { key: "audit", label: "감사 로그", icon: <AuditIcon /> },
-    { key: "security", label: "보안 설정", icon: <ShieldCheckIcon /> },
+    { key: "dashboard", label: "대시보드", mobileLabel: "홈", icon: <DashboardIcon /> },
+    { key: "control-list", label: "통제 목록", mobileLabel: "목록", icon: <ControlIcon /> },
+    { key: "control-workbench", label: "통제 관리", mobileLabel: "관리", icon: <ControlIcon /> },
+    { key: "report", label: "리포트", mobileLabel: "리포트", icon: <FileStackIcon /> },
+    { key: "people", label: "회원 관리", mobileLabel: "회원", icon: <PeopleIcon /> },
+    { key: "audit", label: "감사 로그", mobileLabel: "감사", icon: <AuditIcon /> },
+    { key: "security", label: "보안 설정", mobileLabel: "보안", icon: <ShieldCheckIcon /> },
   ];
 
   function handleViewChange(nextView) {
@@ -7758,7 +7758,7 @@ export default function App() {
       </aside>
 
       <nav className="mobile-bottom-nav" aria-label="모바일 메뉴">
-        {menuItems.map(({ key, label, icon }) => (
+        {menuItems.map(({ key, label, mobileLabel, icon }) => (
           <button
             key={key}
             type="button"
@@ -7767,7 +7767,7 @@ export default function App() {
             aria-label={label}
           >
             <span className="mobile-nav-icon" aria-hidden="true">{icon}</span>
-            <span className="mobile-nav-label">{label}</span>
+            <span className="mobile-nav-label">{mobileLabel ?? label}</span>
             {key === "control-workbench" && reviewPendingCount > 0 ? (
               <span className="menu-pending-badge mobile" aria-label={`검토 대기 ${reviewPendingCount}건`}>
                 {reviewPendingCount}
