@@ -113,8 +113,9 @@ textarea {
   border: 0;
   background: transparent;
   color: #2f6f62;
-  font-size: 0.76rem;
+  font-size: 1.05rem;
   font-weight: 800;
+  line-height: 1.15;
   letter-spacing: 0;
 }
 
