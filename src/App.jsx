@@ -2975,13 +2975,11 @@ export default function App() {
   const deletedMemberEmailSet = useMemo(() => new Set(deletedMemberEmails), [deletedMemberEmails]);
   const effectiveLoginDomains = useMemo(() => {
     const merged = parseDomainList([
+      ...(Array.isArray(defaultData.loginDomains) ? defaultData.loginDomains : []),
       ...(Array.isArray(loginDomains) ? loginDomains : []),
       ...(Array.isArray(workspace.loginDomains) ? workspace.loginDomains : []),
     ]);
-    if (merged.length > 0) {
-      return merged;
-    }
-    return parseDomainList(defaultData.loginDomains);
+    return merged.length > 0 ? merged : parseDomainList(defaultData.loginDomains);
   }, [loginDomains, workspace.loginDomains]);
   const loginDomainSet = useMemo(() => new Set(effectiveLoginDomains), [effectiveLoginDomains]);
   const allowedDomainText = effectiveLoginDomains.length > 0
